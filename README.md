@@ -1,93 +1,162 @@
 # slang-skills
 
+Claude Code skills for the [Slang](https://github.com/shader-slang/slang) shader compiler. Provides interactive installation of reusable skills to your `~/.claude/skills/` directory.
 
+## Quick Start
 
-## Getting started
+**macOS / Linux / WSL / Git Bash:**
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab-master.nvidia.com/jvepsalainen/slang-skills.git
-git branch -M main
-git push -uf origin main
+```bash
+git clone https://gitlab-master.nvidia.com/jvepsalainen/slang-skills.git
+cd slang-skills
+./install.sh
 ```
 
-## Integrate with your tools
+**Windows (native PowerShell):**
 
-- [ ] [Set up project integrations](https://gitlab-master.nvidia.com/jvepsalainen/slang-skills/-/settings/integrations)
+```powershell
+git clone https://gitlab-master.nvidia.com/jvepsalainen/slang-skills.git
+cd slang-skills
+.\install.ps1
+```
 
-## Collaborate with your team
+The interactive installer lets you select which skills to install using arrow keys and spacebar.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+## Skills
 
-## Test and Deploy
+| Skill | Description | Dependencies |
+|-------|-------------|-------------|
+| `slang-build` | Platform-aware build: OS detection, CMake presets, submodules | *(foundation)* |
+| `slang-run-tests` | Platform-aware testing: skip detection, SPIRV validation | slang-build |
+| `slang-write-test` | Test syntax reference: directives, diagnostic tests, compute tests | *(foundation)* |
+| `slang-investigate` | Root cause investigation: classify, trace, design context | slang-build, slang-run-tests |
+| `slang-create-issue` | Issue/PR templates, commit rules | *(standalone)* |
+| `slang-fix-bug` | Bug fix workflow: intake, investigation, parallel fix exploration | slang-investigate, slang-build, slang-run-tests, slang-write-test |
+| `slang-review-pr` | PR review: evaluate approach, address feedback, manage threads | slang-build |
+| `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
+| `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
+| `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
 
-Use the built-in continuous integration in GitLab.
+## Installation Options
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+### Interactive (default)
 
-***
+```bash
+./install.sh
+```
 
-# Editing this README
+Use arrow keys to navigate, Space to toggle, A for all, N for none, Enter to confirm.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+### With a name prefix
 
-## Suggestions for a good README
+```bash
+./install.sh --prefix jv-
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Installs skills with a prefix (e.g., `jv-slang-build`). Uses copy mode to modify the `name:` field.
 
-## Name
-Choose a self-explaining name for your project.
+### Specific skills only
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+./install.sh --non-interactive --skills=slang-build,slang-run-tests
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### Custom install location
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```bash
+./install.sh --install-dir /path/to/skills
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### Dry run
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+./install.sh --dry-run
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Shows what would be installed without making changes.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### Copy mode
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+./install.sh --copy
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Copies skill files instead of symlinking. Implied by `--prefix`.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Status
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+./install.sh --status                # bash
+.\install.ps1 -Status                # PowerShell
+```
 
-## License
-For open source projects, say how it is licensed.
+Lists skills tracked in the manifest, their mode (symlink vs copy), and health (OK / dangling / missing).
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Uninstall
+
+```bash
+./install.sh --uninstall             # bash
+.\install.ps1 -Uninstall             # PowerShell
+```
+
+Removes only skills installed by this script (tracked via manifest).
+
+## Updating
+
+Re-run `./install.sh` to update. In symlink mode, skills automatically reflect changes when you `git pull` this repo.
+
+## Install Modes
+
+| Mode | How | Auto-updates | Prefix support |
+|------|-----|:---:|:---:|
+| **Symlink** (default) | Creates directory, symlinks SKILL.md inside | Yes | No |
+| **Copy** (`--copy`) | Copies SKILL.md into directory | No (re-run to update) | Yes |
+
+## Platform Notes
+
+| Platform | Script | Status |
+|----------|--------|--------|
+| **macOS** | `install.sh` | Works out of the box |
+| **Linux** | `install.sh` | Works out of the box |
+| **Windows (PowerShell)** | `install.ps1` | Requires PowerShell 5.1+ (ships with Windows 10). Symlinks require Developer Mode or an elevated shell; otherwise falls back to copy mode automatically. |
+| **Windows (Git Bash)** | `install.sh` | Symlinks require Developer Mode or Administrator. Falls back to copy mode automatically. |
+| **WSL** | `install.sh` | Works like Linux. Avoid installing to `/mnt/c/` paths with symlink mode. |
+
+Both scripts share the same manifest format (`.slang-skills-manifest`), so you can install with one and uninstall with the other.
+
+## All Options
+
+**bash (`install.sh`)**
+
+```
+./install.sh [OPTIONS]
+
+  --prefix PREFIX      Add a name prefix to skills (implies copy mode)
+  --copy               Force copy mode instead of symlink
+  --install-dir DIR    Install to DIR (default: ~/.claude/skills/)
+  --uninstall          Remove skills installed by this script
+  --status             List installed skills and their health
+  --non-interactive    Skip interactive UI, install all skills
+  --skills=LIST        Comma-separated skill names (with --non-interactive)
+  --dry-run            Show what would happen without making changes
+  --help               Show help
+```
+
+**PowerShell (`install.ps1`)**
+
+```
+.\install.ps1 [OPTIONS]
+
+  -Prefix PREFIX       Add a name prefix to skills (implies copy mode)
+  -Copy                Force copy mode instead of symlink
+  -InstallDir DIR      Install to DIR (default: %USERPROFILE%\.claude\skills)
+  -Uninstall           Remove skills installed by this script
+  -Status              List installed skills and their health
+  -NonInteractive      Skip interactive UI, install all skills
+  -Skills "LIST"       Comma-separated skill names (with -NonInteractive)
+  -DryRun              Show what would happen without making changes
+  -Help                Show help
+```
+
+If you get an execution-policy error on Windows, run once with:
+`powershell.exe -ExecutionPolicy Bypass -File .\install.ps1`

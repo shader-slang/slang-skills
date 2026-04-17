@@ -1,0 +1,18 @@
+# Normalize line endings in the repo regardless of the user's core.autocrlf.
+# Bash chokes on CRLF in shebang lines; PowerShell prefers CRLF.
+
+# Shell scripts must stay LF — a CRLF shebang produces "bash\r: not found".
+*.sh          text eol=lf
+
+# PowerShell scripts: prefer native Windows CRLF.
+*.ps1         text eol=crlf
+
+# Docs and data: let Git normalize (defaults to LF in the blob).
+*.md          text
+*.yml         text
+*.yaml        text
+*.json        text
+*.toml        text
+
+# Fallback: anything not matched above uses Git's auto-detection.
+* text=auto
