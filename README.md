@@ -50,10 +50,10 @@ Use arrow keys to navigate, Space to toggle, A for all, N for none, Enter to con
 ### With a name prefix
 
 ```bash
-./install.sh --prefix jv-
+./install.sh --prefix local-
 ```
 
-Installs skills with a prefix (e.g., `jv-slang-build`). Uses copy mode to modify the `name:` field.
+Installs skills with a prefix (e.g., `local-slang-build`). Uses copy mode to modify the `name:` field.
 
 ### Specific skills only
 
@@ -90,7 +90,7 @@ Copies skill files instead of symlinking. Implied by `--prefix`.
 .\install.ps1 -Status                # PowerShell
 ```
 
-Lists skills tracked in the manifest, their mode (symlink vs copy), and health (OK / dangling / missing).
+Lists skills tracked in the manifest with their mode (symlink vs copy) and health (OK / dangling / missing), followed by any skills available in this repo that are not yet installed.
 
 ## Uninstall
 
@@ -103,7 +103,7 @@ Removes only skills installed by this script (tracked via manifest).
 
 ## Updating
 
-Re-run `./install.sh` to update. In symlink mode, skills automatically reflect changes when you `git pull` this repo.
+Re-run `./install.sh` to change your selection. The installer detects the current installation, pre-ticks skills that are already installed, and on confirm installs any newly-ticked skills and removes any that were unticked. In symlink mode, installed skills automatically reflect changes when you `git pull` this repo — no re-run needed for code updates.
 
 ## Install Modes
 

@@ -14,7 +14,7 @@
 .EXAMPLE
     .\install.ps1
 .EXAMPLE
-    .\install.ps1 -Prefix "jv-"
+    .\install.ps1 -Prefix "local-"
 .EXAMPLE
     .\install.ps1 -NonInteractive -Skills "slang-build,slang-run-tests"
 .EXAMPLE
@@ -75,6 +75,10 @@ $script:SkillDescs    = @()
 $script:SkillDirs     = @()
 $script:SkillSelected = @()
 
+# Previously-installed skills (parsed from manifest before UI runs)
+$script:PrevEntries = @()      # array of [PSCustomObject]{DestName, Mode, Source}
+$script:PrevPrefix  = ""
+
 # --- Help / Usage -----------------------------------------------------------
 
 function Show-Usage {
@@ -84,7 +88,7 @@ slang-skills installer v$Version (PowerShell)
 Usage: .\install.ps1 [OPTIONS]
 
 Options:
-  -Prefix PREFIX       Add a name prefix to skills (e.g., "jv-")
+  -Prefix PREFIX       Add a name prefix to skills (e.g., "local-")
                        Implies copy mode (cannot prefix symlinks)
   -Copy                Force copy mode instead of symlink
   -InstallDir DIR      Install to DIR (default: %USERPROFILE%\.claude\skills)
@@ -97,7 +101,7 @@ Options:
 
 Examples:
   .\install.ps1                                        # Interactive
-  .\install.ps1 -Prefix "jv-"                          # Install all with prefix
+  .\install.ps1 -Prefix "local-"                          # Install all with prefix
   .\install.ps1 -NonInteractive                        # Install all, no UI
   .\install.ps1 -NonInteractive -Skills "slang-build,slang-run-tests"
   .\install.ps1 -Uninstall                             # Remove installed skills
@@ -188,6 +192,72 @@ function Find-Skills {
         for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
             $script:SkillSelected[$i] = if ($want -contains $script:SkillNames[$i]) { 1 } else { 0 }
         }
+    }
+}
+
+# --- Existing-install detection ---------------------------------------------
+
+function Get-BareSkillName {
+    param([string]$DestName, [string]$Prefix)
+    if ($Prefix -and $DestName.StartsWith($Prefix)) {
+        return $DestName.Substring($Prefix.Length)
+    }
+    return $DestName
+}
+
+function Get-ExistingInstall {
+    $script:PrevEntries = @()
+    $script:PrevPrefix  = ""
+
+    $manifestPath = Join-Path $InstallDir $ManifestFile
+    if (-not (Test-Path -LiteralPath $manifestPath)) { return }
+
+    foreach ($line in Get-Content -LiteralPath $manifestPath) {
+        if ($line -match '^# prefix:\s*(.+)$') {
+            $script:PrevPrefix = $matches[1].Trim()
+            continue
+        }
+        if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line -split ':', 3
+        if ($parts.Count -ge 2) {
+            $script:PrevEntries += [PSCustomObject]@{
+                DestName = $parts[0]
+                Mode     = $parts[1]
+                Source   = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+            }
+        }
+    }
+}
+
+function Write-InstallHeader {
+    Write-Host ""
+    Write-Color bold "  slang-skills installer"
+    Write-Host "  Target:    $InstallDir"
+    if ($script:PrevEntries.Count -eq 0) {
+        Write-Color dim "  Installed: none"
+    } else {
+        $modes = ($script:PrevEntries | ForEach-Object { $_.Mode } | Sort-Object -Unique) -join '/'
+        $summary = "{0} skill(s)" -f $script:PrevEntries.Count
+        if ($modes)               { $summary += " ($modes)" }
+        if ($script:PrevPrefix)   { $summary += "  prefix: $script:PrevPrefix" }
+        Write-Host "  Installed: $summary"
+    }
+    Write-Host ""
+}
+
+function Set-InitialSelection {
+    # Explicit -Skills takes precedence over manifest state.
+    if (-not [string]::IsNullOrWhiteSpace($Skills)) { return }
+    if ($script:PrevEntries.Count -eq 0) { return }
+
+    $prevBare = @{}
+    foreach ($e in $script:PrevEntries) {
+        $bare = Get-BareSkillName -DestName $e.DestName -Prefix $script:PrevPrefix
+        $prevBare[$bare] = $true
+    }
+
+    for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
+        $script:SkillSelected[$i] = if ($prevBare.ContainsKey($script:SkillNames[$i])) { 1 } else { 0 }
     }
 }
 
@@ -338,9 +408,6 @@ function Invoke-InteractiveSelect {
 
     Hide-Cursor
     try {
-        Write-Host ""
-        Write-Color bold "  slang-skills installer"
-        Write-Host ""
         Write-Host "  Select skills to install:"
         Write-Host ""
 
@@ -371,7 +438,7 @@ function Invoke-InteractiveSelect {
                     for ($i = 0; $i -lt $total; $i++) {
                         if ($script:SkillSelected[$i] -eq 1) { $any = $true; break }
                     }
-                    if (-not $any) {
+                    if (-not $any -and $script:PrevEntries.Count -eq 0) {
                         $script:WarningMsg = "No skills selected. Use [A] to select all or [Q] to quit."
                         $script:WarningTtl = 3
                     } else {
@@ -496,6 +563,23 @@ function Install-SkillCopy {
     }
 }
 
+function Remove-SkillDir {
+    param([string]$DestName)
+    $destDir = Join-Path $InstallDir $DestName
+    if (-not (Test-Path -LiteralPath $destDir)) { return 'gone' }
+
+    $skillMd = Join-Path $destDir "SKILL.md"
+    if (Test-Path -LiteralPath $skillMd) {
+        Remove-Item -LiteralPath $skillMd -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        Remove-Item -LiteralPath $destDir -Force -ErrorAction Stop
+        return 'removed'
+    } catch {
+        return 'kept'
+    }
+}
+
 function Install-Selected {
     $mode = if ($script:CopyMode) { 'copy' } else { 'symlink' }
     Write-Host ""
@@ -503,18 +587,14 @@ function Install-Selected {
 
     $installed = 0
     $skipped   = 0
-    $manifestLines = New-Object System.Collections.Generic.List[string]
-    $manifestPath  = Join-Path $InstallDir $ManifestFile
+    $removed   = 0
+    $manifestLines  = New-Object System.Collections.Generic.List[string]
+    $manifestPath   = Join-Path $InstallDir $ManifestFile
+    $newDestNames   = @{}
 
-    # Pre-parse existing manifest into a set of managed names
+    # Set of destNames managed by the previous manifest
     $managed = @{}
-    if (Test-Path -LiteralPath $manifestPath) {
-        foreach ($line in Get-Content -LiteralPath $manifestPath) {
-            if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
-            $parts = $line -split ':', 3
-            if ($parts.Count -ge 1 -and $parts[0]) { $managed[$parts[0]] = $true }
-        }
-    }
+    foreach ($e in $script:PrevEntries) { $managed[$e.DestName] = $true }
 
     for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
         if ($script:SkillSelected[$i] -ne 1) { continue }
@@ -524,8 +604,7 @@ function Install-Selected {
         $destDir  = Join-Path $InstallDir $destName
 
         if ((Test-Path -LiteralPath $destDir) -and -not $DryRun) {
-            $hasManifest = Test-Path -LiteralPath $manifestPath
-            if ($hasManifest -and -not $managed.ContainsKey($destName)) {
+            if ($script:PrevEntries.Count -gt 0 -and -not $managed.ContainsKey($destName)) {
                 Write-Color yellow "  Skipping $destName (exists, not managed by this installer)"
                 $skipped++
                 continue
@@ -540,35 +619,54 @@ function Install-Selected {
 
         $srcPath = Join-Path $SkillsSrcDir $name
         $manifestLines.Add("${destName}:${mode}:${srcPath}") | Out-Null
+        $newDestNames[$destName] = $true
         $installed++
+    }
 
-        if (-not $DryRun) {
-            Write-Color green "  [OK] " -NoNewline
-            Write-Host $destName
+    # Remove previously-installed skills that were unticked in this run.
+    foreach ($e in $script:PrevEntries) {
+        if ($newDestNames.ContainsKey($e.DestName)) { continue }
+        if ($DryRun) {
+            Write-Host "  [dry-run] remove $($e.DestName) (unticked)"
+            $removed++
+            continue
+        }
+        $result = Remove-SkillDir -DestName $e.DestName
+        switch ($result) {
+            'removed' { $removed++ }
+            'gone'    { $removed++ }
+            'kept'    {
+                Write-Color yellow "  [~] $($e.DestName) (directory not empty, kept)"
+            }
         }
     }
 
-    if (-not $DryRun -and $installed -gt 0) {
-        $nowUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        $header = @(
-            "# slang-skills manifest -- do not edit manually",
-            "# installed: $nowUtc",
-            "# source: $ScriptDir",
-            "# mode: $mode"
-        )
-        if ($Prefix) { $header += "# prefix: $Prefix" }
+    if (-not $DryRun) {
+        if ($installed -gt 0) {
+            $nowUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $header = @(
+                "# slang-skills manifest -- do not edit manually",
+                "# installed: $nowUtc",
+                "# source: $ScriptDir",
+                "# mode: $mode"
+            )
+            if ($Prefix) { $header += "# prefix: $Prefix" }
 
-        $all = $header + $manifestLines.ToArray()
-        # Write UTF-8 without BOM so bash's `#` header parser stays happy.
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllLines($manifestPath, [string[]]$all, $utf8NoBom)
+            $all = $header + $manifestLines.ToArray()
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllLines($manifestPath, [string[]]$all, $utf8NoBom)
+        } elseif (Test-Path -LiteralPath $manifestPath) {
+            # Nothing selected anymore — drop the manifest.
+            Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+        }
     }
 
     Write-Host ""
     if ($DryRun) {
-        Write-Host "Dry run complete. $installed skill(s) would be installed."
+        Write-Host "Dry run complete. $installed skill(s) would be installed, $removed removed."
     } else {
         Write-Host "Installed $installed skill(s) to $InstallDir"
+        if ($removed -gt 0) { Write-Host "Removed $removed skill(s) that were unticked." }
         if ($skipped -gt 0) {
             Write-Host "Skipped $skipped skill(s) (already installed by another source)."
         }
@@ -654,127 +752,130 @@ function Invoke-Uninstall {
 
 # --- Status -----------------------------------------------------------------
 
+function Get-AvailableSkillNames {
+    if (-not (Test-Path -LiteralPath $SkillsSrcDir -PathType Container)) { return @() }
+    $names = @()
+    foreach ($d in (Get-ChildItem -LiteralPath $SkillsSrcDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        if (Test-Path -LiteralPath (Join-Path $d.FullName "SKILL.md") -PathType Leaf) {
+            $names += $d.Name
+        }
+    }
+    return ,$names
+}
+
 function Show-Status {
     $manifestPath = Join-Path $InstallDir $ManifestFile
+    $hasManifest  = Test-Path -LiteralPath $manifestPath
+    $prefix       = ""
 
     Write-Host ""
     Write-Color bold "  slang-skills status"
     Write-Host "  -------------------------------------"
     Write-Host "  Install dir: $InstallDir"
 
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        Write-Host ""
+    if (-not $hasManifest) {
         Write-Color dim "  No manifest at $manifestPath"
-        Write-Host "  No skills are tracked by this installer here."
-        Write-Host ""
-        return
-    }
-
-    # Header metadata
-    foreach ($line in Get-Content -LiteralPath $manifestPath) {
-        switch -Regex ($line) {
-            '^# installed:\s*(.+)$' { Write-Host "  Installed:   $($matches[1])" }
-            '^# source:\s*(.+)$'    { Write-Host "  Source:      $($matches[1])" }
-            '^# mode:\s*(.+)$'      { Write-Host "  Mode:        $($matches[1])" }
-            '^# prefix:\s*(.+)$'    { Write-Host "  Prefix:      $($matches[1])" }
+    } else {
+        foreach ($line in Get-Content -LiteralPath $manifestPath) {
+            switch -Regex ($line) {
+                '^# installed:\s*(.+)$' { Write-Host "  Installed:   $($matches[1])" }
+                '^# source:\s*(.+)$'    { Write-Host "  Source:      $($matches[1])" }
+                '^# mode:\s*(.+)$'      { Write-Host "  Mode:        $($matches[1])" }
+                '^# prefix:\s*(.+)$'    {
+                    $prefix = $matches[1].Trim()
+                    Write-Host "  Prefix:      $prefix"
+                }
+            }
         }
     }
     Write-Host "  -------------------------------------"
     Write-Host ""
 
     $total = 0; $ok = 0; $broken = 0
-    foreach ($line in Get-Content -LiteralPath $manifestPath) {
-        if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
-        $parts = $line -split ':', 3
-        if ($parts.Count -lt 2) { continue }
-        $name       = $parts[0]
-        $entryMode  = $parts[1]
-        $sourcePath = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+    $installedBare = @{}
 
-        $total++
-        $skillMd = Join-Path $InstallDir (Join-Path $name "SKILL.md")
+    if ($hasManifest) {
+        foreach ($line in Get-Content -LiteralPath $manifestPath) {
+            if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split ':', 3
+            if ($parts.Count -lt 2) { continue }
+            $name       = $parts[0]
+            $entryMode  = $parts[1]
+            $sourcePath = if ($parts.Count -ge 3) { $parts[2] } else { '' }
 
-        $color = 'green'; $glyph = '[OK]'; $state = ''
+            $total++
+            $installedBare[(Get-BareSkillName -DestName $name -Prefix $prefix)] = $true
+            $skillMd = Join-Path $InstallDir (Join-Path $name "SKILL.md")
 
-        if ($entryMode -eq 'symlink') {
-            if (Test-IsSymlink $skillMd) {
-                $target = Get-SymlinkTarget $skillMd
-                if (Test-Path -LiteralPath $skillMd) {
-                    $state = "ok (-> $target)"
+            $color = 'green'; $glyph = '[OK]'; $state = ''
+
+            if ($entryMode -eq 'symlink') {
+                if (Test-IsSymlink $skillMd) {
+                    $target = Get-SymlinkTarget $skillMd
+                    if (Test-Path -LiteralPath $skillMd) {
+                        $state = "ok (-> $target)"
+                        $ok++
+                    } else {
+                        $state = "dangling (-> $target)"
+                        $color = 'red'; $glyph = '[X]'
+                        $broken++
+                    }
+                } elseif (Test-Path -LiteralPath $skillMd) {
+                    $state = "not a symlink (mode changed?)"
+                    $color = 'yellow'; $glyph = '[~]'
                     $ok++
                 } else {
-                    $state = "dangling (-> $target)"
+                    $state = "missing"
                     $color = 'red'; $glyph = '[X]'
                     $broken++
                 }
-            } elseif (Test-Path -LiteralPath $skillMd) {
-                $state = "not a symlink (mode changed?)"
-                $color = 'yellow'; $glyph = '[~]'
-                $ok++
             } else {
-                $state = "missing"
-                $color = 'red'; $glyph = '[X]'
-                $broken++
+                if ((Test-Path -LiteralPath $skillMd -PathType Leaf) -and -not (Test-IsSymlink $skillMd)) {
+                    $state = "ok (copied from $sourcePath)"
+                    $ok++
+                } elseif (Test-Path -LiteralPath $skillMd) {
+                    $state = "unexpected file type"
+                    $color = 'yellow'; $glyph = '[~]'
+                    $ok++
+                } else {
+                    $state = "missing"
+                    $color = 'red'; $glyph = '[X]'
+                    $broken++
+                }
             }
-        } else {
-            # copy mode
-            if ((Test-Path -LiteralPath $skillMd -PathType Leaf) -and -not (Test-IsSymlink $skillMd)) {
-                $state = "ok (copied from $sourcePath)"
-                $ok++
-            } elseif (Test-Path -LiteralPath $skillMd) {
-                $state = "unexpected file type"
-                $color = 'yellow'; $glyph = '[~]'
-                $ok++
-            } else {
-                $state = "missing"
-                $color = 'red'; $glyph = '[X]'
-                $broken++
-            }
+
+            Write-Color $color "  $glyph " -NoNewline
+            Write-Host ("{0} " -f $name.PadRight(32)) -NoNewline
+            Write-Color dim $state
         }
+    }
 
-        Write-Color $color "  $glyph " -NoNewline
-        Write-Host ("{0} " -f $name.PadRight(32)) -NoNewline
-        Write-Color dim $state
+    # List available-but-not-installed skills (from source dir)
+    $notInstalled = 0
+    $available = Get-AvailableSkillNames
+    foreach ($n in $available) {
+        if ($installedBare.ContainsKey($n)) { continue }
+        Write-Color dim "  [ ] " -NoNewline
+        Write-Host ("{0} " -f $n.PadRight(32)) -NoNewline
+        Write-Color dim "not installed"
+        $notInstalled++
     }
 
     Write-Host ""
-    if ($total -eq 0) {
+    if ($total -eq 0 -and $notInstalled -eq 0) {
         Write-Host "  No skills listed in manifest."
-    } elseif ($broken -eq 0) {
-        Write-Host "  $total skill(s) installed, all healthy."
     } else {
-        Write-Color yellow "  $total skill(s) installed, $broken broken."
-        Write-Host "  Re-run .\install.ps1 to repair, or .\install.ps1 -Uninstall to clear."
+        $summary = "  $total skill(s) installed"
+        if ($broken -gt 0)      { $summary += ", $broken broken" }
+        if ($notInstalled -gt 0) { $summary += ", $notInstalled available to install" }
+        if ($broken -gt 0) {
+            Write-Color yellow "$summary."
+            Write-Host "  Re-run .\install.ps1 to repair, or .\install.ps1 -Uninstall to clear."
+        } else {
+            Write-Host "$summary."
+        }
     }
     Write-Host ""
-}
-
-# --- Confirmation prompt ----------------------------------------------------
-
-function Confirm-Install {
-    $mode = if ($script:CopyMode) { 'copy' } else { 'symlink' }
-    $selected = 0
-    for ($i = 0; $i -lt $script:SkillSelected.Count; $i++) {
-        if ($script:SkillSelected[$i] -eq 1) { $selected++ }
-    }
-
-    Write-Host ""
-    Write-Color bold "  Install summary"
-    Write-Host "  -------------------------------------"
-    Write-Host "  Skills:    $selected"
-    Write-Host "  Mode:      $mode"
-    Write-Host "  Target:    $InstallDir"
-    if ($Prefix) { Write-Host "  Prefix:    $Prefix" }
-    Write-Host "  -------------------------------------"
-    Write-Host ""
-
-    if ($NonInteractive -or $DryRun) { return }
-
-    $reply = Read-Host "  Proceed? [Y/n]"
-    if ($reply -match '^[Nn]') {
-        Write-Host "  Aborted."
-        exit 0
-    }
 }
 
 # --- Main -------------------------------------------------------------------
@@ -795,7 +896,9 @@ function Invoke-Main {
         return
     }
 
+    Get-ExistingInstall
     Find-Skills
+    Set-InitialSelection
 
     Test-SymlinkSupport
 
@@ -804,6 +907,8 @@ function Invoke-Main {
         Write-Color dim "Note: -Prefix implies copy mode (cannot prefix symlinks)"
         $script:CopyMode = $true
     }
+
+    Write-InstallHeader
 
     # Select
     if ($NonInteractive -or -not $script:SupportsRawInput) {
@@ -823,7 +928,6 @@ function Invoke-Main {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    Confirm-Install
     Install-Selected
 }
 

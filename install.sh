@@ -39,6 +39,13 @@ SKILL_DESCS=()
 SKILL_DIRS=()
 SKILL_SELECTED=()
 
+# ─── Previously-installed state (parsed from manifest before UI runs) ──────
+
+PREV_PREFIX=""
+PREV_DEST_NAMES=()
+PREV_MODES=()
+PREV_SOURCES=()
+
 # ─── Dependency map (variable-name encoding for bash 3.2) ──────────────────
 
 DEPS_slang_fix_bug="slang-investigate slang-build slang-run-tests slang-write-test"
@@ -97,7 +104,7 @@ slang-skills installer v${VERSION}
 Usage: install.sh [OPTIONS]
 
 Options:
-  --prefix PREFIX      Add a name prefix to skills (e.g., "jv-")
+  --prefix PREFIX      Add a name prefix to skills (e.g., "local-")
                        Implies copy mode (cannot prefix symlinks)
   --copy               Force copy mode instead of symlink
   --install-dir DIR    Install to DIR (default: ~/.claude/skills/)
@@ -110,7 +117,7 @@ Options:
 
 Examples:
   ./install.sh                                  # Interactive selection
-  ./install.sh --prefix jv-                     # Install all with "jv-" prefix
+  ./install.sh --prefix local-                     # Install all with "local-" prefix
   ./install.sh --non-interactive                # Install all, no UI
   ./install.sh --skills=slang-build,slang-run-tests --non-interactive
   ./install.sh --uninstall                      # Remove installed skills
@@ -204,6 +211,90 @@ discover_skills() {
             fi
         done
     fi
+}
+
+# ─── Existing-install detection ─────────────────────────────────────────────
+
+get_bare_skill_name() {
+    local dest_name="$1" prefix="$2"
+    if [[ -n "$prefix" && "$dest_name" == "$prefix"* ]]; then
+        echo "${dest_name#$prefix}"
+    else
+        echo "$dest_name"
+    fi
+}
+
+parse_existing_manifest() {
+    PREV_PREFIX=""
+    PREV_DEST_NAMES=()
+    PREV_MODES=()
+    PREV_SOURCES=()
+
+    local manifest_path="$INSTALL_DIR/$MANIFEST_FILE"
+    [[ -f "$manifest_path" ]] || return 0
+
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            "# prefix: "*)
+                PREV_PREFIX="${line#\# prefix: }"
+                continue
+                ;;
+            "#"*|"")
+                continue
+                ;;
+        esac
+        local name mode source_path
+        IFS=: read -r name mode source_path <<<"$line"
+        [[ -z "$name" ]] && continue
+        PREV_DEST_NAMES+=("$name")
+        PREV_MODES+=("$mode")
+        PREV_SOURCES+=("$source_path")
+    done < "$manifest_path"
+}
+
+write_install_header() {
+    echo ""
+    print_color bold "  slang-skills installer\n"
+    echo "  Target:    $INSTALL_DIR"
+    if [[ ${#PREV_DEST_NAMES[@]} -eq 0 ]]; then
+        print_color dim "  Installed: none\n"
+    else
+        local modes uniq i
+        uniq=""
+        for i in "${!PREV_MODES[@]}"; do
+            case "$uniq" in
+                *"${PREV_MODES[$i]}"*) ;;
+                *) uniq="${uniq}${PREV_MODES[$i]} " ;;
+            esac
+        done
+        modes=$(echo "$uniq" | tr ' ' '/' | sed 's|/$||')
+        local summary="${#PREV_DEST_NAMES[@]} skill(s)"
+        [[ -n "$modes" ]]      && summary="$summary ($modes)"
+        [[ -n "$PREV_PREFIX" ]] && summary="$summary  prefix: $PREV_PREFIX"
+        echo "  Installed: $summary"
+    fi
+    echo ""
+}
+
+set_initial_selection() {
+    # Explicit --skills= takes precedence over manifest state.
+    [[ -n "$SELECTED_SKILLS" ]] && return 0
+    [[ ${#PREV_DEST_NAMES[@]} -eq 0 ]] && return 0
+
+    local i j bare
+    for i in "${!SKILL_NAMES[@]}"; do
+        SKILL_SELECTED[$i]=0
+    done
+    for j in "${!PREV_DEST_NAMES[@]}"; do
+        bare=$(get_bare_skill_name "${PREV_DEST_NAMES[$j]}" "$PREV_PREFIX")
+        for i in "${!SKILL_NAMES[@]}"; do
+            if [[ "${SKILL_NAMES[$i]}" == "$bare" ]]; then
+                SKILL_SELECTED[$i]=1
+                break
+            fi
+        done
+    done
 }
 
 # ─── Dependency checking ────────────────────────────────────────────────────
@@ -373,9 +464,6 @@ interactive_select() {
     trap cleanup_ui EXIT INT TERM
     printf '\033[?25l'  # hide cursor
 
-    echo ""
-    print_color bold "  slang-skills installer"
-    echo ""
     echo "  Select skills to install:"
     echo ""
 
@@ -428,7 +516,7 @@ interactive_select() {
                 for i in "${!SKILL_SELECTED[@]}"; do
                     [[ "${SKILL_SELECTED[$i]}" == "1" ]] && any_selected=true && break
                 done
-                if [[ "$any_selected" == false ]]; then
+                if [[ "$any_selected" == false && ${#PREV_DEST_NAMES[@]} -eq 0 ]]; then
                     WARNING_MSG="No skills selected. Use [A] to select all or [Q] to quit."
                     WARNING_TTL=3
                 else
@@ -530,7 +618,7 @@ install_skill_copy() {
 }
 
 install_selected() {
-    local i installed=0 skipped=0
+    local i installed=0 skipped=0 removed=0
     local mode="symlink"
     [[ "$COPY_MODE" == true ]] && mode="copy"
 
@@ -538,6 +626,8 @@ install_selected() {
     [[ "$DRY_RUN" == true ]] && print_color yellow "=== DRY RUN ===\n"
 
     local manifest_entries=""
+    local manifest_path="$INSTALL_DIR/$MANIFEST_FILE"
+    local new_dest_names=()
 
     for i in "${!SKILL_NAMES[@]}"; do
         [[ "${SKILL_SELECTED[$i]}" == "0" ]] && continue
@@ -546,19 +636,21 @@ install_selected() {
         local dest_name="${PREFIX}${skill_name}"
         local dest_dir="$INSTALL_DIR/$dest_name"
 
-        # Check for existing non-managed installation
-        if [[ -d "$dest_dir" && "$DRY_RUN" == false ]]; then
-            local manifest_path="$INSTALL_DIR/$MANIFEST_FILE"
-            if [[ -f "$manifest_path" ]] && grep -q "^$dest_name:" "$manifest_path"; then
-                # Managed by us — safe to overwrite
-                :
-            elif [[ -f "$manifest_path" ]]; then
-                # Manifest exists but this skill isn't in it
+        # If the dest dir already exists AND a prior manifest didn't know about it,
+        # leave it alone — some other source owns it.
+        if [[ -d "$dest_dir" && "$DRY_RUN" == false && ${#PREV_DEST_NAMES[@]} -gt 0 ]]; then
+            local managed=false j
+            for j in "${!PREV_DEST_NAMES[@]}"; do
+                if [[ "${PREV_DEST_NAMES[$j]}" == "$dest_name" ]]; then
+                    managed=true
+                    break
+                fi
+            done
+            if [[ "$managed" == false ]]; then
                 print_color yellow "  Skipping $dest_name (exists, not managed by this installer)\n"
                 ((skipped++)) || true
                 continue
             fi
-            # No manifest at all — first install, proceed
         fi
 
         if [[ "$COPY_MODE" == true ]]; then
@@ -568,32 +660,66 @@ install_selected() {
         fi
 
         manifest_entries="${manifest_entries}${dest_name}:${mode}:${SKILLS_SRC_DIR}/${skill_name}\n"
+        new_dest_names+=("$dest_name")
         ((installed++)) || true
+    done
 
-        if [[ "$DRY_RUN" == false ]]; then
-            print_color green "  ✓ "
-            echo "$dest_name"
+    # Remove previously-installed skills that were unticked in this run.
+    local j k
+    for j in "${!PREV_DEST_NAMES[@]}"; do
+        local prev_name="${PREV_DEST_NAMES[$j]}"
+        local still_installed=false
+        for k in "${!new_dest_names[@]}"; do
+            if [[ "${new_dest_names[$k]}" == "$prev_name" ]]; then
+                still_installed=true
+                break
+            fi
+        done
+        [[ "$still_installed" == true ]] && continue
+
+        if [[ "$DRY_RUN" == true ]]; then
+            echo "  [dry-run] remove $prev_name (unticked)"
+            ((removed++)) || true
+            continue
+        fi
+
+        local prev_dir="$INSTALL_DIR/$prev_name"
+        if [[ -d "$prev_dir" ]]; then
+            rm -f "$prev_dir/SKILL.md"
+            rmdir "$prev_dir" 2>/dev/null || true
+            if [[ -d "$prev_dir" ]]; then
+                print_color yellow "  ~ $prev_name (directory not empty, kept)\n"
+            else
+                ((removed++)) || true
+            fi
+        else
+            ((removed++)) || true
         fi
     done
 
-    # Write manifest
-    if [[ "$DRY_RUN" == false && "$installed" -gt 0 ]]; then
-        local manifest_path="$INSTALL_DIR/$MANIFEST_FILE"
-        {
-            echo "# slang-skills manifest — do not edit manually"
-            echo "# installed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "# source: $SCRIPT_DIR"
-            echo "# mode: $mode"
-            [[ -n "$PREFIX" ]] && echo "# prefix: $PREFIX"
-            printf '%b' "$manifest_entries"
-        } > "$manifest_path"
+    # Write or clear the manifest.
+    if [[ "$DRY_RUN" == false ]]; then
+        if [[ "$installed" -gt 0 ]]; then
+            {
+                echo "# slang-skills manifest — do not edit manually"
+                echo "# installed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                echo "# source: $SCRIPT_DIR"
+                echo "# mode: $mode"
+                [[ -n "$PREFIX" ]] && echo "# prefix: $PREFIX"
+                printf '%b' "$manifest_entries"
+            } > "$manifest_path"
+        elif [[ -f "$manifest_path" ]]; then
+            # Nothing selected anymore — drop the manifest.
+            rm -f "$manifest_path"
+        fi
     fi
 
     echo ""
     if [[ "$DRY_RUN" == true ]]; then
-        echo "Dry run complete. $installed skill(s) would be installed."
+        echo "Dry run complete. $installed skill(s) would be installed, $removed removed."
     else
         echo "Installed $installed skill(s) to $INSTALL_DIR"
+        [[ "$removed" -gt 0 ]] && echo "Removed $removed skill(s) that were unticked."
         [[ "$skipped" -gt 0 ]] && echo "Skipped $skipped skill(s) (already installed by another source)."
         echo ""
         print_color dim "Restart Claude Code to load the new skills.\n"
@@ -681,143 +807,144 @@ uninstall_flow() {
 
 status_flow() {
     local manifest_path="$INSTALL_DIR/$MANIFEST_FILE"
+    local has_manifest=false
+    [[ -f "$manifest_path" ]] && has_manifest=true
 
     echo ""
     print_color bold "  slang-skills status\n"
     echo "  ─────────────────────────────────────"
     echo "  Install dir: $INSTALL_DIR"
 
-    if [[ ! -f "$manifest_path" ]]; then
-        echo ""
-        print_color dim "  No manifest at $manifest_path\n"
-        echo "  No skills are tracked by this installer here."
-        echo ""
-        exit 0
-    fi
-
-    # Parse header comments for metadata
+    # Parse header metadata (if manifest exists)
     local installed_at="" src_path="" mode="" prefix=""
-    while IFS= read -r line; do
-        case "$line" in
-            "# installed: "*) installed_at="${line#\# installed: }" ;;
-            "# source: "*)    src_path="${line#\# source: }" ;;
-            "# mode: "*)      mode="${line#\# mode: }" ;;
-            "# prefix: "*)    prefix="${line#\# prefix: }" ;;
-        esac
-    done < "$manifest_path"
+    if [[ "$has_manifest" == true ]]; then
+        while IFS= read -r line; do
+            case "$line" in
+                "# installed: "*) installed_at="${line#\# installed: }" ;;
+                "# source: "*)    src_path="${line#\# source: }" ;;
+                "# mode: "*)      mode="${line#\# mode: }" ;;
+                "# prefix: "*)    prefix="${line#\# prefix: }" ;;
+            esac
+        done < "$manifest_path"
 
-    [[ -n "$installed_at" ]] && echo "  Installed:   $installed_at"
-    [[ -n "$src_path" ]]     && echo "  Source:      $src_path"
-    [[ -n "$mode" ]]         && echo "  Mode:        $mode"
-    [[ -n "$prefix" ]]       && echo "  Prefix:      $prefix"
+        [[ -n "$installed_at" ]] && echo "  Installed:   $installed_at"
+        [[ -n "$src_path" ]]     && echo "  Source:      $src_path"
+        [[ -n "$mode" ]]         && echo "  Mode:        $mode"
+        [[ -n "$prefix" ]]       && echo "  Prefix:      $prefix"
+    else
+        print_color dim "  No manifest at $manifest_path\n"
+    fi
     echo "  ─────────────────────────────────────"
     echo ""
 
     local total=0 ok=0 broken=0
-    while IFS=: read -r name entry_mode source_path; do
-        [[ "$name" == "#"* || -z "$name" ]] && continue
-        ((total++)) || true
+    local installed_bare_names=()
 
-        local dest_dir="$INSTALL_DIR/$name"
-        local skill_md="$dest_dir/SKILL.md"
-        local state status_color status_text
+    if [[ "$has_manifest" == true ]]; then
+        while IFS=: read -r name entry_mode source_path; do
+            [[ "$name" == "#"* || -z "$name" ]] && continue
+            ((total++)) || true
 
-        if [[ "$entry_mode" == "symlink" ]]; then
-            if [[ -L "$skill_md" ]]; then
-                local target
-                target=$(readlink "$skill_md")
-                if [[ -e "$skill_md" ]]; then
-                    state="ok (→ $target)"
-                    status_color="green"
-                    status_text="✓"
+            local bare
+            bare=$(get_bare_skill_name "$name" "$prefix")
+            installed_bare_names+=("$bare")
+
+            local dest_dir="$INSTALL_DIR/$name"
+            local skill_md="$dest_dir/SKILL.md"
+            local state status_color status_text
+
+            if [[ "$entry_mode" == "symlink" ]]; then
+                if [[ -L "$skill_md" ]]; then
+                    local target
+                    target=$(readlink "$skill_md")
+                    if [[ -e "$skill_md" ]]; then
+                        state="ok (→ $target)"
+                        status_color="green"
+                        status_text="✓"
+                        ((ok++)) || true
+                    else
+                        state="dangling (→ $target)"
+                        status_color="red"
+                        status_text="✗"
+                        ((broken++)) || true
+                    fi
+                elif [[ -e "$skill_md" ]]; then
+                    state="not a symlink (mode changed?)"
+                    status_color="yellow"
+                    status_text="~"
                     ((ok++)) || true
                 else
-                    state="dangling (→ $target)"
+                    state="missing"
                     status_color="red"
                     status_text="✗"
                     ((broken++)) || true
                 fi
-            elif [[ -e "$skill_md" ]]; then
-                state="not a symlink (mode changed?)"
-                status_color="yellow"
-                status_text="~"
-                ((ok++)) || true
             else
-                state="missing"
-                status_color="red"
-                status_text="✗"
-                ((broken++)) || true
+                # copy mode
+                if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
+                    state="ok (copied from $source_path)"
+                    status_color="green"
+                    status_text="✓"
+                    ((ok++)) || true
+                elif [[ -e "$skill_md" ]]; then
+                    state="unexpected file type"
+                    status_color="yellow"
+                    status_text="~"
+                    ((ok++)) || true
+                else
+                    state="missing"
+                    status_color="red"
+                    status_text="✗"
+                    ((broken++)) || true
+                fi
             fi
-        else
-            # copy mode
-            if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
-                state="ok (copied from $source_path)"
-                status_color="green"
-                status_text="✓"
-                ((ok++)) || true
-            elif [[ -e "$skill_md" ]]; then
-                state="unexpected file type"
-                status_color="yellow"
-                status_text="~"
-                ((ok++)) || true
-            else
-                state="missing"
-                status_color="red"
-                status_text="✗"
-                ((broken++)) || true
-            fi
-        fi
 
-        print_color "$status_color" "  $status_text "
-        printf '%-32s ' "$name"
-        print_color dim "$state"
-        echo ""
-    done < "$manifest_path"
+            print_color "$status_color" "  $status_text "
+            printf '%-32s ' "$name"
+            print_color dim "$state"
+            echo ""
+        done < "$manifest_path"
+    fi
+
+    # List available-but-not-installed skills (from the source dir)
+    local not_installed=0
+    if [[ -d "$SKILLS_SRC_DIR" ]]; then
+        local d n installed_match
+        for d in "$SKILLS_SRC_DIR"/*/; do
+            [[ -f "$d/SKILL.md" ]] || continue
+            n=$(basename "$d")
+            installed_match=false
+            local j
+            for j in "${!installed_bare_names[@]}"; do
+                if [[ "${installed_bare_names[$j]}" == "$n" ]]; then
+                    installed_match=true
+                    break
+                fi
+            done
+            [[ "$installed_match" == true ]] && continue
+            print_color dim "  [ ] "
+            printf '%-32s ' "$n"
+            print_color dim "not installed"
+            echo ""
+            ((not_installed++)) || true
+        done
+    fi
 
     echo ""
-    if [[ "$total" -eq 0 ]]; then
+    if [[ "$total" -eq 0 && "$not_installed" -eq 0 ]]; then
         echo "  No skills listed in manifest."
-    elif [[ "$broken" -eq 0 ]]; then
-        echo "  $total skill(s) installed, all healthy."
     else
-        print_color yellow "  $total skill(s) installed, $broken broken.\n"
-        echo "  Re-run ./install.sh to repair, or ./install.sh --uninstall to clear."
+        local summary="  $total skill(s) installed"
+        [[ "$broken" -gt 0 ]]        && summary="$summary, $broken broken"
+        [[ "$not_installed" -gt 0 ]] && summary="$summary, $not_installed available to install"
+        if [[ "$broken" -gt 0 ]]; then
+            print_color yellow "$summary.\n"
+            echo "  Re-run ./install.sh to repair, or ./install.sh --uninstall to clear."
+        else
+            echo "$summary."
+        fi
     fi
     echo ""
-}
-
-# ─── Confirmation prompt ────────────────────────────────────────────────────
-
-confirm_install() {
-    local mode="symlink"
-    [[ "$COPY_MODE" == true ]] && mode="copy"
-
-    local selected_count=0 i
-    for i in "${!SKILL_SELECTED[@]}"; do
-        [[ "${SKILL_SELECTED[$i]}" == "1" ]] && ((selected_count++)) || true
-    done
-
-    echo ""
-    print_color bold "  Install summary\n"
-    echo "  ─────────────────────────────────────"
-    echo "  Skills:    $selected_count"
-    echo "  Mode:      $mode"
-    echo "  Target:    $INSTALL_DIR"
-    [[ -n "$PREFIX" ]] && echo "  Prefix:    $PREFIX"
-    echo "  ─────────────────────────────────────"
-    echo ""
-
-    if [[ "$NON_INTERACTIVE" == true || "$DRY_RUN" == true ]]; then
-        return
-    fi
-
-    printf '  Proceed? [Y/n] '
-    local reply
-    read -r reply
-    if [[ "$reply" =~ ^[Nn] ]]; then
-        echo "  Aborted."
-        exit 0
-    fi
 }
 
 # ─── Main ───────────────────────────────────────────────────────────────────
@@ -839,8 +966,12 @@ main() {
         exit 0
     fi
 
+    # Parse any existing installation BEFORE the UI so we can pre-seed state.
+    parse_existing_manifest
+
     # Discover available skills
     discover_skills
+    set_initial_selection
 
     # Check symlink support
     if [[ "$COPY_MODE" == false ]]; then
@@ -852,6 +983,8 @@ main() {
         print_color dim "Note: --prefix implies copy mode (cannot prefix symlinks)\n"
         COPY_MODE=true
     fi
+
+    write_install_header
 
     # Interactive or non-interactive selection
     if [[ "$NON_INTERACTIVE" == true ]]; then
@@ -873,8 +1006,6 @@ main() {
         mkdir -p "$INSTALL_DIR"
     fi
 
-    # Confirm and install
-    confirm_install
     install_selected
 }
 
