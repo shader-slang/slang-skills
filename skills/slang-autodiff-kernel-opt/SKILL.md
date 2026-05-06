@@ -224,15 +224,39 @@ to switch globally to `[MaxIters]`, add a generic threshold parameter and choose
 the loop annotation from compile-time constants. This lets each task or kernel
 specialization opt into loop replay only where profiling proves it helps.
 
-Implementation sketch:
-- Add a generic threshold parameter to the shared helper, for example
-  `Helper<TripCount, ReplayThreshold>`.
-- Inside the helper, use `[MaxIters(TripCount)]` when
-  `TripCount > ReplayThreshold`; otherwise keep `[ForceUnroll]`.
-- For call sites that should stay unrolled, pass a conservative high threshold
-  such as `1024`.
-- For the specific large-loop specialization that benefits from replay, pass a
-  threshold just below its trip count, such as `44` for a 45-iteration loop.
+```slang
+interface IComponentWork
+{
+    [Differentiable]
+    void run(no_diff uint elementId, no_diff int componentId);
+};
+
+[Differentiable]
+void visitComponents<Work, let ComponentCount : int, let ReplayThreshold : int>(
+    Work work,
+    no_diff uint elementId)
+    where Work : IComponentWork
+{
+    if (ComponentCount > ReplayThreshold) {
+        [MaxIters(ComponentCount)]
+        for (int componentId = 0; componentId < ComponentCount; ++componentId) {
+            work.run(elementId, componentId);
+        }
+    }
+    else {
+        [ForceUnroll]
+        for (int componentId = 0; componentId < ComponentCount; ++componentId) {
+            work.run(elementId, componentId);
+        }
+    }
+}
+
+// Keep small or sensitive call sites unrolled.
+visitComponents<SmallWork, 20, 1024>(smallWork, elementId);
+
+// Replay only the specialization where 45 iterations reduced register pressure.
+visitComponents<LargeWork, 45, 44>(largeWork, elementId);
+```
 
 Use this pattern when:
 - A global `[MaxIters]` change improves one kernel but regresses another.
