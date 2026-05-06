@@ -226,25 +226,19 @@ specialization opt into loop replay only where profiling proves it helps.
 
 ```slang
 [Differentiable]
-void doComponentWork(no_diff uint elementId, no_diff int componentId)
-{
-    // Put the per-component differentiable work here.
-}
-
-[Differentiable]
 void visitComponents<let ComponentCount : int, let ReplayThreshold : int>(
     no_diff uint elementId)
 {
     if (ComponentCount > ReplayThreshold) {
         [MaxIters(ComponentCount)]
         for (int componentId = 0; componentId < ComponentCount; ++componentId) {
-            doComponentWork(elementId, componentId);
+            // Call the target differentiable function here.
         }
     }
     else {
         [ForceUnroll]
         for (int componentId = 0; componentId < ComponentCount; ++componentId) {
-            doComponentWork(elementId, componentId);
+            // Call the target differentiable function here.
         }
     }
 }
