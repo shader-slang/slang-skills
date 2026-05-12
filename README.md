@@ -4,6 +4,12 @@ Claude Code skills for the [Slang](https://github.com/shader-slang/slang) shader
 
 ## Quick Start
 
+**Install with gh skill:**
+
+```bash
+gh skill install https://github.com/shader-slang/slang-skills
+```
+
 **macOS / Linux / WSL / Git Bash:**
 
 ```bash
