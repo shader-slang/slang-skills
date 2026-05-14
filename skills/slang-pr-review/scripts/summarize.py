@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Summarize a slang-pr-review run directory.
 
-Reads stream.jsonl, posted-review.json (live-on-fork), final-review.md,
-and the preserved subagent outputs. Emits severity counts, per-subagent
-cost attribution, drift signals, total cost.
+Reads stream.jsonl, final-review.md, and the preserved subagent outputs.
+Emits severity counts, per-subagent cost attribution, total cost, and a
+drift signal: GitHub-write tool attempts must be 0 (the skill is
+read-only). Non-zero indicates the allowlist leaked.
 """
 from __future__ import annotations
 
@@ -69,22 +70,12 @@ def main() -> int:
 
     events = load_stream(run_dir / "stream.jsonl")
     final_md = (run_dir / "final-review.md").read_text() if (run_dir / "final-review.md").exists() else ""
-    posted = None
-    if (run_dir / "posted-review.json").exists():
-        try:
-            posted = json.loads((run_dir / "posted-review.json").read_text())
-        except Exception:
-            posted = None
 
     print(f"=== Run: {run_dir.name} ===")
     print()
 
-    # Findings — prefer the live posted-review body (authoritative for live mode);
-    # else the dry-run final markdown.
-    posted_body = (posted or {}).get("body") if posted else None
-    candidate_text = posted_body or final_md
-    counts = severity_counts(candidate_text)
-    verdict = parse_verdict_line(candidate_text)
+    counts = severity_counts(final_md)
+    verdict = parse_verdict_line(final_md)
 
     if verdict:
         b, g, q = verdict
@@ -93,10 +84,6 @@ def main() -> int:
     print(f"  🔴 Bug:      {counts['bug']}")
     print(f"  🟡 Gap:      {counts['gap']}")
     print(f"  🔵 Question: {counts['question']}")
-
-    # Live mode: count actual posted inline comments
-    if posted and isinstance(posted.get("comments"), list):
-        print(f"Posted inline comments: {len(posted['comments'])} (live-on-fork)")
 
     print()
 
@@ -126,7 +113,7 @@ def main() -> int:
         print(f"  {n:4d}  {name}")
     print()
     print(f"GitHub-write tool attempts: {write_attempts}")
-    print("  (in dry-run this should be 0 — non-zero indicates trailer was ignored)")
+    print("  (must be 0 — the read-only allowlist excludes these tools; non-zero = drift)")
     print()
 
     # Subagent attribution

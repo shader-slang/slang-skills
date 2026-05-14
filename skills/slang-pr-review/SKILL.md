@@ -1,9 +1,9 @@
 ---
 name: slang-pr-review
 license: MIT
-description: "Reproduces the shader-slang/slang production PR-review bot (anthropics/claude-code-action@v1 + .github/workflows/claude-pr-review.yml) locally. Same claude CLI, same user prompt, same system-prompt append, same model, same six .claude/agents/* subagents, same deepwiki MCP. Dry-run by default; --live-on-fork posts as nv-slang-bot[bot] but only against szihs/* repos. Used by the /slang-pr-review workflow."
+description: "Reproduces the shader-slang/slang production PR-review bot (anthropics/claude-code-action@v1 + .github/workflows/claude-pr-review.yml) locally — read-only. Same claude CLI, same user prompt, same system-prompt append, same model, same six .claude/agents/* subagents, same deepwiki MCP. Always dry-run: produces final-review.md and the calling workflow returns it via send_file. Never writes back to GitHub (no PR comments, no review posts). Used by the /slang-pr-review workflow."
 provides: []
-argument-hint: "[--mode pr|branch|patch] [--pr N|--branch ref|--patch path] [--repo owner/name] [--live-on-fork] [--max-budget-usd $]"
+argument-hint: "[--mode pr|branch|patch] [--pr N|--branch ref|--patch path] [--repo owner/name] [--max-budget-usd $]"
 allowed-tools: Bash Read Write Edit Grep Glob mcp__deepwiki__ask_question mcp__nanoclaw__send_message mcp__nanoclaw__send_file
 ---
 
@@ -15,22 +15,24 @@ Bridges the `/slang-pr-review` workflow's *what* (review this PR) to the *how* (
 
 | Script | Used in workflow Step | What it does |
 |---|---|---|
-| `scripts/install.sh` | Step 1 (Preflight) | Idempotent install of `claude` CLI, `mcp-server-github`, and `slang/` checkout. Safe to re-run. |
-| `scripts/compose-and-run.sh` | Step 2 (Compose & run) | Top-level entry. Constructs prompt + flags + MCP config from the input mode and invokes `claude --print`. Writes a transcript directory under `transcripts/`. |
-| `scripts/repro.sh` | (called by compose-and-run.sh) | The actual `claude` CLI invocation. Mirrors production byte-for-byte. |
-| `scripts/cleanup.sh` | (called by compose-and-run.sh in `--live-on-fork`) | Pre-step: minimize prior `nv-slang-bot[bot]` reviews / threads / comments on the target PR via GraphQL. Faithful port of `claude-pr-review.yml` lines 131–184. Refuses any non-szihs repo. |
-| `scripts/summarize.py` | Step 3 (Summarize) | Parses `stream.jsonl`, `posted-review.json`, and per-subagent `task_notification.output_file`s. Emits severity counts, per-subagent cost, drift signals. |
+| `scripts/install.sh` | Preflight | Idempotent install of `claude` CLI and `slang/` checkout. Safe to re-run. |
+| `scripts/compose-and-run.sh` | Reviewer A | Top-level entry. Constructs prompt + flags + MCP config from the input mode and invokes `claude --print`. Writes a transcript directory under `transcripts/`. Returns `final-review.md`. |
+| `scripts/repro.sh` | (called by compose-and-run.sh) | The actual `claude` CLI invocation. Mirrors production byte-for-byte for read-only review. |
+| `scripts/devin-fetch.sh` | Reviewer B | Drives `agent-browser` to load `app.devin.ai/review/...`, polls for "Analysis complete", expands flags, extracts the AI analysis + flag list to `devin-flags.md`. Exits 2 on auth-wall, 3 on timeout — workflow treats both as best-effort skip. |
+| `scripts/summarize.py` | Summarize | Parses `stream.jsonl` and per-subagent `task_notification.output_file`s. Emits severity counts, per-subagent cost, drift signals. Counts GitHub-write tool attempts as a drift safety check (must be 0 — non-zero indicates the read-only allowlist leaked). |
 
 ## Modes
 
+All three modes are read-only — the review is written to `final-review.md` and returned via `send_file`. Never posted to GitHub.
+
 ### `--mode pr` (most common)
-`gh pr diff <PR> -R <REPO>` is the source of "what to review". Live-on-fork mode posts the review back to that PR via the github MCP `create_pull_request_review` tool with `event="COMMENT"`.
+`gh pr diff <PR> -R <REPO>` is the source of "what to review".
 
 ### `--mode branch`
-`git diff <base>..<branch>` is the source. No canonical PR → never posts; final review is sent via `mcp__nanoclaw__send_file`.
+`git diff <base>..<branch>` is the source.
 
 ### `--mode patch`
-A unified diff (or markdown attachment containing one) is applied to a temp branch on the local `slang/` checkout. `git diff <temp_branch>` becomes the review target. After the run, the temp branch is deleted; `slang/master` is untouched. Never posts.
+A unified diff (or markdown attachment containing one) is applied to a temp branch on the local `slang/` checkout. `git diff <temp_branch>` becomes the review target. After the run, the temp branch is deleted; `slang/master` is untouched.
 
 ## Byte-equivalence with production
 
@@ -50,18 +52,11 @@ The skill is pinned to a specific commit of `anthropics/claude-code-action`. The
 
 This is the same approach we used during initial harness development; promoted into a CI-enforced contract.
 
-## Tool-name divergence (live-on-fork)
-
-The npm `@modelcontextprotocol/server-github` package this skill installs exposes `mcp__github__create_pull_request_review` (single-shot with inline `comments: [...]`). Production uses the Docker `ghcr.io/github/github-mcp-server` image which exposes a 3-call pending-review trio (`create_pending_pull_request_review` + `add_comment_to_pending_review` + `submit_pending_pull_request_review`).
-
-The LIVE-ON-FORK trailer in `prompt-templates/user-prompt.template` tells the model to collapse the 3-call pattern into one `create_pull_request_review` call with `event="COMMENT"`. Final posted review on GitHub is semantically equivalent; internal mechanism is not.
-
-If maintenance burden of the divergence becomes painful, the alternative is shipping a thin gh-cli-backed wrapper MCP that exposes the production tool names. Out of scope for this skill's v1.
-
 ## Gotchas
 
 - **mkdir / redirect retry dance.** The claude CLI sandbox blocks `mkdir tmp` and `> tmp/pr-diff.patch` under CWD. The model burns ~60 s retrying before giving up and using `gh pr diff` bare. Happens in production too — observed in the reference run. Pre-computing the diff out-of-band would skip this loop but break byte-equivalence; skill preserves the dance.
 - **Subagent output files cleared by container restart.** `task_notification.output_file` paths in `stream.jsonl` point to `/tmp/...` — these vanish on restart. `compose-and-run.sh` includes a post-exit hook that copies them into `<run_dir>/subagents/<task_id>.output` before they're cleared.
-- **Live-on-fork token swap.** `GH_TOKEN` must resolve to a token with `pull_requests: write` and `issues: write` on the target szihs repo. nv-slang-bot installation 122269597 (szihs) qualifies. The slang-coworkers installation does NOT; pushing or PR-creation will 403.
-- **Stale `.local/bin` after restart.** Container restarts may wipe `~/.local/bin`. `install.sh` is idempotent — first call after a restart re-installs claude CLI + mcp-server-github.
+- **gh auth is read-only.** `GH_TOKEN` only needs read access on the target repo for `gh pr diff`. The skill never posts back to GitHub — the read-only allowlist excludes `mcp__github__create_pull_request_review` / `add_issue_comment` / etc., and `summarize.py` flags any attempt as drift.
+- **Stale `.local/bin` after restart.** Container restarts may wipe `~/.local/bin`. `install.sh` is idempotent — first call after a restart re-installs claude CLI.
 - **Editing local REVIEW.md is for iteration only.** A/B-test changes to `/workspace/agent/slang/REVIEW.md` stay local; never push from the coworker. A real proposal goes via a separate PR to shader-slang/slang.
+- **Devin scrape is brittle.** `devin-fetch.sh` keeps selectors minimal (heading text + `Flags` button). DOM changes upstream will break it; the script fails gracefully and the workflow treats Reviewer B as best-effort.

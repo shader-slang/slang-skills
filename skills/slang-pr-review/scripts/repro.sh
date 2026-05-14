@@ -9,7 +9,6 @@
 #   BRANCH_REF      <branch name>           (branch only)
 #   BRANCH_BASE     <base ref>              (branch only — diff base)
 #   PATCH_FILE      <path>                  (patch only)
-#   LIVE_ON_FORK    1 | 0
 #   MAX_BUDGET_USD  <float>
 #   MAX_TURNS       <int>
 #   MODEL           <model id>
@@ -21,7 +20,9 @@
 set -euo pipefail
 
 : "${MODE:?MODE not set}"
-: "${LIVE_ON_FORK:?LIVE_ON_FORK not set}"
+# LIVE_ON_FORK was removed — this skill always returns final-review.md to
+# the caller via send_file (no GitHub posting). The dry-run trailer + dry-run
+# tool allowlist + dry-run MCP config are now the only path.
 : "${REPO_ROOT:?REPO_ROOT not set}"
 : "${RUN_DIR:?RUN_DIR not set}"
 : "${SKILL_DIR:?SKILL_DIR not set}"
@@ -49,11 +50,7 @@ case "$MODE" in
     ;;
 esac
 
-if [[ "$LIVE_ON_FORK" == "1" ]]; then
-  TRAILER='LIVE-ON-FORK MODE: Posting is enabled against the szihs/* fork only. Follow REVIEW.md Step 5 to post ONE review via the GitHub MCP. Note: this harness exposes `create_pull_request_review` (single-shot with inline `comments: [...]`) instead of the 3-call pending-review trio. Put the review body + every inline comment into a single `create_pull_request_review` call with event="COMMENT". Never call APPROVE or REQUEST_CHANGES.'
-else
-  TRAILER='DRY RUN MODE: Do NOT call any GitHub-write tool. Skip Step 5 of REVIEW.md. After completing all reviewer dispatches and your filter pass, output the COMPLETE final review (review body + every inline comment with `file:line` headers) as plain markdown in your final assistant message. End the session after that markdown block.'
-fi
+TRAILER='DO NOT call any GitHub-write tool. Skip Step 5 of REVIEW.md. After completing all reviewer dispatches and your filter pass, output the COMPLETE final review (review body + every inline comment with `file:line` headers) as plain markdown in your final assistant message. End the session after that markdown block. The harness writes that markdown to `final-review.md` and the calling workflow returns it to the requester via `send_file`.'
 
 PROMPT_FILE="$RUN_DIR/prompt.txt"
 cat > "$PROMPT_FILE" <<EOF
@@ -80,7 +77,9 @@ SYSTEM_APPEND="$(cat "$SKILL_DIR/prompt-templates/system-prompt-append.txt")"
 
 # --- Tool allowlist --------------------------------------------------------
 
-read -r -d '' ALLOWED_DRYRUN <<'EOF' || true
+# Read-only tool allowlist. NO GitHub-write tools — this skill never posts
+# back to GitHub. Output is final-review.md returned via send_file.
+read -r -d '' ALLOWED <<'EOF' || true
 Read,View,Glob,GlobTool,Grep,GrepTool,Agent,BatchTool,
 Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),
 Bash(grep *),Bash(grep -*),
@@ -90,45 +89,12 @@ Bash(gh pr diff*),Bash(gh pr view*),Bash(gh pr list*),Bash(gh pr checks*),
 Bash(gh api repos/*/pulls/*),Bash(gh api repos/*/issues/*),
 mcp__deepwiki__ask_question
 EOF
-
-read -r -d '' ALLOWED_LIVE <<'EOF' || true
-Read,View,Glob,GlobTool,Grep,GrepTool,Agent,BatchTool,
-Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),
-Bash(grep *),Bash(grep -*),
-Bash(cat *),Bash(head *),Bash(tail *),
-Bash(ls *),Bash(find *),Bash(wc *),
-Bash(gh pr diff*),Bash(gh pr view*),Bash(gh pr list*),Bash(gh pr checks*),
-Bash(gh api repos/*/pulls/*),Bash(gh api repos/*/issues/*),
-mcp__deepwiki__ask_question,
-mcp__github__get_pull_request,
-mcp__github__get_pull_request_files,
-mcp__github__get_pull_request_comments,
-mcp__github__get_pull_request_reviews,
-mcp__github__get_pull_request_status,
-mcp__github__get_issue,
-mcp__github__create_pull_request_review,
-mcp__github__add_issue_comment
-EOF
-
-if [[ "$LIVE_ON_FORK" == "1" ]]; then
-  ALLOWED="$ALLOWED_LIVE"
-  MCP_CONFIG="$SKILL_DIR/prompt-templates/mcp.live.json"
-else
-  ALLOWED="$ALLOWED_DRYRUN"
-  MCP_CONFIG="$SKILL_DIR/prompt-templates/mcp.dryrun.json"
-fi
+MCP_CONFIG="$SKILL_DIR/prompt-templates/mcp.dryrun.json"
 ALLOWED="$(echo "$ALLOWED" | tr -d '\n' | tr -s ' ' | sed 's/, /,/g')"
-
-# --- Live-on-fork pre-step: cleanup ---------------------------------------
-
-if [[ "$LIVE_ON_FORK" == "1" ]]; then
-  bash "$HERE/cleanup.sh" "$REPO" "$PR_NUMBER" "${REPRO_PR_CLEANUP_LOGIN:-nv-slang-bot}" 2>&1 \
-    | tee "$RUN_DIR/cleanup.log"
-fi
 
 # --- Run claude ------------------------------------------------------------
 
-echo ">>> repro.sh: pr=${PROMPT_PR} repo=${PROMPT_REPO} mode=${MODE} live=${LIVE_ON_FORK}"
+echo ">>> repro.sh: pr=${PROMPT_PR} repo=${PROMPT_REPO} mode=${MODE}"
 echo ">>> REPO_ROOT=$REPO_ROOT"
 echo ">>> mcp-config=$MCP_CONFIG"
 echo ">>> output → $RUN_DIR"
@@ -183,27 +149,6 @@ with open("$RUN_DIR/stream.jsonl") as f:
                 print(json.dumps({"name": b.get("name"), "input": b.get("input")}))
 PY
 
-# Live-on-fork: extract the create_pull_request_review input as posted-review.json
-if [[ "$LIVE_ON_FORK" == "1" ]]; then
-  python3 - <<PY > "$RUN_DIR/posted-review.json"
-import json
-posted=None
-with open("$RUN_DIR/stream.jsonl") as f:
-    for line in f:
-        line=line.strip()
-        if not line.startswith("{"): continue
-        try: rec=json.loads(line)
-        except: continue
-        if rec.get("type")!="assistant": continue
-        for b in rec.get("message",{}).get("content",[]):
-            if b.get("type")=="tool_use" and "create_pull_request_review" in (b.get("name","")):
-                posted = b.get("input")
-                break
-        if posted: break
-print(json.dumps(posted or {}, indent=2))
-PY
-fi
-
 # Subagent output preservation — copy task_notification.output_file's that still exist
 mkdir -p "$RUN_DIR/subagents"
 python3 - <<PY
@@ -228,5 +173,4 @@ echo ">>> repro.sh: done"
 echo ">>> stream:        $RUN_DIR/stream.jsonl"
 echo ">>> final review:  $RUN_DIR/final-review.md"
 echo ">>> tool calls:    $RUN_DIR/tool-uses.jsonl"
-[[ "$LIVE_ON_FORK" == "1" ]] && echo ">>> posted review: $RUN_DIR/posted-review.json"
 echo ">>> subagents:     $RUN_DIR/subagents/"

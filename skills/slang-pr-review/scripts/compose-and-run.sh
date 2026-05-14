@@ -4,7 +4,7 @@
 # accordingly, then delegates to repro.sh for the actual claude invocation.
 #
 # Usage:
-#   compose-and-run.sh --mode pr     --pr <N>  --repo <owner/repo> [--live-on-fork] [--max-budget-usd $]
+#   compose-and-run.sh --mode pr     --pr <N>  --repo <owner/repo> [--max-budget-usd $]
 #   compose-and-run.sh --mode branch --branch <ref> --repo <owner/repo>
 #   compose-and-run.sh --mode patch  --patch <path> [--base <ref>]
 
@@ -21,7 +21,6 @@ BRANCH_REF=""
 BRANCH_BASE="origin/master"
 PATCH_FILE=""
 REPO=""
-LIVE_ON_FORK=0
 MAX_BUDGET_USD="${REPRO_PR_MAX_BUDGET_USD:-30}"
 MAX_TURNS="${REPRO_PR_MAX_TURNS:-500}"
 MODEL="${REPRO_PR_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus}}"
@@ -34,7 +33,6 @@ while (($#)); do
     --base) BRANCH_BASE="$2"; shift 2 ;;
     --patch) PATCH_FILE="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
-    --live-on-fork) LIVE_ON_FORK=1; shift ;;
     --max-budget-usd) MAX_BUDGET_USD="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
@@ -55,28 +53,16 @@ case "$MODE" in
   branch)
     [ -n "$BRANCH_REF" ] || { echo "error: --branch <ref> required for branch mode" >&2; exit 1; }
     [ -n "$REPO" ] || { echo "error: --repo <owner/repo> required for branch mode" >&2; exit 1; }
-    [ "$LIVE_ON_FORK" = "1" ] && { echo "error: --live-on-fork only valid in pr mode" >&2; exit 1; }
     ;;
   patch)
     [ -n "$PATCH_FILE" ] || { echo "error: --patch <path> required for patch mode" >&2; exit 1; }
     [ -f "$PATCH_FILE" ] || { echo "error: patch file not found: $PATCH_FILE" >&2; exit 1; }
-    [ "$LIVE_ON_FORK" = "1" ] && { echo "error: --live-on-fork only valid in pr mode" >&2; exit 1; }
     ;;
   *)
     echo "error: --mode must be pr | branch | patch (got: $MODE)" >&2
     exit 1
     ;;
 esac
-
-# Live-on-fork hard guard — refuses any non-szihs/* repo.
-if [ "$LIVE_ON_FORK" = "1" ]; then
-  [[ "$REPO" == szihs/* ]] || {
-    echo "error: --live-on-fork requires --repo szihs/* (got: $REPO). Refusing to post to non-fork repo." >&2
-    exit 1
-  }
-  command -v "$HOME/.local/bin/mcp-server-github" >/dev/null \
-    || { echo "error: mcp-server-github missing. Run install.sh." >&2; exit 1; }
-fi
 
 # Tooling sanity
 command -v claude >/dev/null || { echo "error: claude CLI not in PATH. Run install.sh." >&2; exit 1; }
@@ -130,7 +116,7 @@ RUN_DIR="$SKILL_DIR/transcripts/${MODE}-${TS}"
 mkdir -p "$RUN_DIR"
 
 export MODE REPO PR_NUMBER BRANCH_REF BRANCH_BASE PATCH_FILE
-export LIVE_ON_FORK MAX_BUDGET_USD MAX_TURNS MODEL
+export MAX_BUDGET_USD MAX_TURNS MODEL
 export REPO_ROOT RUN_DIR HERE SKILL_DIR
 
 bash "$HERE/repro.sh"

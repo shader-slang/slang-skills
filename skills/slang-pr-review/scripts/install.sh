@@ -16,12 +16,11 @@ if ! "$PREFIX/bin/claude" --version >/dev/null 2>&1; then
 fi
 echo "    claude:              $($PREFIX/bin/claude --version 2>&1 | head -1)"
 
-# github MCP server (only required for --live-on-fork; install regardless)
-if [ ! -x "$PREFIX/bin/mcp-server-github" ]; then
-  echo ">>> installing @modelcontextprotocol/server-github"
-  npm install -g --prefix "$PREFIX" @modelcontextprotocol/server-github >/dev/null 2>&1
-fi
-echo "    mcp-server-github:   $(test -x $PREFIX/bin/mcp-server-github && echo OK)"
+# mcp-server-github was previously installed for --live-on-fork (PR-review
+# posting via GitHub MCP). That mode has been removed — output now flows
+# back to the calling coworker via send_file. We deliberately do NOT
+# install mcp-server-github any more, and the dry-run MCP config does not
+# reference it.
 
 # slang checkout (depth-50 master)
 SLANG_REPO="${SLANG_REPO:-/workspace/agent/slang}"
@@ -39,9 +38,9 @@ echo "    slang/ checkout:     $SLANG_REPO ($(cd $SLANG_REPO && git rev-parse --
 echo "    REVIEW.md:           OK"
 echo "    .claude/agents/:     $(ls $SLANG_REPO/.claude/agents | wc -l) subagents"
 
-# gh auth
+# gh auth (read-only — needed for `gh pr diff` etc. in pr/branch modes)
 if ! gh auth status >/dev/null 2>&1; then
-  echo ">>> warning: gh auth not configured — dry-run still works (uses gh pr diff with no token), but --live-on-fork will fail" >&2
+  echo ">>> warning: gh auth not configured — pr/branch modes need a token to read the diff" >&2
 else
   echo "    gh auth:             $(gh auth status 2>&1 | grep 'Logged in' | head -1 | sed 's/^[ ]*//')"
 fi
