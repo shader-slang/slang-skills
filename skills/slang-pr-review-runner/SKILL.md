@@ -2,7 +2,7 @@
 name: slang-pr-review-runner
 license: MIT
 description: "Reproduces the shader-slang/slang production PR-review bot (anthropics/claude-code-action@v1 + .github/workflows/claude-pr-review.yml) locally — read-only. Same claude CLI, same user prompt, same system-prompt append, same model, same six .claude/agents/* subagents, same deepwiki MCP. Always dry-run: produces final-review.md and the calling workflow returns it via send_file. Never writes back to GitHub (no PR comments, no review posts). Used by the /slang-pr-review workflow."
-provides: []
+provides: [critique.review]
 argument-hint: "[--mode pr|branch|patch] [--pr N|--branch ref|--patch path] [--repo owner/name] [--max-budget-usd $]"
 allowed-tools: Bash Read Write Edit Grep Glob mcp__deepwiki__ask_question mcp__nanoclaw__send_message mcp__nanoclaw__send_file
 ---
