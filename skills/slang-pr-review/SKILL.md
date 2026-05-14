@@ -34,23 +34,29 @@ All three modes are read-only — the review is written to `final-review.md` and
 ### `--mode patch`
 A unified diff (or markdown attachment containing one) is applied to a temp branch on the local `slang/` checkout. `git diff <temp_branch>` becomes the review target. After the run, the temp branch is deleted; `slang/master` is untouched.
 
-## Byte-equivalence with production
+## Equivalence with production — and the deliberate gaps
 
-The skill is pinned to a specific commit of `anthropics/claude-code-action`. The pin is in `reference/claude-code-action.lock`. The reference directory contains:
+The skill is pinned to a specific commit of `anthropics/claude-code-action` (`reference/claude-code-action.lock`). What the reviewer **sees** is byte-equivalent to production:
 
-- `instructions.md` — what the action sends the SDK (verbatim system prompt preset reference, allowed-tools schema, MCP auto-injection rules)
-- `instructions-overlay.md` — what `.github/workflows/claude-pr-review.yml` adds on top (user prompt, system-prompt append, tool allowlist, MCP config)
-- `runs/run-25338177724.log` — a known-good production run log used as the byte-comparison fixture
-- `validate.sh` — diffs five extracts from the run log against the same five extracts from this skill's prompt-templates and reports a 5/5 byte match
+- ✅ Same model, same six `.claude/agents/*` subagents, same `REVIEW.md` protocol
+- ✅ Same user-prompt scaffold (REPO / PR NUMBER / "read REVIEW.md FIRST" preamble)
+- ✅ Same `system-prompt-append.txt`
+- ✅ Same `deepwiki` MCP server
 
-`validate.sh` runs in nanoclaw CI on every PR to this skill (and on a weekly schedule). When `claude-code-action` upstream ships a change that affects the prompt, the user-prompt template, the system-prompt append, the model ID, or the MCP server set, validate.sh fails. Procedure to update:
+What the reviewer **can do** deliberately diverges from production, because this skill is read-only:
+
+- ❌ **TRAILER differs** — production tells the model to post the review via GitHub MCP; this skill tells the model to output the markdown and end. Findings shouldn't change, but the final assistant turn does.
+- ❌ **Tool allowlist excludes GitHub-write tools** (no `create_pull_request_review`, `add_issue_comment`, etc.) — `summarize.py` flags any attempt as drift.
+- ❌ **MCP server set excludes `mcp-server-github`** — read-only paths use `gh pr diff` via Bash; the GitHub MCP server is only needed for posting.
+
+`validate.sh` checks the byte-equivalent extracts (model ID, user-prompt scaffold, system-prompt append, subagent set, deepwiki MCP). It does NOT diff the trailer or the tool allowlist — those are intentionally divergent. When `claude-code-action` upstream ships a change that affects the prompt scaffold, system-prompt append, model ID, or non-GitHub MCP server set, validate.sh fails. Procedure to update:
 
 1. Fetch a fresh production run log (any successful run of `claude-pr-review.yml` on shader-slang/slang)
-2. Update `reference/runs/<run_id>.log`, `reference/instructions.md`, `reference/instructions-overlay.md`, `prompt-templates/*` to match
+2. Update `reference/runs/<run_id>.log`, `reference/instructions.md`, `reference/instructions-overlay.md`, `prompt-templates/*` to match (skipping live-mode-only fields)
 3. Bump `reference/claude-code-action.lock` to the new commit SHA
-4. Re-run `validate.sh`; PR lands when 5/5 byte-match restores
+4. Re-run `validate.sh`; PR lands when the read-only-relevant extracts byte-match again
 
-This is the same approach we used during initial harness development; promoted into a CI-enforced contract.
+If production changes drive different *findings* (e.g. a new subagent, a REVIEW.md protocol change), pull those into the local `slang/` checkout — the skill reads `REVIEW.md` and `.claude/agents/*` live, not from `prompt-templates/`.
 
 ## Gotchas
 
