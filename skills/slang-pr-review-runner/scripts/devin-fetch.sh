@@ -29,11 +29,28 @@ done
 [ -n "$OUT" ] || { echo "error: --out required" >&2; exit 1; }
 mkdir -p "$OUT"
 
+# Normalize URL. Accept either a GitHub PR URL
+# (https://github.com/<owner>/<repo>/pull/<n>) — which is what /slang-pr-review
+# Step 2 produces — or an already-Devin URL
+# (https://app.devin.ai/review/<owner>/<repo>/pull/<n>). If the input is GitHub,
+# rewrite to the Devin review form so agent-browser opens the right page.
+if [[ "$URL" =~ ^https?://github\.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
+  OWNER="${BASH_REMATCH[1]}"
+  REPO="${BASH_REMATCH[2]}"
+  PR_NUM="${BASH_REMATCH[3]}"
+  URL="https://app.devin.ai/review/${OWNER}/${REPO}/pull/${PR_NUM}"
+  echo ">>> devin-fetch: rewrote GitHub URL → ${URL}"
+fi
+
 agent-browser open "$URL"
 sleep 5
 
-# Detect auth wall before polling
-if agent-browser eval 'document.body.innerText.toLowerCase().includes("sign in") || document.body.innerText.toLowerCase().includes("log in to view")' 2>/dev/null | grep -qi true; then
+# Detect auth wall before polling. Use a tight regex that targets phrases unique
+# to an auth-walled state (login modal / banner) — NOT a generic "sign in"
+# substring, which fires false-positive on Devin's navbar "Sign in" link even
+# when the page is otherwise loading content normally. The `i` flag in JS regex
+# is case-insensitive; `\b` ensures whole-word match.
+if agent-browser eval 'const t=document.body.innerText; /\b(log in to (?:view|access)|sign in to (?:view|access)|authentication required|please (?:log|sign) in to (?:view|access|continue))\b/i.test(t)' 2>/dev/null | grep -qi true; then
   echo "auth-wall: Devin requires login for this PR" > "$OUT/devin-error.txt"
   exit 2
 fi
