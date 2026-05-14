@@ -1,0 +1,22 @@
+# Pinned commit of anthropics/claude-code-action that this skill mirrors.
+# Bump only after re-running validate.sh against a fresh production run log.
+#
+# Format: <full sha> <git ref> <observed in production run id>
+#
+# Initial pin: the action version observed in shader-slang/slang production run
+# 25338177724 on 2026-05-04, byte-validated by review_artifacts/instructions/validate.sh.
+#
+# When upstream ships a new release that affects the prompt, system-prompt
+# append, model id, allowed-tools list, or auto-injected MCP servers,
+# validate.sh fails. To update:
+#   1. Fetch a fresh successful production run log from shader-slang/slang
+#   2. Save under reference/runs/run-<id>.log
+#   3. Update reference/instructions.md, reference/instructions-overlay.md,
+#      and any prompt-templates/* that drifted
+#   4. Bump this file to the new (sha, ref, run id) triple
+#   5. Re-run validate.sh — must pass 5/5 byte-match
+#
+# v1
+sha=v1.0.0
+ref=v1
+run=25338177724
