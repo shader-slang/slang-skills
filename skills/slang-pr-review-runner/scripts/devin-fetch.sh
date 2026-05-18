@@ -55,23 +55,43 @@ if agent-browser eval 'const t=document.body.innerText; /\b(log in to (?:view|ac
   exit 2
 fi
 
-# Poll until "Analysis complete"
+# Poll until analysis is done. Devin's UI does NOT render a literal
+# "Analysis complete" string when finished — the in-progress state shows
+# "PR analysis in progress" and the done state shows the "Devin's AI
+# analysis" heading plus a flags summary ("N Flags", "1 Flag", or "No
+# flags") and/or the checks panel ("All checks passed"/"checks failed").
+# Treat absence-of-progress + presence-of-result as "done".
+DONE_EXPR='(() => {
+  const t = document.body.innerText;
+  if (/PR analysis in progress/i.test(t)) return false;
+  if (!/Devin.s AI analysis/i.test(t)) return false;
+  return /\b\d+\s+Flags?\b/.test(t) || /\bNo flags\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t);
+})()'
+
 deadline=$(( $(date +%s) + MAX_MIN*60 ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  if agent-browser eval 'document.body.innerText.includes("Analysis complete") && !document.body.innerText.includes("PR analysis in progress")' 2>/dev/null | grep -qi true; then
+  if agent-browser eval "$DONE_EXPR" 2>/dev/null | grep -qi true; then
     break
   fi
   sleep "$POLL"
 done
 
 # Confirm complete (else timeout)
-if ! agent-browser eval 'document.body.innerText.includes("Analysis complete")' 2>/dev/null | grep -qi true; then
+if ! agent-browser eval "$DONE_EXPR" 2>/dev/null | grep -qi true; then
   echo "timeout: Devin did not complete within ${MAX_MIN}m" > "$OUT/devin-error.txt"
   exit 3
 fi
 
-# Expand flags
-agent-browser find text "Flags" click 2>/dev/null || true
+# Expand the Flags panel. The button text is "<N> Flags" / "1 Flag" /
+# "No flags", so a literal "Flags" find-text match misses the count
+# prefix. Click the matching toggle directly.
+agent-browser eval '(() => {
+  const btn = Array.from(document.querySelectorAll("button")).find(
+    (b) => /^(\d+\s+Flags?|No flags)$/i.test((b.textContent || "").trim())
+  );
+  if (btn) { btn.click(); return true; }
+  return false;
+})()' >/dev/null 2>&1 || true
 sleep 2
 
 # Extract narrative + flags
