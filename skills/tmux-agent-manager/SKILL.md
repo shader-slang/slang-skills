@@ -128,8 +128,8 @@ for state_dir in \
     session_name=$(basename "$f")
     # Remove file if no active agent session has this sanitized name
     if ! echo "$ACTIVE_AGENT_SESSIONS" \
-        | sed 's/[^a-zA-Z0-9]/_/g' \
-        | grep -qx "$session_name"; then
+        | sed 's/[^a-zA-Z0-9.-]/_/g' \
+        | grep -Fxq "$session_name"; then
       rm -f "$f"
     fi
   done
@@ -661,7 +661,9 @@ Tell the user this step is running; it may take up to a minute the first time.
 ### 7f — Create the tmux session
 
 ```bash
-$TMUX_EXEC new-session -d -s "<slug>" -c "$PARENT_SHELL/<slug>"
+TMUX_C_PATH="$PARENT_SHELL/<slug>"
+[ "$HOST" = "windows" ] && TMUX_C_PATH=$(wsl wslpath "$TMUX_C_PATH")
+$TMUX_EXEC new-session -d -s "<slug>" -c "$TMUX_C_PATH"
 ```
 
 ### 7g — Start Claude Code (or Codex)
