@@ -142,8 +142,8 @@ $TMUX_EXEC capture-pane -t "SESSION:W.P" -p | tail -35
 Store per-session snapshots in a temp directory (portable; avoids `declare -A` which requires Bash 4.0+ and is unavailable on macOS's default Bash 3.2):
 
 ```bash
-PREV_PANE_DIR=$(mktemp -d /tmp/agent_prev_pane.XXXXXX)
-trap 'rm -rf "$PREV_PANE_DIR"' EXIT
+PREV_PANE_DIR="/tmp/agent_prev_pane"
+mkdir -p "$PREV_PANE_DIR"
 
 # Each iteration, after capturing current_tail for SESSION:
 prev_tail=$(cat "$PREV_PANE_DIR/$SESSION" 2>/dev/null || echo "")
@@ -257,7 +257,7 @@ $TMUX_EXEC paste-buffer -t "SESSION:0.0"
 # paste-buffer is async — sending Enter immediately risks the keystroke
 # arriving before the pasted text and being swallowed.
 sleep 1
-$TMUX_EXEC send-keys -t "SESSION:0.0" "" Enter
+$TMUX_EXEC send-keys -t "SESSION:0.0" Enter
 # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 ```
 
@@ -377,7 +377,7 @@ while attempt <= MAX_RETRIES:
     if state == pending_message:
         # Text is visible after › but Enter was not processed.
         # This is the "waiting for ENTER" failure mode.
-        $TMUX_EXEC send-keys -t "SESSION:0.0" "" Enter
+        $TMUX_EXEC send-keys -t "SESSION:0.0" Enter
         attempt += 1
         continue
 
@@ -388,7 +388,7 @@ while attempt <= MAX_RETRIES:
             $TMUX_EXEC load-buffer "$TMP_PAYLOAD"
             $TMUX_EXEC paste-buffer -t "SESSION:0.0"
             sleep 1
-            $TMUX_EXEC send-keys -t "SESSION:0.0" "" Enter
+            $TMUX_EXEC send-keys -t "SESSION:0.0" Enter
             attempt += 1
             continue
         else:
@@ -577,7 +577,7 @@ PARENT_NATIVE=$(dirname "$MAIN_NATIVE")
 
 # Derive GitHub repo (owner/name) from remote URL
 REPO=$($GIT -C "$MAIN_SHELL" remote get-url origin 2>/dev/null \
-    | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)|\1|')
+    | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)|\1|; s|/*$||')
 ```
 
 New worktree paths:
@@ -670,7 +670,7 @@ fi
 $TMUX_EXEC load-buffer "$TMP_PAYLOAD"
 $TMUX_EXEC paste-buffer -t "<slug>:0.0"
 sleep 1
-$TMUX_EXEC send-keys -t "<slug>:0.0" "" Enter
+$TMUX_EXEC send-keys -t "<slug>:0.0" Enter
 # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 ```
 
