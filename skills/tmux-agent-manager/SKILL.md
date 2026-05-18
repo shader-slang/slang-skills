@@ -116,6 +116,28 @@ echo "$tail_output" \
 
 Discard any session that returns `NOT_AGENT`.
 
+After the active agent set is known, purge orphaned state files so the cache directories don't accumulate stale entries indefinitely:
+
+```bash
+for state_dir in \
+    "${HOME}/.cache/tmux-agent-manager/prev_pane" \
+    "${HOME}/.cache/tmux-agent-manager/yolo_mode"; do
+  [ -d "$state_dir" ] || continue
+  for f in "$state_dir"/*; do
+    [ -f "$f" ] || continue
+    session_name=$(basename "$f")
+    # Remove file if no active agent session has this sanitized name
+    if ! echo "$ACTIVE_AGENT_SESSIONS" \
+        | sed 's/[^a-zA-Z0-9]/_/g' \
+        | grep -qx "$session_name"; then
+      rm -f "$f"
+    fi
+  done
+done
+```
+
+`ACTIVE_AGENT_SESSIONS` is the newline-separated list of confirmed AGENT session names produced by the filter above.
+
 ---
 
 ## Step 2 — Capture pane state
