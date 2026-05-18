@@ -579,7 +579,11 @@ Run this inside a single shell call (adapt prefix for HOST):
 
 ```bash
 # Get the main worktree path (first entry — always the primary checkout)
-MAIN_NATIVE=$($GIT worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1 | tr -d '\r')
+MAIN_NATIVE=$($GIT worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 1 | tr -d '\r')
+if [ -z "$MAIN_NATIVE" ]; then
+    echo "Error: not in a git repository or could not determine main worktree."
+    exit 1
+fi
 
 # Convert to the shell's native path if needed
 if [ "$HOST" = "wsl_inside" ]; then
