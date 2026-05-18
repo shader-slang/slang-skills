@@ -9,7 +9,7 @@ description: >-
   sessions are doing, send a message to an agent, or monitor for sessions
   that need input or are stuck. Works on native Linux, macOS, WSL (inside),
   and Windows with WSL (Git Bash or PowerShell host).
-argument-hint: "[status | send <session> <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
+argument-hint: "[status | send [session] <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
 allowed-tools:
   - Bash
 ---
@@ -134,7 +134,7 @@ $TMUX_EXEC capture-pane -t "SESSION:W.P" -p | tail -35
 | `working` | Lines contain `• Ran`, `• Read`, `• Writing`, `• Searching`, spinner chars, or active build/test output |
 | `needs_approval` | Lines near bottom contain "Do you want to", "Allow", "(y/n)", "Yes/No", or "approve" |
 | `pending_message` | `›` prompt followed by user message text (received but not yet processed) |
-| `stuck` | Pane content identical across two consecutive polls AND state is not `idle`; **monitor-loop only** — store previous pane snapshot in `PREV_PANE`; compare with current snapshot on each iteration; if unchanged and state ≠ `idle`, classify as `stuck` |
+| `stuck` | Pane content identical across two consecutive polls AND state is not `idle`; **monitor-loop only** — store previous pane snapshot in `PREV_PANE_DIR/<session>`; compare with current snapshot on each iteration; if unchanged and state ≠ `idle`, classify as `stuck` |
 | `unknown` | None of the above — treat as working |
 
 **Stuck detection — state management** (monitor-loop only):
@@ -142,7 +142,7 @@ $TMUX_EXEC capture-pane -t "SESSION:W.P" -p | tail -35
 Store per-session snapshots in a temp directory (portable; avoids `declare -A` which requires Bash 4.0+ and is unavailable on macOS's default Bash 3.2):
 
 ```bash
-PREV_PANE_DIR="/tmp/agent_prev_pane"
+PREV_PANE_DIR="/tmp/agent_prev_pane_$(whoami 2>/dev/null || echo 'default')"
 mkdir -p "$PREV_PANE_DIR"
 
 # Each iteration, after capturing current_tail for SESSION:
@@ -531,6 +531,8 @@ When command is `new <args>`:
 - Otherwise → free-form task prompt
 
 ### 7a — Determine slug and task prompt
+
+> **Note:** When handling an issue number, run **Step 7b** (path discovery) first to populate `$REPO` before executing the `gh issue view` command below.
 
 **Issue number path:**
 ```bash
