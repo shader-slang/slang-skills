@@ -128,7 +128,7 @@ for state_dir in \
     session_name=$(basename "$f")
     # Remove file if no active agent session has this sanitized name
     if ! echo "$ACTIVE_AGENT_SESSIONS" \
-        | sed 's/[^a-zA-Z0-9.-]/_/g' \
+        | sed 's/[^a-zA-Z0-9._-]/_/g' \
         | grep -Fxq "$session_name"; then
       rm -f "$f"
     fi
@@ -168,7 +168,7 @@ PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 mkdir -p "$PREV_PANE_DIR"
 
 # Each iteration, after capturing current_tail for SESSION:
-SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9.-]/_/g')
+SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 prev_tail=$(cat "$PREV_PANE_DIR/$SAFE_SESSION" 2>/dev/null || echo "")
 
 if [ -n "$prev_tail" ] && [ "$current_tail" = "$prev_tail" ] && [ "$state" != "idle" ] && [ "$state" != "needs_approval" ]; then
@@ -201,10 +201,13 @@ as `normal` (not in bypass mode).
 Store the result per session using the same file-based pattern as `PREV_PANE_DIR` (portable; avoids associative arrays which require Bash 4.0+):
 
 ```bash
+YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -200 \
+  | grep -qE "dangerously-skip-permissions|Bypassing permission" \
+  && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$YOLO_MODE_DIR"
-SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9.-]/_/g')
-echo "yolo_or_normal" > "$YOLO_MODE_DIR/$SAFE_SESSION"
+SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+echo "$YOLO_STATUS" > "$YOLO_MODE_DIR/$SAFE_SESSION"
 ```
 
 To read: `YOLO=$(cat "$YOLO_MODE_DIR/$SAFE_SESSION" 2>/dev/null || echo "normal")`
