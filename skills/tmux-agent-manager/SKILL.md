@@ -108,7 +108,7 @@ for status classification, sends, or implicit target resolution.
 Capture 250 lines of scrollback from each candidate and test against the agent-marker regex. Using scrollback ensures startup markers aren't lost even after verbose output, and including working-state markers catches busy sessions:
 
 ```bash
-tail_output=$($TMUX_EXEC capture-pane -t "SESSION:0.0" -p -S -250 | tail -250)
+tail_output=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250 | tail -250)
 echo "$tail_output" \
   | grep -qE "(Claude Code|Codex|Model: claude-|›.*claude-|^›[[:space:]]*$|• (Ran|Read|Writing|Searching))" \
   && echo "AGENT" || echo "NOT_AGENT"
@@ -130,7 +130,7 @@ $TMUX_EXEC capture-pane -t "SESSION:W.P" -p -S -250 | tail -250
 
 | State | Signal in captured output |
 |---|---|
-| `idle` | `─ Worked for` separator present AND `›` prompt at bottom with model info line but NO pending message text after `›` |
+| `idle` | `›` prompt at bottom with model info line and NO pending message text after `›`; `─ Worked for` separator may also be present (post-task) but is not required — a freshly started session waiting for its first prompt classifies as idle too |
 | `working` | Lines contain `• Ran`, `• Read`, `• Writing`, `• Searching`, spinner chars, or active build/test output |
 | `needs_approval` | Lines near bottom contain "Do you want to", "Allow", "(y/n)", "Yes/No", or "approve" |
 | `pending_message` | `›` prompt followed by user message text (received but not yet processed) |
@@ -176,7 +176,16 @@ Claude Code prints `⚠️  Bypassing permission checks (--dangerously-skip-perm
 its welcome banner when the flag is active. If that line is absent, classify the session
 as `normal` (not in bypass mode).
 
-Store the result per session as `YOLO_MODE=yolo|normal`.
+Store the result per session using the same file-based pattern as `PREV_PANE_DIR` (portable; avoids associative arrays which require Bash 4.0+):
+
+```bash
+YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
+mkdir -p "$YOLO_MODE_DIR"
+SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9]/_/g')
+echo "yolo_or_normal" > "$YOLO_MODE_DIR/$SAFE_SESSION"
+```
+
+To read: `YOLO=$(cat "$YOLO_MODE_DIR/$SAFE_SESSION" 2>/dev/null || echo "normal")`
 
 ---
 
@@ -454,7 +463,7 @@ loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
 
     if state == needs_approval:
         ALERT: "⚠ SESSION needs approval — agent is waiting for a permission prompt."
-        if YOLO_MODE[SESSION] == "normal":
+        if get_yolo_mode(SESSION) == "normal":  # cat "$YOLO_MODE_DIR/$SAFE_SESSION"
             ALERT (append): "⚠ This agent was NOT started with --dangerously-skip-permissions.
                              It will block on every tool call requiring approval.
                              Consider restarting it with bypass mode enabled."
