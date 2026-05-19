@@ -58,12 +58,13 @@ fi
 
 PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
-mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR"
+AGENT_TYPE_DIR="${HOME}/.cache/tmux-agent-manager/agent_type"
+mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR" "$AGENT_TYPE_DIR"
 
 echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT RM=$RM"
 ```
 
-Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, and `YOLO_MODE_DIR` at the top of every subsequent
+Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, `YOLO_MODE_DIR`, and `AGENT_TYPE_DIR` at the top of every subsequent
 bash block that needs them, using the values set above.
 
 **Variable reference used in all steps below:**
@@ -219,9 +220,9 @@ SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 banner=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null)
 
 AGENT_TYPE="unknown"
-if printf "%s\n" "$banner" | grep -qE "Claude Code|claude-sonnet|claude-opus|claude-haiku|bypass permissions on"; then
+if printf "%s\n" "$banner" | grep -qiE "Claude Code|claude-|bypass permissions on"; then
     AGENT_TYPE="claude"
-elif printf "%s\n" "$banner" | grep -qiE "^Codex|codex$|gpt-[0-9]"; then
+elif printf "%s\n" "$banner" | grep -qiE "Codex|gpt-[0-9]"; then
     AGENT_TYPE="codex"
 fi
 
@@ -236,7 +237,7 @@ appears in the first 500 lines of scrollback:
 
 ```bash
 YOLO_STATUS=$(printf "%s\n" "$banner" \
-  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission|bypass permissions on" \
+  | grep -qiE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission|bypass permissions on" \
   && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$YOLO_MODE_DIR"
@@ -523,6 +524,7 @@ saw_working = false
 
 loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
     capture 250 lines of scrollback from $SESSION:0.0
+    SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
     classify state (idle / working / needs_approval / unknown)
 
     if state == needs_approval:
