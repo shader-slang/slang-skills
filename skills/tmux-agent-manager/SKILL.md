@@ -158,7 +158,7 @@ while IFS= read -r SESSION; do
     ACTIVE_AGENT_SESSIONS="${ACTIVE_AGENT_SESSIONS}${SESSION}
 "
   fi
-done < <($TMUX_EXEC list-sessions -F "#{session_name}" 2>/dev/null)
+done < <($TMUX_EXEC list-sessions -F "#{session_name}" 2>/dev/null | tr -d '\r')
 ```
 
 ---
@@ -299,7 +299,7 @@ Execution order: **4a** (pre-send checks) → **send** → **4b** (confirm deliv
 
 ```bash
 if [ "$HOST" = "windows" ]; then
-    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_send_msg.XXXXXX)
+    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_send_msg.XXXXXX | tr -d '\r')
     wsl bash -c "cat > '$TMP_PAYLOAD'" << 'EOF_TMUX_AGENT'
 MESSAGE
 EOF_TMUX_AGENT
@@ -622,7 +622,7 @@ PARENT_SHELL=$(dirname "$MAIN_SHELL")          # sibling worktrees live here
 PARENT_NATIVE=$(dirname "$MAIN_NATIVE")
 
 # Derive GitHub repo (owner/name) via gh CLI (robust across URL formats)
-REPO=$(cd "$MAIN_SHELL" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)
+REPO=$(cd "$MAIN_SHELL" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr -d '\r')
 if [ -z "$REPO" ]; then
     echo "Error: could not determine GitHub repository. Ensure gh is authenticated and the directory is a GitHub repo."
     exit 1
@@ -700,7 +700,7 @@ Tell the user this step is running; it may take up to a minute the first time.
 
 ```bash
 TMUX_C_PATH="$PARENT_SHELL/<slug>"
-[ "$HOST" = "windows" ] && TMUX_C_PATH=$(wsl wslpath "$TMUX_C_PATH")
+[ "$HOST" = "windows" ] && TMUX_C_PATH=$(wsl wslpath "$TMUX_C_PATH" | tr -d '\r')
 $TMUX_EXEC new-session -d -s "<slug>" -c "$TMUX_C_PATH"
 ```
 
@@ -743,7 +743,7 @@ Write to a temp file to safely handle newlines and special characters:
 
 ```bash
 if [ "$HOST" = "windows" ]; then
-    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_prompt_<slug>.XXXXXX)
+    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_prompt_<slug>.XXXXXX | tr -d '\r')
     wsl bash -c "cat > '$TMP_PAYLOAD'" << 'EOF_TMUX_AGENT'
 <composed prompt text>
 EOF_TMUX_AGENT
