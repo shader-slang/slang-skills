@@ -220,9 +220,9 @@ SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 banner=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null)
 
 AGENT_TYPE="unknown"
-if printf "%s\n" "$banner" | grep -qiE "Claude Code|claude-|bypass permissions on"; then
+if printf "%s\n" "$banner" | grep -qiE "Claude Code|claude-|bypass permissions on|dangerously-skip-permissions|Bypassing permission"; then
     AGENT_TYPE="claude"
-elif printf "%s\n" "$banner" | grep -qiE "Codex|gpt-[0-9]"; then
+elif printf "%s\n" "$banner" | grep -qiE "Codex|gpt-[0-9]|dangerously-bypass-approvals-and-sandbox"; then
     AGENT_TYPE="codex"
 fi
 
@@ -236,6 +236,8 @@ Claude Code also shows `⏵⏵ bypass permissions on` in the tmux status bar, wh
 appears in the first 500 lines of scrollback:
 
 ```bash
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+banner=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null)
 YOLO_STATUS=$(printf "%s\n" "$banner" \
   | grep -qiE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission|bypass permissions on" \
   && echo "yolo" || echo "normal")
@@ -521,10 +523,10 @@ WORKING_GRACE=30  # new sessions need more time to initialize
 ```text
 elapsed = 0
 saw_working = false
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
 loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
     capture 250 lines of scrollback from $SESSION:0.0
-    SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
     classify state (idle / working / needs_approval / unknown)
 
     if state == needs_approval:
