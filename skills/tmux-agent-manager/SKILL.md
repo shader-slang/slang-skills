@@ -316,9 +316,11 @@ Execution order: **4a** (pre-send checks) → **send** → **4b** (confirm deliv
 
 On Windows (HOST=windows), Git Bash auto-converts paths starting with `/` to Windows
 paths before they reach `wsl tmux`, breaking `load-buffer`. Run the file write and all
-buffer ops inside `wsl bash`. The outer heredoc delimiter is unquoted so `$SESSION`
-is expanded by Git Bash; the inner prompt delimiter is single-quoted so the message
-text is not expanded. After the Windows heredoc, set `TMP_PAYLOAD` to the WSL path so
+buffer ops inside `wsl bash`. The outer heredoc delimiter is unquoted so Git Bash
+expands the entire heredoc body before passing it to WSL — `$SESSION` is substituted,
+and any `$` signs in MESSAGE that should not be expanded must be escaped as `\$`. The
+inner delimiter is single-quoted (`'EOF_MSG'`) to prevent WSL bash from re-expanding
+what it receives. After the Windows heredoc, set `TMP_PAYLOAD` to the WSL path so
 Step 4b's retry logic can reference it uniformly across platforms.
 
 `PRE_SEND_TAIL` is captured inside each branch immediately before the paste operation
@@ -334,6 +336,8 @@ EOF_MSG
 tmux load-buffer -b "agent_msg_$SESSION" /tmp/agent_send_$SESSION.txt
 tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+sleep 1
+tmux send-keys -t "$SESSION:0.0" Enter
 WSLBLOCK
     TMP_PAYLOAD="/tmp/agent_send_$SESSION.txt"
 else
@@ -345,11 +349,11 @@ EOF_MSG
     $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
     $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
     $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+    # Wait for the paste to land before sending Enter (paste-buffer is async).
+    sleep 1
+    $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
     # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 fi
-# Wait for the paste to land before sending Enter (paste-buffer is async).
-sleep 1
-$TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
 ```
 
 4. Run **Step 4b — Queue verification** to confirm the message was actually submitted.
@@ -476,11 +480,22 @@ while attempt <= MAX_RETRIES:
         if attempt == 1 and tail == PRE_SEND_TAIL:
             # Pane matches pre-send snapshot — paste failed silently.
             # Retry the full send sequence before giving up.
-            $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
-            $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
-            $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
-            sleep 1
-            $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
+            if HOST == "windows":
+                # $TMP_PAYLOAD is a WSL path; $TMUX_EXEC (=wsl tmux) would mangle it.
+                # Re-run the buffer ops inside wsl bash, same as the original send.
+                wsl bash << WSLBLOCK
+tmux load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
+tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+sleep 1
+tmux send-keys -t "$SESSION:0.0" Enter
+WSLBLOCK
+            else:
+                $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
+                $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+                $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
+                sleep 1
+                $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
             attempt += 1
             continue
         elif attempt == 1 and tail != PRE_SEND_TAIL:
