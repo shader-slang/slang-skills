@@ -45,22 +45,25 @@ fi
 if grep -qi microsoft /proc/version 2>/dev/null; then
     HOST="wsl_inside"
     GIT="git.exe"
+    RM="rm -f"
 elif [ "$TMUX_EXEC" = "wsl tmux" ]; then
     HOST="windows"
     GIT="git.exe"
+    RM="wsl rm -f"     # WSL temp files must be removed via wsl
 else
     HOST="unix"         # native Linux or macOS
     GIT="git"
+    RM="rm -f"
 fi
 
 PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR"
 
-echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT"
+echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT RM=$RM"
 ```
 
-Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `PREV_PANE_DIR`, and `YOLO_MODE_DIR` at the top of every subsequent
+Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, and `YOLO_MODE_DIR` at the top of every subsequent
 bash block that needs them, using the values set above.
 
 **Variable reference used in all steps below:**
@@ -422,13 +425,13 @@ attempt = 1
 
 while attempt <= MAX_RETRIES:
     sleep VERIFY_WAIT
-    tail = capture last 20 lines of SESSION:0.0
+    tail = capture last 20 lines of $SESSION:0.0
     classify state (idle / working / needs_approval / pending_message / unknown)
 
     if state == working or state == needs_approval or state == unknown:
         # Agent received the message and is acting on it (or needs approval).
         report "✓ Message queued — agent is processing."
-        if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
+        $RM "$TMP_PAYLOAD" 2>/dev/null
         return  # proceed to Step 4c
 
     if state == pending_message:
@@ -452,17 +455,17 @@ while attempt <= MAX_RETRIES:
         elif attempt == 1 and tail != PRE_SEND_TAIL:
             # Pane changed from pre-send — command ran and completed quickly.
             report "✓ Message queued — agent completed the task quickly."
-            if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
+            $RM "$TMP_PAYLOAD" 2>/dev/null
             return
         else:
             # Second idle after retry — give up and report.
             ALERT: "⚠ Message delivery to SESSION failed after $MAX_RETRIES attempts.
                     The agent pane appears unchanged. Last 20 pane lines:"
             show tail
-            if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
+            $RM "$TMP_PAYLOAD" 2>/dev/null
             return  # do NOT proceed to Step 4c
 
-if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
+$RM "$TMP_PAYLOAD" 2>/dev/null
 ALERT: "⚠ Message delivery to SESSION failed after $MAX_RETRIES attempts.
         The message still appears pending (Enter may not be processing). Last 20 pane lines:"
 show tail
@@ -505,7 +508,7 @@ elapsed = 0
 saw_working = false
 
 loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
-    capture 250 lines of scrollback from SESSION:0.0
+    capture 250 lines of scrollback from $SESSION:0.0
     classify state (idle / working / needs_approval / unknown)
 
     if state == needs_approval:
@@ -648,6 +651,13 @@ gh issue view <number> --repo "$REPO" --json number,title,body,labels
 **Slug rule:** lowercase → replace runs of non-alphanumeric chars with `-` → collapse
 consecutive `-` → strip leading/trailing `-` → truncate to 40 chars → strip any
 trailing `-` left by the truncation.
+
+```bash
+SLUG=$(printf "%s" "$INPUT" | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' \
+  | cut -c 1-40 \
+  | sed -E 's/-+$//')
+```
 
 Keep the most meaningful words (usually the first few): a 40-char slug must still be
 recognisable at a glance without needing further truncation in the status table.
