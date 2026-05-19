@@ -262,7 +262,7 @@ if [ ! -d "build" ]; then
   echo "build/ directory does not exist. Nothing to clean."
   exit 0
 fi
-BUILD_TRASH="build_$$"
+BUILD_TRASH="build_$(date +%s)_$$"
 if mv build "$BUILD_TRASH" 2>/dev/null; then
   echo "Renamed build/ to $BUILD_TRASH"
   rm -rf "$BUILD_TRASH" &
@@ -281,7 +281,7 @@ if (-not (Test-Path -Path build -PathType Container)) {
     Write-Host "build/ directory does not exist. Nothing to clean."
     exit 0
 }
-$BuildTrash = "build_$PID"
+$BuildTrash = "build_$([Guid]::NewGuid().ToString('N'))"
 if (Rename-Item -Path build -NewName $BuildTrash -ErrorAction SilentlyContinue) {
     Write-Host "Renamed build/ to $BuildTrash"
     Start-Job { Remove-Item -Recurse -Force $using:BuildTrash } | Out-Null
