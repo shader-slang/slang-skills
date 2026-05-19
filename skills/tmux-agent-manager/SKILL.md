@@ -126,16 +126,16 @@ Discard any session that returns `NOT_AGENT`.
 After the active agent set is known, purge orphaned state files so the cache directories don't accumulate stale entries indefinitely:
 
 ```bash
+SANITIZED_ACTIVE=$(echo "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
 for state_dir in \
     "${HOME}/.cache/tmux-agent-manager/prev_pane" \
     "${HOME}/.cache/tmux-agent-manager/yolo_mode"; do
   [ -d "$state_dir" ] || continue
-  SANITIZED_ACTIVE=$(echo "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
   for f in "$state_dir"/*; do
     [ -f "$f" ] || continue
     session_name=$(basename "$f")
     # Remove file if no active agent session has this sanitized name
-    if ! echo "$SANITIZED_ACTIVE" | grep -Fxq "$session_name"; then
+    if ! echo "$SANITIZED_ACTIVE" | grep -Fxq -- "$session_name"; then
       rm -f "$f"
     fi
   done
@@ -210,7 +210,7 @@ Scan the first 500 lines of scrollback — the bypass flag is printed in the wel
 
 ```bash
 $TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 \
-  | grep -qE "dangerously-skip-permissions|Bypassing permission" \
+  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission" \
   && echo "yolo" || echo "normal"
 ```
 
@@ -222,7 +222,7 @@ Store the result per session using the same file-based pattern as `PREV_PANE_DIR
 
 ```bash
 YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null \
-  | grep -qE "dangerously-skip-permissions|Bypassing permission" \
+  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission" \
   && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$YOLO_MODE_DIR"
@@ -306,7 +306,7 @@ else
 MESSAGE
 EOF_TMUX_AGENT
 fi
-PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p | tail -20)
+PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
 $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
 $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
@@ -713,8 +713,8 @@ Once the `›` prompt is confirmed, run the YOLO mode check from Step 2 against 
 session's scrollback:
 
 ```bash
-$TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -200 \
-  | grep -qE "dangerously-skip-permissions|Bypassing permission" \
+$TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S 0 -E 500 \
+  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission" \
   && echo "yolo" || echo "normal"
 ```
 
