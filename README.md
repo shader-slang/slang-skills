@@ -44,6 +44,7 @@ The interactive installer lets you select which skills to install using arrow ke
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
 | `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
+| `slang-resolve-pr-comments` | Resolve PR review feedback: LLM threads, CI failures, rebase conflicts | *(standalone)* |
 
 ### General developer skills
 
