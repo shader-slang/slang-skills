@@ -126,7 +126,7 @@ Discard any session that returns `NOT_AGENT`.
 After the active agent set is known, purge orphaned state files so the cache directories don't accumulate stale entries indefinitely:
 
 ```bash
-SANITIZED_ACTIVE=$(echo "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
+SANITIZED_ACTIVE=$(printf "%s\n" "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
 for state_dir in \
     "${HOME}/.cache/tmux-agent-manager/prev_pane" \
     "${HOME}/.cache/tmux-agent-manager/yolo_mode"; do
@@ -135,7 +135,7 @@ for state_dir in \
     [ -f "$f" ] || continue
     session_name=$(basename "$f")
     # Remove file if no active agent session has this sanitized name
-    if ! echo "$SANITIZED_ACTIVE" | grep -Fxq -- "$session_name"; then
+    if ! printf "%s\n" "$SANITIZED_ACTIVE" | grep -Fxq -- "$session_name"; then
       rm -f "$f"
     fi
   done
@@ -151,7 +151,7 @@ while IFS= read -r SESSION; do
     { $TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null
       $TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250 2>/dev/null; }
   )
-  if echo "$tail_output" | grep -qE "(Claude Code|Codex|Model: claude-|›.*claude-|^›[[:space:]]*$)"; then
+  if printf "%s\n" "$tail_output" | grep -qE "(Claude Code|Codex|Model: claude-|›.*claude-|^›[[:space:]]*$)"; then
     ACTIVE_AGENT_SESSIONS="${ACTIVE_AGENT_SESSIONS}${SESSION}
 "
   fi
@@ -188,7 +188,7 @@ PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 mkdir -p "$PREV_PANE_DIR"
 
 # Each iteration, after capturing current_tail for SESSION:
-SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 prev_tail=$(cat "$PREV_PANE_DIR/$SAFE_SESSION" 2>/dev/null || echo "")
 
 if [ -n "$prev_tail" ] && [ "$current_tail" = "$prev_tail" ] && [ "$state" != "idle" ] && [ "$state" != "needs_approval" ]; then
@@ -226,7 +226,7 @@ YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/nu
   && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$YOLO_MODE_DIR"
-SAFE_SESSION=$(echo "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 echo "$YOLO_STATUS" > "$YOLO_MODE_DIR/$SAFE_SESSION"
 ```
 
