@@ -493,7 +493,7 @@ WSLBLOCK
             else:
                 $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
                 $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
-                $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
+                $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
                 sleep 1
                 $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
             attempt += 1
@@ -819,9 +819,9 @@ if [ "$HOST" = "windows" ]; then
 cat > "/tmp/agent_prompt_<slug>.txt" << 'PROMPT_EOF'
 <composed prompt text>
 PROMPT_EOF
-tmux load-buffer -b "agent_prompt_<slug>" "/tmp/agent_prompt_<slug>.txt"
-tmux paste-buffer -b "agent_prompt_<slug>" -t "<slug>:0.0"
-tmux delete-buffer -b "agent_prompt_<slug>" 2>/dev/null || true
+tmux load-buffer -b "agent_msg_<slug>" "/tmp/agent_prompt_<slug>.txt"
+tmux paste-buffer -b "agent_msg_<slug>" -t "<slug>:0.0"
+tmux delete-buffer -b "agent_msg_<slug>" 2>/dev/null || true
 sleep 1
 tmux send-keys -t "<slug>:0.0" Enter
 WSLBLOCK
@@ -832,9 +832,9 @@ else
 <composed prompt text>
 PROMPT_EOF
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
-    $TMUX_EXEC load-buffer -b "agent_prompt_<slug>" "$TMP_PAYLOAD"
-    $TMUX_EXEC paste-buffer -b "agent_prompt_<slug>" -t "<slug>:0.0"
-    $TMUX_EXEC delete-buffer -b "agent_prompt_<slug>" 2>/dev/null || true
+    $TMUX_EXEC load-buffer -b "agent_msg_<slug>" "$TMP_PAYLOAD"
+    $TMUX_EXEC paste-buffer -b "agent_msg_<slug>" -t "<slug>:0.0"
+    $TMUX_EXEC delete-buffer -b "agent_msg_<slug>" 2>/dev/null || true
     sleep 1
     $TMUX_EXEC send-keys -t "<slug>:0.0" Enter
     # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
