@@ -316,12 +316,12 @@ Execution order: **4a** (pre-send checks) → **send** → **4b** (confirm deliv
 
 On Windows (HOST=windows), Git Bash auto-converts paths starting with `/` to Windows
 paths before they reach `wsl tmux`, breaking `load-buffer`. Run the file write and all
-buffer ops inside `wsl bash`. The outer heredoc delimiter is unquoted so Git Bash
-expands the entire heredoc body before passing it to WSL — `$SESSION` is substituted,
-and any `$` signs in MESSAGE that should not be expanded must be escaped as `\$`. The
-inner delimiter is single-quoted (`'EOF_MSG'`) to prevent WSL bash from re-expanding
-what it receives. After the Windows heredoc, set `TMP_PAYLOAD` to the WSL path so
-Step 4b's retry logic can reference it uniformly across platforms.
+buffer ops inside `wsl bash`. Use a **quoted** outer heredoc delimiter (`'WSLBLOCK'`)
+to prevent Git Bash from expanding `$` or backticks in MESSAGE — pass `$SESSION` as a
+positional argument via `-s` and capture it with `SESSION="$1"` at the top of the
+script. The inner delimiter is single-quoted (`'EOF_TMUX_AGENT_MSG'`) to prevent WSL
+bash from expanding MESSAGE content. After the Windows heredoc, set `TMP_PAYLOAD` to
+the WSL path so Step 4b's retry logic can reference it uniformly across platforms.
 
 `PRE_SEND_TAIL` is captured inside each branch immediately before the paste operation
 so both paths record the same pre-send buffer snapshot.
@@ -329,10 +329,11 @@ so both paths record the same pre-send buffer snapshot.
 ```bash
 if [ "$HOST" = "windows" ]; then
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
-    wsl bash << WSLBLOCK
-cat > "/tmp/agent_send_$SESSION.txt" << 'EOF_MSG'
+    wsl bash -s "$SESSION" << 'WSLBLOCK'
+SESSION="$1"
+cat > "/tmp/agent_send_$SESSION.txt" << 'EOF_TMUX_AGENT_MSG'
 MESSAGE
-EOF_MSG
+EOF_TMUX_AGENT_MSG
 tmux load-buffer -b "agent_msg_$SESSION" "/tmp/agent_send_$SESSION.txt"
 tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
@@ -343,9 +344,9 @@ WSLBLOCK
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_send_msg.XXXXXX)
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
-    cat > "$TMP_PAYLOAD" << 'EOF_MSG'
+    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT_MSG'
 MESSAGE
-EOF_MSG
+EOF_TMUX_AGENT_MSG
     $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
     $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
     $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
@@ -482,8 +483,11 @@ while attempt <= MAX_RETRIES:
             # Retry the full send sequence before giving up.
             if HOST == "windows":
                 # $TMP_PAYLOAD is a WSL path; $TMUX_EXEC (=wsl tmux) would mangle it.
-                # Re-run the buffer ops inside wsl bash, same as the original send.
-                wsl bash << WSLBLOCK
+                # Re-run the buffer ops inside wsl bash; pass SESSION and TMP_PAYLOAD
+                # as positional args via -s to avoid expanding them in the heredoc.
+                wsl bash -s "$SESSION" "$TMP_PAYLOAD" << 'WSLBLOCK'
+SESSION="$1"
+TMP_PAYLOAD="$2"
 tmux load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
 tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
@@ -806,31 +810,33 @@ path before passing it to `wsl tmux`, which breaks `load-buffer`. The fix: run t
 file write AND all tmux buffer operations inside a single `wsl bash` heredoc so paths
 are never seen by Git Bash.
 
-The outer heredoc delimiter is **unquoted** (`WSLBLOCK`) so Git Bash expands `<slug>`
-and `<session>` before passing to WSL. The inner prompt delimiter is **single-quoted**
-(`'PROMPT_EOF'`) so the prompt text is not expanded by either shell — escape any `$`
-signs in the prompt that Git Bash would otherwise try to expand.
+Use a **quoted** outer heredoc delimiter (`'WSLBLOCK'`) to prevent Git Bash from
+expanding `$` or backticks in the prompt text — pass `<slug>` as a positional argument
+via `-s` and capture it with `slug="$1"` at the top of the script. The inner prompt
+delimiter is **single-quoted** (`'EOF_TMUX_AGENT_PROMPT'`) so WSL bash also does not
+expand the prompt text.
 
 ```bash
 if [ "$HOST" = "windows" ]; then
     # All tmux buffer ops run inside WSL — Git Bash would mangle /tmp/... paths
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
-    wsl bash << WSLBLOCK
-cat > "/tmp/agent_prompt_<slug>.txt" << 'PROMPT_EOF'
+    wsl bash -s "<slug>" << 'WSLBLOCK'
+slug="$1"
+cat > "/tmp/agent_prompt_$slug.txt" << 'EOF_TMUX_AGENT_PROMPT'
 <composed prompt text>
-PROMPT_EOF
-tmux load-buffer -b "agent_msg_<slug>" "/tmp/agent_prompt_<slug>.txt"
-tmux paste-buffer -b "agent_msg_<slug>" -t "<slug>:0.0"
-tmux delete-buffer -b "agent_msg_<slug>" 2>/dev/null || true
+EOF_TMUX_AGENT_PROMPT
+tmux load-buffer -b "agent_msg_$slug" "/tmp/agent_prompt_$slug.txt"
+tmux paste-buffer -b "agent_msg_$slug" -t "$slug:0.0"
+tmux delete-buffer -b "agent_msg_$slug" 2>/dev/null || true
 sleep 1
-tmux send-keys -t "<slug>:0.0" Enter
+tmux send-keys -t "$slug:0.0" Enter
 WSLBLOCK
     TMP_PAYLOAD="/tmp/agent_prompt_<slug>.txt"
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_prompt_<slug>.XXXXXX)
-    cat > "$TMP_PAYLOAD" << 'PROMPT_EOF'
+    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT_PROMPT'
 <composed prompt text>
-PROMPT_EOF
+EOF_TMUX_AGENT_PROMPT
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
     $TMUX_EXEC load-buffer -b "agent_msg_<slug>" "$TMP_PAYLOAD"
     $TMUX_EXEC paste-buffer -b "agent_msg_<slug>" -t "<slug>:0.0"
