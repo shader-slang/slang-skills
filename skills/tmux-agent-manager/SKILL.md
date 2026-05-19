@@ -130,13 +130,12 @@ for state_dir in \
     "${HOME}/.cache/tmux-agent-manager/prev_pane" \
     "${HOME}/.cache/tmux-agent-manager/yolo_mode"; do
   [ -d "$state_dir" ] || continue
+  SANITIZED_ACTIVE=$(echo "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
   for f in "$state_dir"/*; do
     [ -f "$f" ] || continue
     session_name=$(basename "$f")
     # Remove file if no active agent session has this sanitized name
-    if ! echo "$ACTIVE_AGENT_SESSIONS" \
-        | sed 's/[^a-zA-Z0-9._-]/_/g' \
-        | grep -Fxq "$session_name"; then
+    if ! echo "$SANITIZED_ACTIVE" | grep -Fxq "$session_name"; then
       rm -f "$f"
     fi
   done
@@ -148,8 +147,11 @@ done
 ```bash
 ACTIVE_AGENT_SESSIONS=""
 while IFS= read -r SESSION; do
-  # ... run the two-pass capture and grep ...
-  if [ "$(echo "$tail_output" | grep -qE "..." && echo AGENT || echo NOT_AGENT)" = "AGENT" ]; then
+  tail_output=$(
+    { $TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null
+      $TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250 2>/dev/null; }
+  )
+  if echo "$tail_output" | grep -qE "(Claude Code|Codex|Model: claude-|›.*claude-|^›[[:space:]]*$)"; then
     ACTIVE_AGENT_SESSIONS="${ACTIVE_AGENT_SESSIONS}${SESSION}
 "
   fi
@@ -163,7 +165,7 @@ done < <($TMUX_EXEC list-sessions -F "#{session_name}" 2>/dev/null)
 For each pane target `SESSION:W.P`, capture 250 lines of scrollback (so the `─ Worked for` separator and other signals aren't lost after verbose output):
 
 ```bash
-$TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250 | tail -250
+$TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250
 ```
 
 **State detection rules** (apply to the captured tail):
@@ -204,10 +206,10 @@ For each session, also check whether Claude Code was started with
 `--dangerously-skip-permissions`. Without this flag, every tool call triggers a
 permission prompt and the agent will stall repeatedly.
 
-Scan the full pane scrollback (the startup banner may have scrolled far back in long-running sessions):
+Scan the first 500 lines of scrollback — the bypass flag is printed in the welcome banner at session start:
 
 ```bash
-$TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S - \
+$TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 \
   | grep -qE "dangerously-skip-permissions|Bypassing permission" \
   && echo "yolo" || echo "normal"
 ```
