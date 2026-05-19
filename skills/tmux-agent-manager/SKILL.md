@@ -312,30 +312,49 @@ Execution order: **4a** (pre-send checks) → **send** → **4b** (confirm deliv
    - `send <session-name> <message>` — session name provided explicitly (Case A in Step 4a)
    - `send <message>` — no session token; target resolved implicitly (Case B in Step 4a)
 2. Run **Step 4a — Correlation check** before sending anything.
-3. Send to the agent pane using a temp file to safely handle newlines and special characters:
+3. Send to the agent pane using a temp file to safely handle newlines and special characters.
+
+On Windows (HOST=windows), Git Bash auto-converts paths starting with `/` to Windows
+paths before they reach `wsl tmux`, breaking `load-buffer`. Run the file write and all
+buffer ops inside `wsl bash`. Use a **quoted** outer heredoc delimiter (`'WSLBLOCK'`)
+to prevent Git Bash from expanding `$` or backticks in MESSAGE — pass `$SESSION` as a
+positional argument via `-s` and capture it with `SESSION="$1"` at the top of the
+script. The inner delimiter is single-quoted (`'EOF_TMUX_AGENT_MSG'`) to prevent WSL
+bash from expanding MESSAGE content. After the Windows heredoc, set `TMP_PAYLOAD` to
+the WSL path so Step 4b's retry logic can reference it uniformly across platforms.
+
+`PRE_SEND_TAIL` is captured inside each branch immediately before the paste operation
+so both paths record the same pre-send buffer snapshot.
 
 ```bash
 if [ "$HOST" = "windows" ]; then
-    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_send_msg.XXXXXX | tr -d '\r')
-    wsl bash -c "cat > '$TMP_PAYLOAD'" << 'EOF_TMUX_AGENT'
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
+    wsl bash -s "$SESSION" << 'WSLBLOCK'
+SESSION="$1"
+cat > "/tmp/agent_send_$SESSION.txt" << 'EOF_TMUX_AGENT_MSG'
 MESSAGE
-EOF_TMUX_AGENT
+EOF_TMUX_AGENT_MSG
+tmux load-buffer -b "agent_msg_$SESSION" "/tmp/agent_send_$SESSION.txt"
+tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+sleep 1
+tmux send-keys -t "$SESSION:0.0" Enter
+WSLBLOCK
+    TMP_PAYLOAD="/tmp/agent_send_$SESSION.txt"
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_send_msg.XXXXXX)
-    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT'
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
+    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT_MSG'
 MESSAGE
-EOF_TMUX_AGENT
+EOF_TMUX_AGENT_MSG
+    $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
+    $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+    $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+    # Wait for the paste to land before sending Enter (paste-buffer is async).
+    sleep 1
+    $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
+    # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 fi
-PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
-$TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
-$TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
-$TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
-# Wait for the paste to land in the terminal before sending Enter.
-# paste-buffer is async — sending Enter immediately risks the keystroke
-# arriving before the pasted text and being swallowed.
-sleep 1
-$TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
-# Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 ```
 
 4. Run **Step 4b — Queue verification** to confirm the message was actually submitted.
@@ -462,11 +481,26 @@ while attempt <= MAX_RETRIES:
         if attempt == 1 and tail == PRE_SEND_TAIL:
             # Pane matches pre-send snapshot — paste failed silently.
             # Retry the full send sequence before giving up.
-            $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
-            $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
-            $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
-            sleep 1
-            $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
+            if HOST == "windows":
+                # $TMP_PAYLOAD is a WSL path; $TMUX_EXEC (=wsl tmux) would mangle it.
+                # Re-run the buffer ops inside wsl bash; pass SESSION and TMP_PAYLOAD
+                # as positional args via -s. MSYS_NO_PATHCONV=1 prevents Git Bash from
+                # converting the /tmp/... path in $TMP_PAYLOAD before wsl sees it.
+                MSYS_NO_PATHCONV=1 wsl bash -s "$SESSION" "$TMP_PAYLOAD" << 'WSLBLOCK'
+SESSION="$1"
+TMP_PAYLOAD="$2"
+tmux load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
+tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+sleep 1
+tmux send-keys -t "$SESSION:0.0" Enter
+WSLBLOCK
+            else:
+                $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
+                $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
+                $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
+                sleep 1
+                $TMUX_EXEC send-keys -t "$SESSION:0.0" Enter
             attempt += 1
             continue
         elif attempt == 1 and tail != PRE_SEND_TAIL:
@@ -709,11 +743,12 @@ fi
 
 ### 7e — Initialize submodules with local reference
 
-In a git worktree, submodules already share the object store of the primary repository (`.git/modules` in the main worktree), so no `--reference` flag is needed:
+In a git worktree, submodules already share the object store of the primary repository (`.git/modules` in the main worktree), so no `--reference` flag is needed.
+
+Use `-C` with the native path instead of `cd` — avoids WSL/Windows path resolution issues:
 
 ```bash
-cd "$PARENT_SHELL/<slug>"
-$GIT submodule update --init --recursive
+$GIT -C "$PARENT_NATIVE/<slug>" submodule update --init --recursive
 ```
 
 Tell the user this step is running; it may take up to a minute the first time.
@@ -728,12 +763,18 @@ $TMUX_EXEC new-session -d -s "<slug>" -c "$TMUX_C_PATH"
 
 ### 7g — Start Claude Code (or Codex)
 
+Always prefix the agent command with an explicit `cd` to the worktree. On Windows,
+the WSL bash shell may start in `~` regardless of the `tmux -c` directory, so relying
+on the session's working directory is not safe.
+
+`TMUX_C_PATH` is the WSL path set in Step 7f (e.g. `/mnt/d/sbf/git/slang/<slug>`).
+
 ```bash
-# Claude Code (default)
-$TMUX_EXEC send-keys -t "<slug>:0.0" "claude --dangerously-skip-permissions" Enter
+# Claude Code (default) — explicit cd ensures correct working directory
+$TMUX_EXEC send-keys -t "<slug>:0.0" "cd \"$TMUX_C_PATH\" && claude --dangerously-skip-permissions" Enter
 
 # Codex alternative
-$TMUX_EXEC send-keys -t "<slug>:0.0" "codex --dangerously-bypass-approvals-and-sandbox" Enter
+$TMUX_EXEC send-keys -t "<slug>:0.0" "cd \"$TMUX_C_PATH\" && codex --dangerously-bypass-approvals-and-sandbox" Enter
 ```
 
 Use whichever agent the user requests; default to `claude` if unspecified.
@@ -764,28 +805,54 @@ Use the agent-type-specific bypass flag in the message:
 
 ### 7h — Send the task prompt
 
-Write to a temp file to safely handle newlines and special characters:
+Write the prompt to a temp file and load it into tmux. On Windows (HOST=windows),
+Git Bash auto-converts any argument starting with `/` (e.g. `/tmp/...`) to a Windows
+path before passing it to `wsl tmux`, which breaks `load-buffer`. The fix: run the
+file write AND all tmux buffer operations inside a single `wsl bash` heredoc so paths
+are never seen by Git Bash.
+
+Use a **quoted** outer heredoc delimiter (`'WSLBLOCK'`) to prevent Git Bash from
+expanding `$` or backticks in the prompt text — pass `<slug>` as a positional argument
+via `-s` and capture it with `slug="$1"` at the top of the script. The inner prompt
+delimiter is **single-quoted** (`'EOF_TMUX_AGENT_PROMPT'`) so WSL bash also does not
+expand the prompt text.
 
 ```bash
 if [ "$HOST" = "windows" ]; then
-    TMP_PAYLOAD=$(wsl mktemp /tmp/agent_prompt_<slug>.XXXXXX | tr -d '\r')
-    wsl bash -c "cat > '$TMP_PAYLOAD'" << 'EOF_TMUX_AGENT'
+    # All tmux buffer ops run inside WSL — Git Bash would mangle /tmp/... paths
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
+    wsl bash -s "<slug>" << 'WSLBLOCK'
+slug="$1"
+cat > "/tmp/agent_prompt_$slug.txt" << 'EOF_TMUX_AGENT_PROMPT'
 <composed prompt text>
-EOF_TMUX_AGENT
+EOF_TMUX_AGENT_PROMPT
+tmux load-buffer -b "agent_msg_$slug" "/tmp/agent_prompt_$slug.txt"
+tmux paste-buffer -b "agent_msg_$slug" -t "$slug:0.0"
+tmux delete-buffer -b "agent_msg_$slug" 2>/dev/null || true
+sleep 1
+tmux send-keys -t "$slug:0.0" Enter
+WSLBLOCK
+    TMP_PAYLOAD="/tmp/agent_prompt_<slug>.txt"
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_prompt_<slug>.XXXXXX)
-    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT'
+    cat > "$TMP_PAYLOAD" << 'EOF_TMUX_AGENT_PROMPT'
 <composed prompt text>
-EOF_TMUX_AGENT
+EOF_TMUX_AGENT_PROMPT
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
+    $TMUX_EXEC load-buffer -b "agent_msg_<slug>" "$TMP_PAYLOAD"
+    $TMUX_EXEC paste-buffer -b "agent_msg_<slug>" -t "<slug>:0.0"
+    $TMUX_EXEC delete-buffer -b "agent_msg_<slug>" 2>/dev/null || true
+    sleep 1
+    $TMUX_EXEC send-keys -t "<slug>:0.0" Enter
+    # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 fi
-
-$TMUX_EXEC load-buffer -b "agent_prompt_<slug>" "$TMP_PAYLOAD"
-$TMUX_EXEC paste-buffer -b "agent_prompt_<slug>" -t "<slug>:0.0"
-$TMUX_EXEC delete-buffer -b "agent_prompt_<slug>"
-sleep 1
-$TMUX_EXEC send-keys -t "<slug>:0.0" Enter
-# Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 ```
+
+**Step 4b retry on Windows**: `TMP_PAYLOAD` is set after the heredoc so Step 4b can
+reference it to identify the file. However, the actual retry buffer ops must still run
+inside a `wsl bash` heredoc — `$TMUX_EXEC` (which becomes `wsl tmux`) cannot accept
+raw `/tmp/...` paths from Git Bash without mangling. Repeat the `wsl bash` block above
+to reload and re-paste; the file persists in WSL `/tmp` for the duration of the session.
 
 After sending, run **Step 4b — Queue verification** targeting `<slug>:0.0` to confirm
 the prompt was actually submitted, then run **Step 4c — Post-send monitoring** to confirm
