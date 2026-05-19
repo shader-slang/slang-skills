@@ -30,6 +30,8 @@ The interactive installer lets you select which skills to install using arrow ke
 
 ## Skills
 
+### Slang specific skills
+
 | Skill | Description | Dependencies |
 |-------|-------------|-------------|
 | `slang-build` | Platform-aware build: OS detection, CMake presets, submodules | *(foundation)* |
@@ -42,6 +44,12 @@ The interactive installer lets you select which skills to install using arrow ke
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
 | `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
+
+### General developer skills
+
+| Skill | Description | Dependencies |
+|-------|-------------|-------------|
+| `tmux-agent-manager` | Manage multiple Claude Code agent sessions in tmux: status reporting, message delivery, health monitoring, and spawning new agents from GitHub issues or free-form prompts. Works on Linux, macOS, WSL, and Windows (Git Bash / PowerShell). | *(standalone)* |
 
 ## Installation Options
 

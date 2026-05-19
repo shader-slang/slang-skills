@@ -1,6 +1,7 @@
 ---
 name: slang-build
 description: Platform-aware build instructions for the Slang compiler. Only invoke when explicitly called via /slang-build or referenced by other skills.
+license: Apache-2.0
 ---
 
 # Slang Build

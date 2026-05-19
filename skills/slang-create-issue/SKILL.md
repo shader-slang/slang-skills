@@ -1,6 +1,7 @@
 ---
 name: slang-create-issue
 description: Create clear, well-structured GitHub issues and pull requests for the Slang compiler repository. Only invoke when explicitly called via /slang-create-issue.
+license: Apache-2.0
 ---
 
 # Slang Issues and Pull Requests

@@ -1,6 +1,7 @@
 ---
 name: slang-run-tests
 description: Platform-aware test runner for the Slang compiler. Only invoke when explicitly called via /slang-run-tests or referenced by other skills.
+license: Apache-2.0
 ---
 
 # Slang Run Tests

@@ -6,6 +6,7 @@ description: >-
   backward kernels, removing custom [BackwardDerivativeOf] functions, or
   reducing register pressure in differentiable GPU code, including tuning
   [ForceUnroll] versus [MaxIters] loop behavior per call site.
+license: Apache-2.0
 ---
 
 # Autodiff Kernel Optimization
