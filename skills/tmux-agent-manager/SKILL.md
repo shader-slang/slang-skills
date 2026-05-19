@@ -58,12 +58,13 @@ fi
 
 PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
-mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR"
+AGENT_TYPE_DIR="${HOME}/.cache/tmux-agent-manager/agent_type"
+mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR" "$AGENT_TYPE_DIR"
 
 echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT RM=$RM"
 ```
 
-Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, and `YOLO_MODE_DIR` at the top of every subsequent
+Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, `YOLO_MODE_DIR`, and `AGENT_TYPE_DIR` at the top of every subsequent
 bash block that needs them, using the values set above.
 
 **Variable reference used in all steps below:**
@@ -132,7 +133,8 @@ After the active agent set is known, purge orphaned state files so the cache dir
 SANITIZED_ACTIVE=$(printf "%s\n" "$ACTIVE_AGENT_SESSIONS" | sed 's/[^a-zA-Z0-9._-]/_/g')
 for state_dir in \
     "${HOME}/.cache/tmux-agent-manager/prev_pane" \
-    "${HOME}/.cache/tmux-agent-manager/yolo_mode"; do
+    "${HOME}/.cache/tmux-agent-manager/yolo_mode" \
+    "${HOME}/.cache/tmux-agent-manager/agent_type"; do
   [ -d "$state_dir" ] || continue
   for f in "$state_dir"/*; do
     [ -f "$f" ] || continue
@@ -203,37 +205,50 @@ printf "%s\n" "$current_tail" > "$PREV_PANE_DIR/$SAFE_SESSION"
 
 On the first iteration the file does not exist, so `prev_tail` is empty and no session is classified as `stuck` initially.
 
-### YOLO mode detection
+### Agent type and YOLO mode detection
 
-For each session, also check whether Claude Code was started with
-`--dangerously-skip-permissions`. Without this flag, every tool call triggers a
-permission prompt and the agent will stall repeatedly.
+For each session, detect the agent type (Claude Code vs Codex) and whether it was
+started with its bypass flag. The two agents use different bypass flags:
 
-Scan the first 500 lines of scrollback — the bypass flag is printed in the welcome banner at session start:
+- **Claude Code**: `--dangerously-skip-permissions` — banner prints `⚠️  Bypassing permission checks`; status bar shows `⏵⏵ bypass permissions on`
+- **Codex**: `--dangerously-bypass-approvals-and-sandbox`
+
+**Agent type detection** — scan the first 500 lines for agent-specific markers:
 
 ```bash
-$TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 \
-  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission" \
-  && echo "yolo" || echo "normal"
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+banner=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null)
+
+AGENT_TYPE="unknown"
+if printf "%s\n" "$banner" | grep -qiE "Claude Code|claude-|bypass permissions on|dangerously-skip-permissions|Bypassing permission"; then
+    AGENT_TYPE="claude"
+elif printf "%s\n" "$banner" | grep -qiE "Codex|gpt-[0-9]|dangerously-bypass-approvals-and-sandbox"; then
+    AGENT_TYPE="codex"
+fi
+
+AGENT_TYPE_DIR="${HOME}/.cache/tmux-agent-manager/agent_type"
+mkdir -p "$AGENT_TYPE_DIR"
+echo "$AGENT_TYPE" > "$AGENT_TYPE_DIR/$SAFE_SESSION"
 ```
 
-Claude Code prints `⚠️  Bypassing permission checks (--dangerously-skip-permissions)` in
-its welcome banner when the flag is active. If that line is absent, classify the session
-as `normal` (not in bypass mode).
-
-Store the result per session using the same file-based pattern as `PREV_PANE_DIR` (portable; avoids associative arrays which require Bash 4.0+):
+**YOLO mode detection** — scan the same banner for either agent's bypass indicator.
+Claude Code also shows `⏵⏵ bypass permissions on` in the tmux status bar, which
+appears in the first 500 lines of scrollback:
 
 ```bash
-YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null \
-  | grep -qE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission" \
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+banner=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S 0 -E 500 2>/dev/null)
+YOLO_STATUS=$(printf "%s\n" "$banner" \
+  | grep -qiE "dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|Bypassing permission|bypass permissions on" \
   && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 mkdir -p "$YOLO_MODE_DIR"
-SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 echo "$YOLO_STATUS" > "$YOLO_MODE_DIR/$SAFE_SESSION"
 ```
 
-To read: `YOLO=$(cat "$YOLO_MODE_DIR/$SAFE_SESSION" 2>/dev/null || echo "normal")`
+To read:
+- `AGENT=$(cat "$AGENT_TYPE_DIR/$SAFE_SESSION" 2>/dev/null || echo "unknown")`
+- `YOLO=$(cat "$YOLO_MODE_DIR/$SAFE_SESSION" 2>/dev/null || echo "normal")`
 
 ---
 
@@ -254,16 +269,18 @@ skill may have longer names — truncate display names to 40 chars with `…` as
 for table alignment. SUMMARY = last meaningful agent output line.
 
 **YOLO mode warning** — after the table, list every session whose `YOLO_MODE` is `normal`
-as a dedicated warning block:
+as a dedicated warning block. Include the agent-type-specific bypass flag for each session:
 
 ```text
-⚠ The following sessions are NOT running with --dangerously-skip-permissions:
-  • <session-name>
-  • <session-name>
+⚠ The following sessions are NOT running with their bypass flag:
+  • <session-name> (claude  → restart with: claude --dangerously-skip-permissions)
+  • <session-name> (codex   → restart with: codex --dangerously-bypass-approvals-and-sandbox)
+  • <session-name> (unknown → restart with: claude --dangerously-skip-permissions OR codex --dangerously-bypass-approvals-and-sandbox)
 These agents will pause and request approval for every tool call.
-To restart with bypass mode: $TMUX_EXEC kill-session -t <name>, then
-/tmux-agent-manager new <issue> (which always passes --dangerously-skip-permissions).
+To restart: $TMUX_EXEC kill-session -t <name>, then /tmux-agent-manager new <issue>.
 ```
+
+Read `AGENT_TYPE` from `$AGENT_TYPE_DIR/$SAFE_SESSION` to fill in the per-session agent label and flag.
 
 If all sessions are in YOLO mode, omit the warning block entirely — print **nothing** about YOLO mode. Do not add any confirmation like "all sessions are in YOLO mode" or "no approval warnings needed". Silence is the correct output when everything is as expected.
 
@@ -506,6 +523,7 @@ WORKING_GRACE=30  # new sessions need more time to initialize
 ```text
 elapsed = 0
 saw_working = false
+SAFE_SESSION=$(printf "%s" "$SESSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
 loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
     capture 250 lines of scrollback from $SESSION:0.0
@@ -514,7 +532,11 @@ loop every CHECK_INTERVAL until elapsed >= MAX_WAIT:
     if state == needs_approval:
         ALERT: "⚠ SESSION needs approval — agent is waiting for a permission prompt."
         if get_yolo_mode(SESSION) == "normal":  # cat "$YOLO_MODE_DIR/$SAFE_SESSION"
-            ALERT (append): "⚠ This agent was NOT started with --dangerously-skip-permissions.
+            agent_type = cat "$AGENT_TYPE_DIR/$SAFE_SESSION" or "unknown"
+            bypass_flag = "--dangerously-skip-permissions" if agent_type == "claude"
+                          else "--dangerously-bypass-approvals-and-sandbox" if agent_type == "codex"
+                          else "--dangerously-skip-permissions (Claude) or --dangerously-bypass-approvals-and-sandbox (Codex)"
+            ALERT (append): "⚠ This agent was NOT started with <bypass_flag>.
                              It will block on every tool call requiring approval.
                              Consider restarting it with bypass mode enabled."
         show the relevant pane lines
@@ -729,12 +751,15 @@ $TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S 0 -E 500 \
   && echo "yolo" || echo "normal"
 ```
 
-If the result is `normal`, emit a warning and continue immediately to Step 7h:
+If the result is `normal`, emit a warning and continue immediately to Step 7h.
+Use the agent-type-specific bypass flag in the message:
 
 ```text
-⚠ Session '<slug>' is NOT running with --dangerously-skip-permissions.
+⚠ Session '<slug>' is NOT running with its bypass flag.
   The agent will pause and request approval for every tool call.
-  To fix: kill this session and restart claude with --dangerously-skip-permissions.
+  To fix: kill this session and restart with the appropriate flag:
+    Claude Code: claude --dangerously-skip-permissions
+    Codex:       codex --dangerously-bypass-approvals-and-sandbox
 ```
 
 ### 7h — Send the task prompt
