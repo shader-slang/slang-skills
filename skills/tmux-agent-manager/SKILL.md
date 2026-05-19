@@ -484,8 +484,9 @@ while attempt <= MAX_RETRIES:
             if HOST == "windows":
                 # $TMP_PAYLOAD is a WSL path; $TMUX_EXEC (=wsl tmux) would mangle it.
                 # Re-run the buffer ops inside wsl bash; pass SESSION and TMP_PAYLOAD
-                # as positional args via -s to avoid expanding them in the heredoc.
-                wsl bash -s "$SESSION" "$TMP_PAYLOAD" << 'WSLBLOCK'
+                # as positional args via -s. MSYS_NO_PATHCONV=1 prevents Git Bash from
+                # converting the /tmp/... path in $TMP_PAYLOAD before wsl sees it.
+                MSYS_NO_PATHCONV=1 wsl bash -s "$SESSION" "$TMP_PAYLOAD" << 'WSLBLOCK'
 SESSION="$1"
 TMP_PAYLOAD="$2"
 tmux load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
