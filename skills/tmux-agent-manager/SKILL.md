@@ -330,10 +330,10 @@ so both paths record the same pre-send buffer snapshot.
 if [ "$HOST" = "windows" ]; then
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
     wsl bash << WSLBLOCK
-cat > /tmp/agent_send_$SESSION.txt << 'EOF_MSG'
+cat > "/tmp/agent_send_$SESSION.txt" << 'EOF_MSG'
 MESSAGE
 EOF_MSG
-tmux load-buffer -b "agent_msg_$SESSION" /tmp/agent_send_$SESSION.txt
+tmux load-buffer -b "agent_msg_$SESSION" "/tmp/agent_send_$SESSION.txt"
 tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
 sleep 1
@@ -766,10 +766,10 @@ on the session's working directory is not safe.
 
 ```bash
 # Claude Code (default) — explicit cd ensures correct working directory
-$TMUX_EXEC send-keys -t "<slug>:0.0" "cd '$TMUX_C_PATH' && claude --dangerously-skip-permissions" Enter
+$TMUX_EXEC send-keys -t "<slug>:0.0" "cd \"$TMUX_C_PATH\" && claude --dangerously-skip-permissions" Enter
 
 # Codex alternative
-$TMUX_EXEC send-keys -t "<slug>:0.0" "cd '$TMUX_C_PATH' && codex --dangerously-bypass-approvals-and-sandbox" Enter
+$TMUX_EXEC send-keys -t "<slug>:0.0" "cd \"$TMUX_C_PATH\" && codex --dangerously-bypass-approvals-and-sandbox" Enter
 ```
 
 Use whichever agent the user requests; default to `claude` if unspecified.
@@ -816,10 +816,10 @@ if [ "$HOST" = "windows" ]; then
     # All tmux buffer ops run inside WSL — Git Bash would mangle /tmp/... paths
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
     wsl bash << WSLBLOCK
-cat > /tmp/agent_prompt_<slug>.txt << 'PROMPT_EOF'
+cat > "/tmp/agent_prompt_<slug>.txt" << 'PROMPT_EOF'
 <composed prompt text>
 PROMPT_EOF
-tmux load-buffer -b "agent_prompt_<slug>" /tmp/agent_prompt_<slug>.txt
+tmux load-buffer -b "agent_prompt_<slug>" "/tmp/agent_prompt_<slug>.txt"
 tmux paste-buffer -b "agent_prompt_<slug>" -t "<slug>:0.0"
 tmux delete-buffer -b "agent_prompt_<slug>" 2>/dev/null || true
 sleep 1
