@@ -428,7 +428,7 @@ while attempt <= MAX_RETRIES:
     if state == working or state == needs_approval or state == unknown:
         # Agent received the message and is acting on it (or needs approval).
         report "✓ Message queued — agent is processing."
-        { [ "$HOST" = "windows" ] && wsl rm -f "$TMP_PAYLOAD" || rm -f "$TMP_PAYLOAD"; } 2>/dev/null || true
+        if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
         return  # proceed to Step 4c
 
     if state == pending_message:
@@ -452,17 +452,17 @@ while attempt <= MAX_RETRIES:
         elif attempt == 1 and tail != PRE_SEND_TAIL:
             # Pane changed from pre-send — command ran and completed quickly.
             report "✓ Message queued — agent completed the task quickly."
-            { [ "$HOST" = "windows" ] && wsl rm -f "$TMP_PAYLOAD" || rm -f "$TMP_PAYLOAD"; } 2>/dev/null || true
+            if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
             return
         else:
             # Second idle after retry — give up and report.
             ALERT: "⚠ Message delivery to SESSION failed after $MAX_RETRIES attempts.
                     The agent pane appears unchanged. Last 20 pane lines:"
             show tail
-            { [ "$HOST" = "windows" ] && wsl rm -f "$TMP_PAYLOAD" || rm -f "$TMP_PAYLOAD"; } 2>/dev/null || true
+            if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
             return  # do NOT proceed to Step 4c
 
-{ [ "$HOST" = "windows" ] && wsl rm -f "$TMP_PAYLOAD" || rm -f "$TMP_PAYLOAD"; } 2>/dev/null || true
+if [ "$HOST" = "windows" ]; then wsl rm -f "$TMP_PAYLOAD" 2>/dev/null; else rm -f "$TMP_PAYLOAD" 2>/dev/null; fi
 ALERT: "⚠ Message delivery to SESSION failed after $MAX_RETRIES attempts.
         The message still appears pending (Enter may not be processing). Last 20 pane lines:"
 show tail
@@ -614,6 +614,7 @@ else
     MAIN_SHELL="$MAIN_NATIVE"                  # already a POSIX path
 fi
 
+MAIN_NATIVE=$(printf "%s" "$MAIN_NATIVE" | tr '\\' '/')   # normalize any backslashes
 PARENT_SHELL=$(dirname "$MAIN_SHELL")          # sibling worktrees live here
 PARENT_NATIVE=$(dirname "$MAIN_NATIVE")
 
