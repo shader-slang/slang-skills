@@ -30,6 +30,37 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 ```
 
+### WSL Notes
+
+On WSL, append `.exe` to host tools:
+- `git.exe` instead of `git` (if Windows git was used to set up this repo — see detection below)
+- `cmake.exe` instead of `cmake`
+- `python.exe` instead of `python`
+- `gh.exe` instead of `gh`
+
+### Detect git binary (Windows / WSL)
+
+On WSL, both `git` (WSL/Linux git) and `git.exe` (Windows Git for Windows) exist on PATH but
+are **not interchangeable**. Whichever was used to clone or init the repo must be used for all
+subsequent operations — mixing them corrupts the index regardless of which filesystem the repo
+lives on.
+
+Detect by probing which git can actually read the repo:
+
+```bash
+GIT="git"
+if [ "$PLATFORM" = "wsl" ]; then
+  if ! git rev-parse --git-dir > /dev/null 2>&1; then
+    if git.exe rev-parse --git-dir > /dev/null 2>&1; then
+      GIT="git.exe"
+    fi
+  fi
+fi
+# On native Windows (MINGW/MSYS), 'git' already resolves to git.exe — no change needed.
+```
+
+Use `$GIT` in place of `git` for all subsequent commands in this session.
+
 ### Platform Capabilities
 
 | Capability | macOS | Linux | Windows | WSL |
@@ -51,24 +82,31 @@ showing all passes with many skips may hide real failures. Always check skip cou
 Required before first build:
 
 ```bash
-git submodule update --init --recursive
+$GIT submodule update --init --recursive
 ```
+
+(`$GIT` is set in Step 1 — `git` on Linux/macOS, `git.exe` on WSL with a Windows-hosted repo.)
 
 ---
 
 ## Step 3: Configure
 
 ```bash
-cmake --preset default
+cmake --preset default -DSLANG_EMBED_CORE_MODULE=OFF
 ```
 
-On Windows (non-WSL), prefer the Visual Studio preset:
+On Windows (including WSL targeting a Windows build), use the highest available Visual Studio preset in this order:
+
+1. `vs2026-dev` (preferred)
+2. `vs2022-dev`
+3. `vs2019-dev`
 
 ```bash
-cmake.exe --preset vs2022 -DSLANG_IGNORE_ABORT_MSG=ON
+cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF
 ```
 
-The `-DSLANG_IGNORE_ABORT_MSG=ON` flag suppresses modal abort dialogs during unattended builds.
+- `-DSLANG_IGNORE_ABORT_MSG=ON` suppresses modal abort dialogs during unattended builds.
+- `-DSLANG_EMBED_CORE_MODULE=OFF` skips embedding the core module binary, which gives cleaner stack traces and makes bugs easier to track down.
 
 ### Optional: sccache
 
@@ -87,12 +125,12 @@ objects that don't include your changes. If edits seem to have no effect, either
 
 | Use Case | Preset | Binary Path | When |
 |----------|--------|-------------|------|
-| **Default** | `releaseWithDebugInfo` | `build/RelWithDebInfo/bin/` | General development, most work |
-| Bug investigation | `debug` | `build/Debug/bin/` | Need assertions, full debugging symbols |
-| Performance testing | `release` | `build/Release/bin/` | Benchmarking, CI-like validation |
+| **Default** | `debug` | `build/Debug/bin/` | General development — assertions enabled, full debug symbols |
+| Performance testing | `releaseWithDebugInfo` | `build/RelWithDebInfo/bin/` | Faster builds when assertions aren't needed |
+| CI / benchmarking | `release` | `build/Release/bin/` | Benchmarking, CI-like validation |
 
-**Default**: Use `releaseWithDebugInfo` for general development — it balances debug info with
-reasonable build times. Use `debug` when you need assertions to catch invariant violations.
+**Default**: Use `debug` for general development — assertions are enabled and catch invariant
+violations early, which is critical for tracking down bugs.
 
 ### Build Commands
 
@@ -105,13 +143,6 @@ cmake --build --preset <preset> --target slangc slang-test \
 The redirect-and-retry pattern avoids wasting LLM tokens on successful build output.
 On failure, the second invocation shows the actual errors.
 
-### WSL Notes
-
-On WSL, append `.exe` to host tools:
-- `cmake.exe` instead of `cmake`
-- `python.exe` instead of `python`
-- `gh.exe` instead of `gh`
-
 ---
 
 ## Step 5: Verify
@@ -119,27 +150,45 @@ On WSL, append `.exe` to host tools:
 After building, verify the binaries exist:
 
 ```bash
-# Adjust path based on preset
-ls build/<Debug|RelWithDebInfo|Release>/bin/slangc
-ls build/<Debug|RelWithDebInfo|Release>/bin/slang-test
+# Adjust path based on preset (default: Debug)
+ls build/Debug/bin/slangc
+ls build/Debug/bin/slang-test
 ```
 
 ---
 
 ## Quick Reference
 
-### One-liner: configure + build (first time)
+### One-liner: configure + build (first time, Linux/macOS)
 
 ```bash
 git submodule update --init --recursive && \
-cmake --preset default && \
-cmake --build --preset releaseWithDebugInfo --target slangc slang-test \
-  >/dev/null 2>&1 || cmake --build --preset releaseWithDebugInfo --target slangc slang-test
+cmake --preset default -DSLANG_EMBED_CORE_MODULE=OFF && \
+cmake --build --preset debug --target slangc slang-test \
+  >/dev/null 2>&1 || cmake --build --preset debug --target slangc slang-test
+```
+
+### One-liner: configure + build (first time, WSL / Git Bash)
+
+```bash
+$GIT submodule update --init --recursive && \
+cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF && \
+cmake.exe --build --preset debug --target slangc slang-test \
+  >/dev/null 2>&1 || cmake.exe --build --preset debug --target slangc slang-test
+```
+
+### Configure + build (first time, Windows PowerShell)
+
+```powershell
+git submodule update --init --recursive
+cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF
+cmake.exe --build --preset debug --target slangc slang-test 2>$null
+if ($LASTEXITCODE -ne 0) { cmake.exe --build --preset debug --target slangc slang-test }
 ```
 
 ### One-liner: rebuild (already configured)
 
 ```bash
-cmake --build --preset releaseWithDebugInfo --target slangc slang-test \
-  >/dev/null 2>&1 || cmake --build --preset releaseWithDebugInfo --target slangc slang-test
+cmake --build --preset debug --target slangc slang-test \
+  >/dev/null 2>&1 || cmake --build --preset debug --target slangc slang-test
 ```
