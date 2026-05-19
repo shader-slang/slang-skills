@@ -318,11 +318,15 @@ On Windows (HOST=windows), Git Bash auto-converts paths starting with `/` to Win
 paths before they reach `wsl tmux`, breaking `load-buffer`. Run the file write and all
 buffer ops inside `wsl bash`. The outer heredoc delimiter is unquoted so `$SESSION`
 is expanded by Git Bash; the inner prompt delimiter is single-quoted so the message
-text is not expanded.
+text is not expanded. After the Windows heredoc, set `TMP_PAYLOAD` to the WSL path so
+Step 4b's retry logic can reference it uniformly across platforms.
+
+`PRE_SEND_TAIL` is captured inside each branch immediately before the paste operation
+so both paths record the same pre-send buffer snapshot.
 
 ```bash
-PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
 if [ "$HOST" = "windows" ]; then
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
     wsl bash << WSLBLOCK
 cat > /tmp/agent_send_$SESSION.txt << 'EOF_MSG'
 MESSAGE
@@ -331,14 +335,16 @@ tmux load-buffer -b "agent_msg_$SESSION" /tmp/agent_send_$SESSION.txt
 tmux paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
 tmux delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
 WSLBLOCK
+    TMP_PAYLOAD="/tmp/agent_send_$SESSION.txt"
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_send_msg.XXXXXX)
+    PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -20)
     cat > "$TMP_PAYLOAD" << 'EOF_MSG'
 MESSAGE
 EOF_MSG
     $TMUX_EXEC load-buffer -b "agent_msg_$SESSION" "$TMP_PAYLOAD"
     $TMUX_EXEC paste-buffer -b "agent_msg_$SESSION" -t "$SESSION:0.0"
-    $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION"
+    $TMUX_EXEC delete-buffer -b "agent_msg_$SESSION" 2>/dev/null || true
     # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 fi
 # Wait for the paste to land before sending Enter (paste-buffer is async).
@@ -804,6 +810,7 @@ tmux delete-buffer -b "agent_prompt_<slug>" 2>/dev/null || true
 sleep 1
 tmux send-keys -t "<slug>:0.0" Enter
 WSLBLOCK
+    TMP_PAYLOAD="/tmp/agent_prompt_<slug>.txt"
 else
     TMP_PAYLOAD=$(mktemp /tmp/agent_prompt_<slug>.XXXXXX)
     cat > "$TMP_PAYLOAD" << 'PROMPT_EOF'
@@ -812,16 +819,18 @@ PROMPT_EOF
     PRE_SEND_TAIL=$($TMUX_EXEC capture-pane -t "<slug>:0.0" -p -S -20)
     $TMUX_EXEC load-buffer -b "agent_prompt_<slug>" "$TMP_PAYLOAD"
     $TMUX_EXEC paste-buffer -b "agent_prompt_<slug>" -t "<slug>:0.0"
-    $TMUX_EXEC delete-buffer -b "agent_prompt_<slug>"
+    $TMUX_EXEC delete-buffer -b "agent_prompt_<slug>" 2>/dev/null || true
     sleep 1
     $TMUX_EXEC send-keys -t "<slug>:0.0" Enter
     # Do NOT rm TMP_PAYLOAD here — Step 4b may need it for a retry.
 fi
 ```
 
-**Step 4b retry on Windows**: if a retry is needed, repeat the `wsl bash` block above
-(reload the file and re-paste); the file persists in WSL `/tmp` for the duration of
-the session unless explicitly removed.
+**Step 4b retry on Windows**: `TMP_PAYLOAD` is set after the heredoc so Step 4b can
+reference it to identify the file. However, the actual retry buffer ops must still run
+inside a `wsl bash` heredoc — `$TMUX_EXEC` (which becomes `wsl tmux`) cannot accept
+raw `/tmp/...` paths from Git Bash without mangling. Repeat the `wsl bash` block above
+to reload and re-paste; the file persists in WSL `/tmp` for the duration of the session.
 
 After sending, run **Step 4b — Queue verification** targeting `<slug>:0.0` to confirm
 the prompt was actually submitted, then run **Step 4c — Post-send monitoring** to confirm
