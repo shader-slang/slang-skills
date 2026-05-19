@@ -105,10 +105,10 @@ a model-info line, or the `›` prompt pattern expected by Step 2. Discard sessi
 that show none of these — they are unrelated tmux sessions and must not be targeted
 for status classification, sends, or implicit target resolution.
 
-Capture 250 lines of scrollback from each candidate and test against the agent-marker regex. Using scrollback ensures startup markers aren't lost even after verbose output, and including working-state markers catches busy sessions:
+Capture the full pane scrollback from each candidate and test against identity-marker regex. Using full scrollback (`-S -`) ensures startup markers are found even in sessions that have been running for a long time with heavy output — no working-state markers are needed:
 
 ```bash
-tail_output=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -250 | tail -250)
+tail_output=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -)
 echo "$tail_output" \
   | grep -qE "(Claude Code|Codex|Model: claude-|›.*claude-|^›[[:space:]]*$)" \
   && echo "AGENT" || echo "NOT_AGENT"
@@ -201,7 +201,7 @@ as `normal` (not in bypass mode).
 Store the result per session using the same file-based pattern as `PREV_PANE_DIR` (portable; avoids associative arrays which require Bash 4.0+):
 
 ```bash
-YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S -200 \
+YOLO_STATUS=$($TMUX_EXEC capture-pane -t "$SESSION:0.0" -p -S - \
   | grep -qE "dangerously-skip-permissions|Bypassing permission" \
   && echo "yolo" || echo "normal")
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
