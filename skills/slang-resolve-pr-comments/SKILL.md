@@ -44,7 +44,7 @@ Do not overwrite unrelated local changes. If the worktree is dirty, inspect the 
 
 ## Main Loop
 
-Repeat this workflow periodically until the PR has no unresolved review feedback and all required checks pass. Between iterations, **do not use `sleep`** — instead call `ScheduleWakeup` and the same `/slang-resolve-pr-comments <PR>` prompt, then return immediately so the conversation stays responsive.
+Repeat this workflow periodically until the PR has no unresolved, non-outdated LLM-owned review feedback and all required checks pass. Between iterations, **do not use `sleep`** — instead call `ScheduleWakeup` and the same `/slang-resolve-pr-comments <PR>` prompt, then return immediately so the conversation stays responsive.
 
 1. Check out the PR branch:
 
@@ -198,7 +198,11 @@ Inspect checks with:
 gh pr checks "$PR"
 gh run list --branch "$(git branch --show-current)" --limit 10
 RUN_ID="$(gh run list --branch "$(git branch --show-current)" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')"
-gh run view "$RUN_ID" --log-failed
+if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+  gh run view "$RUN_ID" --log-failed
+else
+  echo "No failed workflow runs found for current branch."
+fi
 ```
 
 For each failure:
