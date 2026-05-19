@@ -1,6 +1,7 @@
 ---
 name: slang-write-test
 description: Quick reference for writing Slang compiler tests (.slang files with //TEST directives). Only invoke when explicitly called via /slang-write-test.
+license: Apache-2.0
 ---
 
 # Slang Test Development

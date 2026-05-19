@@ -1,6 +1,7 @@
 ---
 name: slang-investigate
 description: Root cause investigation for Slang compiler bugs. Only invoke when explicitly called via /slang-investigate or from slang-fix-bug.
+license: Apache-2.0
 ---
 
 # Slang Investigate

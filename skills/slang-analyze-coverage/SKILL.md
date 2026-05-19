@@ -1,6 +1,7 @@
 ---
 name: slang-analyze-coverage
 description: Test coverage analysis and gap-filling for Slang language features. Only invoke when explicitly called via /slang-analyze-coverage.
+license: Apache-2.0
 ---
 
 # Feature-Oriented Test Coverage

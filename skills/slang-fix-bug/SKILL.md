@@ -1,6 +1,7 @@
 ---
 name: slang-fix-bug
 description: Analyze a Slang compiler bug from a test failure, CI log, or GitHub issue. Only invoke when explicitly called via /slang-fix-bug.
+license: Apache-2.0
 ---
 
 # Slang Bug Fix

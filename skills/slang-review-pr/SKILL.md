@@ -1,6 +1,7 @@
 ---
 name: slang-review-pr
 description: Review a Slang compiler PR for correctness, evaluate review feedback, implement fixes, and manage review threads. Only invoke when explicitly called via /slang-review-pr.
+license: Apache-2.0
 ---
 
 # Slang PR Review

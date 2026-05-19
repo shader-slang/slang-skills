@@ -1,6 +1,7 @@
 ---
 name: slang-evaluate-session
 description: Evaluate the current session's skill effectiveness. Only invoke when explicitly called via /slang-evaluate-session.
+license: Apache-2.0
 ---
 
 # Evaluate Session
