@@ -1,24 +1,45 @@
 ---
 name: slang-resolve-pr-comments
 description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, notify the user about draft/WIP/DNI review-blocking LLM messages, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until the PR is clean.
-argument-hint: "<PR URL or number>"
+argument-hint: "<PR URL or number> [--single-pass]"
 allowed-tools: Bash Read Write Edit Grep Glob ScheduleWakeup
+required-capabilities: shell git github-cli file-read file-edit search
 ---
 
 # Resolve GitHub Review Feedback
 
 Use this skill to keep a GitHub PR moving until all CI checks pass and LLM review threads have been addressed and resolved by the agent. Human-owned threads are left unresolved — they are outside the agent's control and must be resolved by the human reviewers themselves.
 
+## Agent Compatibility
+
+This skill is written for any agent that can run shell commands, inspect and edit files, use `git`/`gh`, and optionally schedule a non-blocking follow-up. Treat named tools as capability examples, not hard requirements:
+
+- Shell commands: `Bash`, terminal, `exec_command`, or any equivalent command runner.
+- File work: `Read`/`Write`/`Edit`, `apply_patch`, or any equivalent file inspection and editing tools.
+- Search: `Grep`/`Glob`, `rg`, or any equivalent repository search tools.
+- Follow-up scheduling: `ScheduleWakeup`, a native reminder/resume tool, a background task scheduler, or no scheduler.
+
+The `argument-hint`, `allowed-tools`, and `required-capabilities` metadata are Claude Code compatibility hints. Other agents may ignore them. When `$ARGUMENTS` appears below, use the PR URL or PR number from the user's prompt or from the current agent host's invocation argument.
+
 ## Prerequisites
 
 - GitHub CLI (`gh`) is installed and authenticated for the PR repository.
 - The `gh` token can read PR reviews/checks and push to the PR branch.
-- A PR URL or PR number is provided in `$ARGUMENTS`. If it is missing, ask the user for the PR.
+- A PR URL or PR number is provided by the user or agent invocation. In Claude Code slash commands, this arrives in `$ARGUMENTS`. If it is missing, ask the user for the PR.
+- Optional: `--single-pass` disables automatic follow-up scheduling. In single-pass mode, report what remains pending, when to check again, and the exact rerun prompt/command instead of scheduling the next pass.
 
-Initialize the PR selector once before any use:
+Initialize the PR selector once before any use, adapting the input variable to the current agent host:
 
 ```bash
-PR="${ARGUMENTS:-}"
+# For Claude Code slash commands, ARGUMENTS contains the prompt argument.
+# For other agents, replace ARGUMENTS with the host's invocation variable or set PR directly.
+ARGS="${ARGUMENTS:-}"
+SINGLE_PASS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--single-pass([[:space:]]|$)'; then
+  SINGLE_PASS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--single-pass([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
+PR="$ARGS"
 if [ -z "$PR" ]; then
   echo "Missing PR argument (URL or number)."
   exit 1
@@ -44,7 +65,7 @@ Wait for the user's choice before continuing.
 
 ## Main Loop
 
-Repeat this workflow periodically until the PR has no unresolved, non-outdated LLM-owned review feedback and all required checks pass. Between iterations, **do not use `sleep`** — instead call `ScheduleWakeup` and the same `/slang-resolve-pr-comments <PR>` prompt, then return immediately so the conversation stays responsive.
+Repeat this workflow periodically until the PR has no unresolved, non-outdated LLM-owned review feedback and all required checks pass. Between iterations, **do not use `sleep`** or block the live session. Use the current agent host's non-blocking follow-up facility when one exists; otherwise report the pending state and the exact prompt/command the user or orchestrator should rerun later, then return.
 
 1. Check out the PR branch:
 
@@ -60,11 +81,19 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
 6. Leave human-owned threads unresolved for the human reviewer to resolve manually.
 7. At the end of each pass, check the Completion Criteria below:
    - If **all criteria are met**: report the PR is clean and **do not reschedule** — the loop is done.
-   - Otherwise: call `ScheduleWakeup` and return. The next wakeup will re-enter this skill automatically.
+   - Otherwise: schedule or request the next pass as described below, then return. The next pass should re-enter this skill with the same PR argument.
 
 Stop (do not reschedule) only if blocked by missing credentials, missing push permission, an ambiguous human decision, or local changes that cannot be safely preserved.
 
-**Scheduling the next iteration** — call `ScheduleWakeup` at the end of every pass where work remains:
+**Continuing the next iteration** — at the end of every pass where work remains, prefer a non-blocking follow-up.
+
+**Choosing `<interval>`:** Pick a value that keeps the conversation context cache warm —
+staying under the cache TTL avoids paying a full cold re-read on every wakeup. Use
+`cache_ttl_seconds - 60` as the interval, giving a 60 s safety margin. At the current
+5-minute (300 s) TTL the default is **240 s**. If you know the cache TTL has changed,
+recalculate accordingly. Never use a value at or above the TTL itself.
+
+In Claude Code, call `ScheduleWakeup`:
 
 ```text
 ScheduleWakeup(
@@ -74,11 +103,11 @@ ScheduleWakeup(
 )
 ```
 
-**Choosing `<interval>`:** Pick a value that keeps the conversation context cache warm —
-staying under the cache TTL avoids paying a full cold re-read on every wakeup. Use
-`cache_ttl_seconds - 60` as the interval, giving a 60 s safety margin. At the current
-5-minute (300 s) TTL the default is **240 s**. If you know the cache TTL has changed,
-recalculate accordingly. Never use a value at or above the TTL itself.
+For other agents, use the host's native equivalent if available. If no scheduling/resume tool exists, stop after reporting:
+
+- What is still pending.
+- When to check again — use 240 s by default (see **Choosing `<interval>`** above if the cache TTL differs).
+- The exact rerun prompt, for example `/slang-resolve-pr-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
 
 ## Review-Blocking PR State
 
@@ -96,7 +125,7 @@ If an LLM left a review-blocking message:
 2. Do not change the draft state or title unless the user explicitly asks.
 3. Do not treat the message as code feedback, and do not mark the thread resolved on behalf of the user.
 4. Let the user resolve the situation by marking the PR ready for review, changing the title, or otherwise addressing the blocker.
-5. Continue the cache-TTL-based polling loop (`delaySeconds = cache_ttl_seconds - 60`, default 240 s) if the user asked for continuous monitoring.
+5. If the PR is review-blocked, report the blocker and proceed to the **Completion Criteria** section (which handles single-pass vs. continuous monitoring) to schedule or request the next pass and return.
 
 ## Commit Policy
 
@@ -245,9 +274,9 @@ else
 fi
 ```
 
-After issuing a rerun, schedule the next wakeup as normal and verify in the following pass whether the retried run passed. If the same job fails again with the same infra-looking error, retry once more (up to **3 total attempts** for the same run). After 3 consecutive infra-looking failures, stop retrying and report the pattern to the user — the infra issue may be persistent and require human intervention.
+After issuing a rerun, proceed to the **Completion Criteria** section to schedule or request the next pass, then verify in the following pass whether the retried run passed. If the same job fails again with the same infra-looking error, retry once more (up to **3 total attempts** for the same run). After 3 consecutive infra-looking failures, stop retrying and report the pattern to the user — the infra issue may be persistent and require human intervention.
 
-If checks are still running and there is no review work to do, do not block — use a non-blocking check and let `ScheduleWakeup` handle the next pass:
+If checks are still running and there is no review work to do, do not block — use a non-blocking check, then proceed to the **Completion Criteria** section to schedule or request the next pass and return:
 
 ```bash
 gh pr checks "$PR"
@@ -310,7 +339,7 @@ git push --force-with-lease "$PUSH_REMOTE" "HEAD:$HEAD_BRANCH"
 
 After every pass, evaluate whether to stop or reschedule:
 
-**Stop and report success** when all of these are true — do not call `ScheduleWakeup`:
+**Stop and report success** when all of these are true — do not schedule another pass:
 
 - `gh pr checks "$PR"` shows all required checks passing.
 - The PR is not in a draft/WIP/DNI-style state that LLM reviewers reported as blocking review.
@@ -318,7 +347,7 @@ After every pass, evaluate whether to stop or reschedule:
 - `gh pr view "$PR" --json mergeStateStatus` does not report a conflict state.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
-**Reschedule** (call `ScheduleWakeup` with `delaySeconds = cache_ttl_seconds - 60`, default 240 s) when any of the above is not yet true. Report what is still pending before scheduling the next wakeup.
+**Continue later** when any of the above is not yet true. If a single-pass run was requested (`--single-pass` or `SINGLE_PASS=true`) or scheduling is unavailable, report what is still pending, when to check again, and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = <interval>` (see **Choosing `<interval>`** above), then return.
 
 **The following conditions are not grounds for rescheduling:**
 

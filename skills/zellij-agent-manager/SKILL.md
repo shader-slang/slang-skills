@@ -10,8 +10,7 @@ description: >-
   message to an agent, or monitor for sessions that need input or are
   stuck. Linux and macOS only — Zellij is not supported on Windows.
 argument-hint: "[status | send <session> <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
-allowed-tools:
-  - Bash
+allowed-tools: Bash
 ---
 
 # Zellij Agent Manager
