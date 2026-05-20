@@ -3,6 +3,7 @@ name: Validate Skills
 on:
   pull_request:
     branches: ["**"]
+  merge_group:
 
 jobs:
   dry-run:
