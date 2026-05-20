@@ -148,6 +148,51 @@ cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MOD
 
 Stop here if `$ACTION` is `configure`.
 
+### GitHub API Rate Limit
+
+If CMake configuration prints an error about the GitHub API rate limit, resolve it by computing
+the release tag for the current commit and passing an explicit binary URL.
+
+First, ensure the release tags are fetched locally:
+
+```bash
+git fetch --tags
+```
+
+Then compute the tag:
+
+```bash
+tagFullVersion="$(git describe --tags --match 'v20[2-9][0-9].[0-9]*')"
+tagVersion="${tagFullVersion%%-*}"
+tag="${tagVersion#v}"
+```
+
+Then re-run configure with the `-DSLANG_SLANG_LLVM_BINARY_URL` flag appended:
+
+**Linux / WSL:**
+```bash
+# append to your configure command:
+-DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-linux-x86_64.zip
+```
+
+**Windows / WSL targeting Windows:**
+```bash
+# append to your configure command:
+-DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-windows-x86_64.zip
+```
+
+Full example (Linux):
+```bash
+cmake --preset default -DSLANG_EMBED_CORE_MODULE=OFF \
+  -DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-linux-x86_64.zip
+```
+
+Full example (Windows/WSL):
+```bash
+cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF \
+  -DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-windows-x86_64.zip
+```
+
 ### Optional: sccache
 
 For faster rebuilds, pass `-DSLANG_USE_SCCACHE=ON` at configure time. Requires `sccache` in PATH.
