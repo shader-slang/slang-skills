@@ -116,7 +116,7 @@ If an LLM left a review-blocking message:
 2. Do not change the draft state or title unless the user explicitly asks.
 3. Do not treat the message as code feedback, and do not mark the thread resolved on behalf of the user.
 4. Let the user resolve the situation by marking the PR ready for review, changing the title, or otherwise addressing the blocker.
-5. Unless the user explicitly requested a single-pass run, invoking this skill implies continuous monitoring. If the current agent host supports non-blocking follow-up scheduling, schedule the next pass with `delaySeconds = cache_ttl_seconds - 60` (default 240 s), then return. Otherwise, report the blocker, the rerun timing, and the exact rerun prompt/command, then return.
+5. If the user explicitly requested a single-pass run, report the blocker and return. Otherwise, invoking this skill implies continuous monitoring. If the current agent host supports non-blocking follow-up scheduling, schedule the next pass with `delaySeconds = cache_ttl_seconds - 60` (default 240 s), then return. Otherwise, report the blocker, the rerun timing, and the exact rerun prompt/command, then return.
 
 ## Commit Policy
 
@@ -338,7 +338,7 @@ After every pass, evaluate whether to stop or reschedule:
 - `gh pr view "$PR" --json mergeStateStatus` does not report a conflict state.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
-**Continue later** when any of the above is not yet true. Schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = cache_ttl_seconds - 60` (default 240 s). If scheduling is unavailable, report what is still pending and give the exact rerun prompt/command instead.
+**Continue later** when any of the above is not yet true. If a single-pass run was requested or scheduling is unavailable, report what is still pending and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = cache_ttl_seconds - 60` (default 240 s), then return.
 
 **The following conditions are not grounds for rescheduling:**
 
