@@ -208,11 +208,44 @@ fi
 For each failure:
 
 1. Identify the failing job and command from the logs.
-2. Reproduce locally when feasible.
-3. Fix the code or test.
-4. Run the narrowest reliable validation first, then broader validation when the change warrants it.
-5. Push to the PR branch.
-6. Continue monitoring until the new checks finish.
+2. **Determine if the failure looks intermittent or infra-related** (see below). If so, retry instead of attempting a code fix.
+3. Otherwise, reproduce locally when feasible.
+4. Fix the code or test.
+5. Run the narrowest reliable validation first, then broader validation when the change warrants it.
+6. Push to the PR branch.
+7. Continue monitoring until the new checks finish.
+
+### Intermittent / Infra Failures
+
+Treat a failure as intermittent or infrastructure-related when the logs show any of:
+
+- Network errors: timeouts, connection resets, DNS failures, `curl`/`wget` failures fetching dependencies or artifacts
+- Resource exhaustion: out-of-memory kills, disk-full errors, CPU throttling, runner eviction
+- Runner/infra issues: runner setup failures, Docker pull failures, missing environment variables injected by CI, agent disconnects
+- Flaky test output: assertions about timing, port conflicts, race conditions with no code change that could explain it
+- Lock or concurrency errors in the CI infrastructure itself (e.g., package-manager lock conflicts unrelated to code changes)
+- Errors in unrelated jobs (e.g., a deploy job fails while the compile job that touches your code succeeds)
+
+When a failure matches any of these, **do not attempt a code fix**. Instead, retry the failed run:
+
+```bash
+gh run rerun "$RUN_ID" --failed
+```
+
+The `--failed` flag re-runs only the failed jobs, not the entire workflow.
+
+**Waiting for the retry option to become available:** GitHub only allows rerunning a workflow once it has reached a terminal state (`completed`, `failure`, `cancelled`). If the run is still in progress when you first inspect it, the rerun command will fail. In that case, schedule a wakeup and try again:
+
+```bash
+RUN_STATUS="$(gh run view "$RUN_ID" --json status --jq .status)"
+if [ "$RUN_STATUS" != "completed" ]; then
+  echo "Run $RUN_ID is still $RUN_STATUS — will retry rerun after next wakeup."
+else
+  gh run rerun "$RUN_ID" --failed
+fi
+```
+
+After issuing a rerun, schedule the next wakeup as normal and verify in the following pass whether the retried run passed. If the same job fails again with the same infra-looking error, retry once more (up to **3 total attempts** for the same run). After 3 consecutive infra-looking failures, stop retrying and report the pattern to the user — the infra issue may be persistent and require human intervention.
 
 If checks are still running and there is no review work to do, do not block — use a non-blocking check and let `ScheduleWakeup` handle the next pass:
 
