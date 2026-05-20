@@ -234,7 +234,7 @@ gh run rerun "$RUN_ID" --failed
 
 The `--failed` flag re-runs only the failed jobs, not the entire workflow.
 
-**Waiting for the retry option to become available:** GitHub only allows rerunning a workflow once it has reached a terminal state (`completed`, `failure`, `cancelled`). If the run is still in progress when you first inspect it, the rerun command will fail. In that case, schedule a wakeup and try again:
+**Waiting for the retry option to become available:** GitHub only allows rerunning once the run `status` is `completed` (the only terminal status value; `queued` and `in_progress` are non-terminal). The run outcome — `success`, `failure`, `cancelled`, etc. — is stored in the separate `conclusion` field, which is only populated after `status` becomes `completed`. The script below correctly gates on `.status == "completed"` before attempting the rerun. If the run is still in progress when you first inspect it, schedule a wakeup and try again:
 
 ```bash
 RUN_STATUS="$(gh run view "$RUN_ID" --json status --jq .status)"
