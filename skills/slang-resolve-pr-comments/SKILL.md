@@ -116,7 +116,7 @@ If an LLM left a review-blocking message:
 2. Do not change the draft state or title unless the user explicitly asks.
 3. Do not treat the message as code feedback, and do not mark the thread resolved on behalf of the user.
 4. Let the user resolve the situation by marking the PR ready for review, changing the title, or otherwise addressing the blocker.
-5. If a single-pass run was requested or scheduling is unavailable, report the blocker, when to check again (using the interval below), and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = cache_ttl_seconds - 60` (default 240 s), then return.
+5. If the PR is review-blocked, report the blocker and proceed to the **Completion Criteria** section to schedule or request the next pass and return.
 
 ## Commit Policy
 
@@ -267,7 +267,7 @@ fi
 
 After issuing a rerun, schedule the next wakeup as normal and verify in the following pass whether the retried run passed. If the same job fails again with the same infra-looking error, retry once more (up to **3 total attempts** for the same run). After 3 consecutive infra-looking failures, stop retrying and report the pattern to the user — the infra issue may be persistent and require human intervention.
 
-If checks are still running and there is no review work to do, do not block — use a non-blocking check, then schedule or request the next pass and return:
+If checks are still running and there is no review work to do, do not block — use a non-blocking check, then proceed to the **Completion Criteria** section to schedule or request the next pass and return:
 
 ```bash
 gh pr checks "$PR"
