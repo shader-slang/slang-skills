@@ -19,7 +19,7 @@ This skill is written for any agent that can run shell commands, inspect and edi
 - Search: `Grep`/`Glob`, `rg`, or any equivalent repository search tools.
 - Follow-up scheduling: `ScheduleWakeup`, a native reminder/resume tool, a background task scheduler, or no scheduler.
 
-The `argument-hint` and `allowed-tools` metadata are Claude Code compatibility hints. Other agents may ignore them. When `$ARGUMENTS` appears below, use the PR URL or PR number from the user's prompt or from the current agent host's invocation argument.
+The `argument-hint`, `allowed-tools`, and `required-capabilities` metadata are Claude Code compatibility hints. Other agents may ignore them. When `$ARGUMENTS` appears below, use the PR URL or PR number from the user's prompt or from the current agent host's invocation argument.
 
 ## Prerequisites
 
@@ -92,7 +92,7 @@ For other agents, use the host's native equivalent if available. If no schedulin
 
 - What is still pending.
 - When to check again, using the interval below.
-- The exact rerun prompt, for example `/slang-resolve-pr-comments <PR>` or the equivalent invocation in the current agent.
+- The exact rerun prompt, for example `/slang-resolve-pr-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent.
 
 **Choosing `<interval>`:** Pick a value that keeps the conversation context cache warm —
 staying under the cache TTL avoids paying a full cold re-read on every wakeup. Use
@@ -338,7 +338,7 @@ After every pass, evaluate whether to stop or reschedule:
 - `gh pr view "$PR" --json mergeStateStatus` does not report a conflict state.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
-**Continue later** when any of the above is not yet true. If a single-pass run was requested or scheduling is unavailable, report what is still pending, when to check again, and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = cache_ttl_seconds - 60` (default 240 s), then return.
+**Continue later** when any of the above is not yet true. If a single-pass run was requested or scheduling is unavailable, report what is still pending, when to check again, and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = <interval>` (see **Choosing `<interval>`** above), then return.
 
 **The following conditions are not grounds for rescheduling:**
 
