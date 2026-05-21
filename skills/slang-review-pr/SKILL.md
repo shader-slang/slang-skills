@@ -269,10 +269,10 @@ git push
 
 For each thread from Phase 3, prepare a suggested reply. Use these formats:
 
-- **Implemented**: "[LLM] Applied. <brief description of what changed>. See <commit-hash>."
-- **Out of scope**: "[LLM] Acknowledged. Out of scope for this PR. Will address separately."
-- **Won't fix**: "[LLM] This is intentional because <reason>."
-- **Question answered**: "[LLM] <concise answer>"
+- **Implemented**: "[Agent] Applied. <brief description of what changed>. See <commit-hash>."
+- **Out of scope**: "[Agent] Acknowledged. Out of scope for this PR. Will address separately."
+- **Won't fix**: "[Agent] This is intentional because <reason>."
+- **Question answered**: "[Agent] <concise answer>"
 
 ### Step 2: Present to user
 
@@ -280,8 +280,8 @@ Show all draft replies in a table:
 
 | Thread | File | Draft Reply | Post? |
 |--------|------|-------------|-------|
-| #1 | slang-ir-foo.cpp:123 | [LLM] Applied. Added null check... | ? |
-| #2 | slang-ir-foo.cpp:456 | [LLM] Out of scope for this PR... | ? |
+| #1 | slang-ir-foo.cpp:123 | [Agent] Applied. Added null check... | ? |
+| #2 | slang-ir-foo.cpp:456 | [Agent] Out of scope for this PR... | ? |
 
 **STOP and ask**: "Which replies should I post? All, some (list numbers), or none?"
 
@@ -360,7 +360,7 @@ by individual replies.
 Format:
 
 ```
-## [LLM] Review Summary
+## [Agent] Review Summary
 
 **Assessment**: [1-2 sentences — is the root cause fix correct, any concerns]
 
