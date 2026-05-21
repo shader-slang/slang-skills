@@ -189,7 +189,7 @@ For each unresolved, non-outdated (`isResolved = false` and `isOutdated = false`
 2. Apply the fix, or determine that the suggestion is invalid with evidence.
 3. Run focused validation.
 4. Push the fix if code changed.
-5. Reply on the thread with what changed, what validation ran, or why no code change was needed.
+5. Reply on the thread with what changed, what validation ran, or why no code change was needed. **Always start the reply body with `[LLM] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
 6. Resolve the thread only after the reply is posted and the issue is actually addressed.
 
 Reply to an LLM thread:
@@ -214,7 +214,7 @@ mutation($thread:ID!) {
 }'
 ```
 
-For human threads, do not mark them resolved. If you fixed the issue, reply with a concise summary and ask the reviewer to resolve the thread if satisfied.
+For human threads, do not mark them resolved. If you fixed the issue, reply with a concise summary (prefixed with `[LLM] `) and ask the reviewer to resolve the thread if satisfied.
 
 If `pageInfo.hasNextPage` is true, paginate and inspect every review thread before deciding that the PR has no remaining feedback.
 For pagination, repeat the query adding `-F after="$END_CURSOR"` (using the value from `pageInfo.endCursor`) to the `gh api graphql` command, with `reviewThreads(first:100, after:$after)` in the query.
