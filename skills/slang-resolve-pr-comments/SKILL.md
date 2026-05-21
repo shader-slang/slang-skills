@@ -284,6 +284,8 @@ gh pr checks "$PR"
 
 ## Merge Conflicts And Auto-Rebase Failures
 
+**Do not rebase proactively.** Only rebase onto the base branch when GitHub explicitly reports merge conflicts (i.e. `mergeStateStatus` is `DIRTY` or the PR shows a conflict that blocks merge). If a push is rejected because the remote PR branch has newer commits, synchronize with the remote first (e.g. `git pull --rebase`). If the branch is merely behind the base branch but has no conflicts and you have no local changes to push, leave it alone — GitHub's auto-merge will rebase or merge it when the time comes.
+
 If GitHub reports that auto-merge or auto-rebase cannot continue because conflicts must be resolved, update the PR branch manually.
 
 Inspect merge state:
@@ -344,7 +346,7 @@ After every pass, evaluate whether to stop or reschedule:
 - `gh pr checks "$PR"` shows all required checks passing.
 - The PR is not in a draft/WIP/DNI-style state that LLM reviewers reported as blocking review.
 - There are no unresolved, non-outdated LLM review threads.
-- `gh pr view "$PR" --json mergeStateStatus` does not report a conflict state.
+- `gh pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus` does not report `DIRTY` (actual merge conflicts) or `UNKNOWN` (still calculating). A status of `BEHIND` (branch is behind base but no conflicts) is acceptable — GitHub auto-merge handles it.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
 **Continue later** when any of the above is not yet true. If a single-pass run was requested (`--single-pass` or `SINGLE_PASS=true`) or scheduling is unavailable, report what is still pending, when to check again, and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = <interval>` (see **Choosing `<interval>`** above), then return.
