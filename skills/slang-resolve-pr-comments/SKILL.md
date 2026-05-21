@@ -214,7 +214,7 @@ mutation($thread:ID!) {
 }'
 ```
 
-For human threads, do not mark them resolved. If you fixed the issue, reply with a concise summary (prefixed with `[LLM] `) and ask the reviewer to resolve the thread if satisfied.
+For human threads, do not mark them resolved. If you fixed the issue, reply with a concise summary and ask the reviewer to resolve the thread if satisfied. **Always start the reply body with `[LLM] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
 
 If `pageInfo.hasNextPage` is true, paginate and inspect every review thread before deciding that the PR has no remaining feedback.
 For pagination, repeat the query adding `-F after="$END_CURSOR"` (using the value from `pageInfo.endCursor`) to the `gh api graphql` command, with `reviewThreads(first:100, after:$after)` in the query.
