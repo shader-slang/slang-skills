@@ -11,6 +11,7 @@ description: >-
   stuck. Linux and macOS only — Zellij is not supported on Windows.
 argument-hint: "[status | send <session> <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
 allowed-tools: Bash
+license: Apache-2.0
 ---
 
 # Zellij Agent Manager
