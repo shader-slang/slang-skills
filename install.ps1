@@ -40,13 +40,15 @@ $ErrorActionPreference = 'Stop'
 
 # --- Constants --------------------------------------------------------------
 
-$script:Version       = "1.0.0"
-$script:ManifestFile  = ".slang-skills-manifest"
-$script:ScriptDir     = $PSScriptRoot
-$script:SkillsSrcDir  = Join-Path $ScriptDir "skills"
-$script:ESC           = [char]27
+$script:Version          = "1.0.0"
+$script:ManifestFile     = ".slang-skills-manifest"
+$script:AgentsManifest   = ".slang-agents-manifest"
+$script:ScriptDir        = $PSScriptRoot
+$script:SkillsSrcDir     = Join-Path $ScriptDir "skills"
+$script:AgentsSrcDir     = Join-Path $ScriptDir "agents"
+$script:ESC              = [char]27
 
-# Default install dir: %USERPROFILE%\.claude\skills
+# Default install dirs
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:USERPROFILE ".claude\skills"
 }
@@ -54,6 +56,7 @@ elseif ($InstallDir.StartsWith("~")) {
     $tail = $InstallDir.Substring(1).TrimStart('\', '/')
     $InstallDir = if ($tail) { Join-Path $env:USERPROFILE $tail } else { $env:USERPROFILE }
 }
+$script:AgentsInstallDir = Join-Path $env:USERPROFILE ".claude\agents"
 
 # Dependency map (skill -> list of required skills)
 $script:Dependencies = @{
@@ -75,9 +78,18 @@ $script:SkillDescs    = @()
 $script:SkillDirs     = @()
 $script:SkillSelected = @()
 
+# Parallel-array agent state (discovered from disk)
+$script:AgentNames    = @()
+$script:AgentDescs    = @()
+$script:AgentDirs     = @()
+$script:AgentSelected = @()
+
 # Previously-installed skills (parsed from manifest before UI runs)
-$script:PrevEntries = @()      # array of [PSCustomObject]{DestName, Mode, Source}
-$script:PrevPrefix  = ""
+$script:PrevEntries      = @()   # array of [PSCustomObject]{DestName, Mode, Source}
+$script:PrevPrefix       = ""
+
+# Previously-installed agents (parsed from agents manifest before UI runs)
+$script:PrevAgentEntries = @()   # array of [PSCustomObject]{DestName, Mode, Source}
 
 # --- Help / Usage -----------------------------------------------------------
 
@@ -195,6 +207,43 @@ function Find-Skills {
     }
 }
 
+# --- Agent discovery --------------------------------------------------------
+
+function Get-AgentDescription {
+    param([string]$AgentMdPath)
+    $inFront = $false
+    $opened = 0
+    foreach ($line in Get-Content -LiteralPath $AgentMdPath -ErrorAction SilentlyContinue) {
+        if ($line -match '^---\s*$') {
+            $opened++
+            $inFront = ($opened -eq 1)
+            if ($opened -ge 2) { break }
+            continue
+        }
+        if ($inFront -and $line -match '^description:\s*(.+)$') {
+            $d = $matches[1].Trim()
+            $d = $d -replace '\.\s.*$', ''
+            return $d
+        }
+    }
+    return "(no description)"
+}
+
+function Find-Agents {
+    if (-not (Test-Path -LiteralPath $script:AgentsSrcDir -PathType Container)) { return }
+
+    $dirs = Get-ChildItem -LiteralPath $script:AgentsSrcDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name
+    foreach ($d in $dirs) {
+        $md = Join-Path $d.FullName "AGENT.md"
+        if (-not (Test-Path -LiteralPath $md -PathType Leaf)) { continue }
+
+        $script:AgentNames    += $d.Name
+        $script:AgentDescs    += Get-AgentDescription $md
+        $script:AgentDirs     += $d.FullName
+        $script:AgentSelected += 1
+    }
+}
+
 # --- Existing-install detection ---------------------------------------------
 
 function Get-BareSkillName {
@@ -258,6 +307,43 @@ function Set-InitialSelection {
 
     for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
         $script:SkillSelected[$i] = if ($prevBare.ContainsKey($script:SkillNames[$i])) { 1 } else { 0 }
+    }
+}
+
+function Get-ExistingAgentInstall {
+    $script:PrevAgentEntries = @()
+
+    $manifestPath = Join-Path $script:AgentsInstallDir $script:AgentsManifest
+    if (-not (Test-Path -LiteralPath $manifestPath)) { return }
+
+    foreach ($line in Get-Content -LiteralPath $manifestPath) {
+        if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line -split ':', 3
+        if ($parts.Count -ge 2) {
+            $script:PrevAgentEntries += [PSCustomObject]@{
+                DestName = $parts[0]
+                Mode     = $parts[1]
+                Source   = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+            }
+        }
+    }
+}
+
+function Set-InitialAgentSelection {
+    if (-not [string]::IsNullOrWhiteSpace($Skills)) { return }
+    if ($script:PrevAgentEntries.Count -eq 0) { return }
+
+    $prevBare = @{}
+    foreach ($e in $script:PrevAgentEntries) {
+        $bare = $e.DestName
+        if ($script:PrevPrefix -and $bare.StartsWith($script:PrevPrefix)) {
+            $bare = $bare.Substring($script:PrevPrefix.Length)
+        }
+        $prevBare[$bare] = $true
+    }
+
+    for ($i = 0; $i -lt $script:AgentNames.Count; $i++) {
+        $script:AgentSelected[$i] = if ($prevBare.ContainsKey($script:AgentNames[$i])) { 1 } else { 0 }
     }
 }
 
@@ -354,27 +440,62 @@ function Write-Menu {
         Write-Host "$ESC[$($script:UiLines)A`r" -NoNewline
     }
 
-    $lines    = 0
-    $selected = 0
-    $total    = $script:SkillNames.Count
+    $lines      = 0
+    $selected   = 0
+    $total      = 0
+    $skillCount = $script:SkillNames.Count
+    $agentCount = $script:AgentNames.Count
 
-    for ($i = 0; $i -lt $total; $i++) {
-        $mark = ' '
-        if ($script:SkillSelected[$i] -eq 1) { $mark = 'x'; $selected++ }
-
-        $reverse = ''
-        $reset   = ''
-        if ($i -eq $script:CursorPos) {
-            $reverse = "$ESC[7m"
-            $reset   = "$ESC[0m"
-        }
-
-        $desc = $script:SkillDescs[$i]
-        if ($desc.Length -gt 60) { $desc = $desc.Substring(0, 57) + '...' }
-
-        $name = $script:SkillNames[$i].PadRight(28)
-        Write-Host ("{0}  [{1}] {2} {3}{4}{5}" -f $reverse, $mark, $name, $desc, "$ESC[K", $reset)
+    # Skills section
+    if ($skillCount -gt 0) {
+        Write-Host ("  $ESC[1mSkills:$ESC[0m$ESC[K")
         $lines++
+        for ($i = 0; $i -lt $skillCount; $i++) {
+            $mark = ' '
+            if ($script:SkillSelected[$i] -eq 1) { $mark = 'x'; $selected++ }
+            $total++
+
+            $reverse = ''
+            $reset   = ''
+            if ($i -eq $script:CursorPos) {
+                $reverse = "$ESC[7m"
+                $reset   = "$ESC[0m"
+            }
+
+            $desc = $script:SkillDescs[$i]
+            if ($desc.Length -gt 60) { $desc = $desc.Substring(0, 57) + '...' }
+
+            $name = $script:SkillNames[$i].PadRight(28)
+            Write-Host ("{0}  [{1}] {2} {3}{4}{5}" -f $reverse, $mark, $name, $desc, "$ESC[K", $reset)
+            $lines++
+        }
+    }
+
+    # Agents section
+    if ($agentCount -gt 0) {
+        Write-Host "$ESC[K"
+        Write-Host ("  $ESC[1mAgents:$ESC[0m$ESC[K")
+        $lines += 2
+        for ($i = 0; $i -lt $agentCount; $i++) {
+            $mark = ' '
+            if ($script:AgentSelected[$i] -eq 1) { $mark = 'x'; $selected++ }
+            $total++
+
+            $cursorIdx = $skillCount + $i
+            $reverse = ''
+            $reset   = ''
+            if ($cursorIdx -eq $script:CursorPos) {
+                $reverse = "$ESC[7m"
+                $reset   = "$ESC[0m"
+            }
+
+            $desc = $script:AgentDescs[$i]
+            if ($desc.Length -gt 60) { $desc = $desc.Substring(0, 57) + '...' }
+
+            $name = $script:AgentNames[$i].PadRight(28)
+            Write-Host ("{0}  [{1}] {2} {3}{4}{5}" -f $reverse, $mark, $name, $desc, "$ESC[K", $reset)
+            $lines++
+        }
     }
 
     Write-Host "$ESC[K"
@@ -404,11 +525,13 @@ function Write-Menu {
 }
 
 function Invoke-InteractiveSelect {
-    $total = $script:SkillNames.Count
+    $skillCount = $script:SkillNames.Count
+    $agentCount = $script:AgentNames.Count
+    $total      = $skillCount + $agentCount
 
     Hide-Cursor
     try {
-        Write-Host "  Select skills to install:"
+        Write-Host "  Select skills and agents to install:"
         Write-Host ""
 
         Write-Menu
@@ -416,30 +539,48 @@ function Invoke-InteractiveSelect {
         while ($true) {
             $key = Read-MenuKey
             switch ($key) {
-                'UP'    { if ($script:CursorPos -gt 0)          { $script:CursorPos-- } }
+                'UP'    { if ($script:CursorPos -gt 0)         { $script:CursorPos-- } }
                 'DOWN'  { if ($script:CursorPos -lt ($total-1)) { $script:CursorPos++ } }
                 'SPACE' {
-                    $i = $script:CursorPos
-                    if ($script:SkillSelected[$i] -eq 1) {
-                        $impact = Test-DeselectImpact $script:SkillNames[$i]
-                        if ($impact.Count -gt 0) {
-                            $script:WarningMsg = "Warning: " + $impact[0]
-                            $script:WarningTtl = 3
+                    if ($script:CursorPos -lt $skillCount) {
+                        # It's a skill
+                        $i = $script:CursorPos
+                        if ($script:SkillSelected[$i] -eq 1) {
+                            $impact = Test-DeselectImpact $script:SkillNames[$i]
+                            if ($impact.Count -gt 0) {
+                                $script:WarningMsg = "Warning: " + $impact[0]
+                                $script:WarningTtl = 3
+                            }
+                            $script:SkillSelected[$i] = 0
+                        } else {
+                            $script:SkillSelected[$i] = 1
                         }
-                        $script:SkillSelected[$i] = 0
                     } else {
-                        $script:SkillSelected[$i] = 1
+                        # It's an agent
+                        $ai = $script:CursorPos - $skillCount
+                        $script:AgentSelected[$ai] = if ($script:AgentSelected[$ai] -eq 1) { 0 } else { 1 }
                     }
                 }
-                'ALL'   { for ($i = 0; $i -lt $total; $i++) { $script:SkillSelected[$i] = 1 } }
-                'NONE'  { for ($i = 0; $i -lt $total; $i++) { $script:SkillSelected[$i] = 0 } }
+                'ALL'   {
+                    for ($i = 0; $i -lt $skillCount; $i++) { $script:SkillSelected[$i] = 1 }
+                    for ($i = 0; $i -lt $agentCount; $i++) { $script:AgentSelected[$i] = 1 }
+                }
+                'NONE'  {
+                    for ($i = 0; $i -lt $skillCount; $i++) { $script:SkillSelected[$i] = 0 }
+                    for ($i = 0; $i -lt $agentCount; $i++) { $script:AgentSelected[$i] = 0 }
+                }
                 'ENTER' {
                     $any = $false
-                    for ($i = 0; $i -lt $total; $i++) {
+                    for ($i = 0; $i -lt $skillCount; $i++) {
                         if ($script:SkillSelected[$i] -eq 1) { $any = $true; break }
                     }
-                    if (-not $any -and $script:PrevEntries.Count -eq 0) {
-                        $script:WarningMsg = "No skills selected. Use [A] to select all or [Q] to quit."
+                    if (-not $any) {
+                        for ($i = 0; $i -lt $agentCount; $i++) {
+                            if ($script:AgentSelected[$i] -eq 1) { $any = $true; break }
+                        }
+                    }
+                    if (-not $any -and $script:PrevEntries.Count -eq 0 -and $script:PrevAgentEntries.Count -eq 0) {
+                        $script:WarningMsg = "Nothing selected. Use [A] to select all or [Q] to quit."
                         $script:WarningTtl = 3
                     } else {
                         Write-Menu
@@ -462,13 +603,24 @@ function Invoke-InteractiveSelect {
 
 function Show-NonInteractiveList {
     Write-Host ""
-    Write-Host "Skills available for installation:"
-    Write-Host ""
-    for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
-        $status = if ($script:SkillSelected[$i] -eq 1) { '[x]' } else { '[ ]' }
-        Write-Host ("  {0} {1} -- {2}" -f $status, $script:SkillNames[$i], $script:SkillDescs[$i])
+    if ($script:SkillNames.Count -gt 0) {
+        Write-Host "Skills available for installation:"
+        Write-Host ""
+        for ($i = 0; $i -lt $script:SkillNames.Count; $i++) {
+            $status = if ($script:SkillSelected[$i] -eq 1) { '[x]' } else { '[ ]' }
+            Write-Host ("  {0} {1} -- {2}" -f $status, $script:SkillNames[$i], $script:SkillDescs[$i])
+        }
+        Write-Host ""
     }
-    Write-Host ""
+    if ($script:AgentNames.Count -gt 0) {
+        Write-Host "Agents available for installation:"
+        Write-Host ""
+        for ($i = 0; $i -lt $script:AgentNames.Count; $i++) {
+            $status = if ($script:AgentSelected[$i] -eq 1) { '[x]' } else { '[ ]' }
+            Write-Host ("  {0} {1} -- {2}" -f $status, $script:AgentNames[$i], $script:AgentDescs[$i])
+        }
+        Write-Host ""
+    }
 }
 
 # --- Symlink support detection ---------------------------------------------
@@ -670,9 +822,124 @@ function Install-Selected {
         if ($skipped -gt 0) {
             Write-Host "Skipped $skipped skill(s) (already installed by another source)."
         }
-        Write-Host ""
-        Write-Color dim "Restart Claude Code to load the new skills."
     }
+
+    Install-SelectedAgents
+
+    if (-not $DryRun) {
+        Write-Host ""
+        Write-Color dim "Restart Claude Code to load the new skills and agents."
+    }
+}
+
+# --- Agent install ----------------------------------------------------------
+
+function Install-AgentSymlink {
+    param([string]$Name)
+    $src  = Join-Path $script:AgentsSrcDir (Join-Path $Name "AGENT.md")
+    $dest = Join-Path $script:AgentsInstallDir "$Name.md"
+
+    if ($DryRun) {
+        Write-Host "  [dry-run] mkdir $script:AgentsInstallDir"
+        Write-Host "  [dry-run] symlink $dest -> $src"
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $script:AgentsInstallDir)) {
+        New-Item -ItemType Directory -Path $script:AgentsInstallDir -Force | Out-Null
+    }
+    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
+    New-Item -ItemType SymbolicLink -Path $dest -Target $src -ErrorAction Stop | Out-Null
+}
+
+function Install-AgentCopy {
+    param([string]$Name)
+    $destName = "$Prefix$Name"
+    $src  = Join-Path $script:AgentsSrcDir (Join-Path $Name "AGENT.md")
+    $dest = Join-Path $script:AgentsInstallDir "$destName.md"
+
+    if ($DryRun) {
+        Write-Host "  [dry-run] mkdir $script:AgentsInstallDir"
+        Write-Host "  [dry-run] copy $src -> $dest"
+        if ($Prefix) { Write-Host "  [dry-run] rewrite 'name:' field with prefix '$Prefix'" }
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $script:AgentsInstallDir)) {
+        New-Item -ItemType Directory -Path $script:AgentsInstallDir -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $src -Destination $dest -Force
+
+    if ($Prefix) {
+        $content = Get-Content -LiteralPath $dest -Raw
+        $content = [regex]::Replace($content, '(?m)^name:\s*', "name: $Prefix")
+        Set-Content -LiteralPath $dest -Value $content -NoNewline
+    }
+}
+
+function Install-SelectedAgents {
+    if ($script:AgentNames.Count -eq 0) { return }
+
+    $mode      = if ($script:CopyMode) { 'copy' } else { 'symlink' }
+    $installed = 0
+    $removed   = 0
+    $manifestPath  = Join-Path $script:AgentsInstallDir $script:AgentsManifest
+    $manifestLines = New-Object System.Collections.Generic.List[string]
+    $newDestNames  = @{}
+
+    for ($i = 0; $i -lt $script:AgentNames.Count; $i++) {
+        if ($script:AgentSelected[$i] -ne 1) { continue }
+
+        $name     = $script:AgentNames[$i]
+        $destName = "$Prefix$name"
+
+        if ($script:CopyMode) {
+            Install-AgentCopy -Name $name
+        } else {
+            Install-AgentSymlink -Name $name
+        }
+
+        $srcPath = Join-Path $script:AgentsSrcDir $name
+        $manifestLines.Add("${destName}:${mode}:${srcPath}") | Out-Null
+        $newDestNames[$destName] = $true
+        $installed++
+    }
+
+    # Remove previously-installed agents that were unticked in this run.
+    foreach ($e in $script:PrevAgentEntries) {
+        if ($newDestNames.ContainsKey($e.DestName)) { continue }
+        if ($DryRun) {
+            Write-Host "  [dry-run] remove agent $($e.DestName) (unticked)"
+            $removed++
+            continue
+        }
+        $dest = Join-Path $script:AgentsInstallDir "$($e.DestName).md"
+        if (Test-Path -LiteralPath $dest) {
+            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+            $removed++
+        }
+    }
+
+    if (-not $DryRun) {
+        if ($installed -gt 0) {
+            $nowUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $header = @(
+                "# slang-skills agents manifest -- do not edit manually",
+                "# installed: $nowUtc",
+                "# source: $($script:ScriptDir)",
+                "# mode: $mode"
+            )
+            if ($Prefix) { $header += "# prefix: $Prefix" }
+            $all = $header + $manifestLines.ToArray()
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllLines($manifestPath, [string[]]$all, $utf8NoBom)
+        } elseif (Test-Path -LiteralPath $manifestPath) {
+            Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($installed -gt 0) { Write-Host "Installed $installed agent(s) to $script:AgentsInstallDir" }
+    if ($removed  -gt 0) { Write-Host "Removed $removed agent(s) that were unticked." }
 }
 
 # --- Uninstall --------------------------------------------------------------
@@ -747,6 +1014,32 @@ function Invoke-Uninstall {
     Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
     Write-Host ""
     Write-Host "Removed $removed skill(s)."
+
+    # Also uninstall agents
+    $agentsManifestPath = Join-Path $script:AgentsInstallDir $script:AgentsManifest
+    if (Test-Path -LiteralPath $agentsManifestPath) {
+        $agentRemoved = 0
+        foreach ($line in Get-Content -LiteralPath $agentsManifestPath) {
+            if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split ':', 3
+            if ($parts.Count -lt 1) { continue }
+            $aName = $parts[0]
+            $dest  = Join-Path $script:AgentsInstallDir "$aName.md"
+            if ($DryRun) {
+                Write-Host "  [dry-run] remove agent $aName"
+            } elseif (Test-Path -LiteralPath $dest) {
+                Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+                Write-Color green "  [OK] " -NoNewline
+                Write-Host "Removed agent $aName"
+            }
+            $agentRemoved++
+        }
+        if (-not $DryRun) {
+            Remove-Item -LiteralPath $agentsManifestPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($agentRemoved -gt 0) { Write-Host "Removed $agentRemoved agent(s)." }
+    }
+
     Write-Color dim "Restart Claude Code to apply changes."
 }
 
@@ -875,6 +1168,85 @@ function Show-Status {
             Write-Host "$summary."
         }
     }
+
+    # Agents status
+    Write-Host ""
+    Write-Host "  -------------------------------------"
+    Write-Host "  Agents install dir: $script:AgentsInstallDir"
+    Write-Host "  -------------------------------------"
+    Write-Host ""
+
+    $agentsManifestPath = Join-Path $script:AgentsInstallDir $script:AgentsManifest
+    $agentsTotal = 0; $agentsOk = 0; $agentsBroken = 0; $agentsNotInstalled = 0
+    $installedAgentNames = @{}
+
+    if (Test-Path -LiteralPath $agentsManifestPath) {
+        foreach ($line in Get-Content -LiteralPath $agentsManifestPath) {
+            if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split ':', 3
+            if ($parts.Count -lt 2) { continue }
+            $aName      = $parts[0]
+            $entryMode  = $parts[1]
+            $sourcePath = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+
+            $agentsTotal++
+            $installedAgentNames[$aName] = $true
+            $dest = Join-Path $script:AgentsInstallDir "$aName.md"
+
+            $color = 'green'; $glyph = '[OK]'; $state = ''
+            if ($entryMode -eq 'symlink') {
+                if (Test-IsSymlink $dest) {
+                    $target = Get-SymlinkTarget $dest
+                    if (Test-Path -LiteralPath $dest) {
+                        $state = "ok (-> $target)"; $agentsOk++
+                    } else {
+                        $state = "dangling (-> $target)"; $color = 'red'; $glyph = '[X]'; $agentsBroken++
+                    }
+                } elseif (Test-Path -LiteralPath $dest) {
+                    $state = "not a symlink (mode changed?)"; $color = 'yellow'; $glyph = '[~]'; $agentsOk++
+                } else {
+                    $state = "missing"; $color = 'red'; $glyph = '[X]'; $agentsBroken++
+                }
+            } else {
+                if ((Test-Path -LiteralPath $dest -PathType Leaf) -and -not (Test-IsSymlink $dest)) {
+                    $state = "ok (copied from $sourcePath)"; $agentsOk++
+                } elseif (Test-Path -LiteralPath $dest) {
+                    $state = "unexpected file type"; $color = 'yellow'; $glyph = '[~]'; $agentsOk++
+                } else {
+                    $state = "missing"; $color = 'red'; $glyph = '[X]'; $agentsBroken++
+                }
+            }
+            Write-Color $color "  $glyph " -NoNewline
+            Write-Host ("{0} " -f $aName.PadRight(32)) -NoNewline
+            Write-Color dim $state
+        }
+    }
+
+    if (Test-Path -LiteralPath $script:AgentsSrcDir -PathType Container) {
+        foreach ($d in (Get-ChildItem -LiteralPath $script:AgentsSrcDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $d.FullName "AGENT.md") -PathType Leaf)) { continue }
+            if ($installedAgentNames.ContainsKey($d.Name)) { continue }
+            Write-Color dim "  [ ] " -NoNewline
+            Write-Host ("{0} " -f $d.Name.PadRight(32)) -NoNewline
+            Write-Color dim "not installed"
+            $agentsNotInstalled++
+        }
+    }
+
+    Write-Host ""
+    if ($agentsTotal -eq 0 -and $agentsNotInstalled -eq 0) {
+        Write-Host "  No agents listed in manifest."
+    } else {
+        $agentSummary = "  $agentsTotal agent(s) installed"
+        if ($agentsBroken -gt 0)       { $agentSummary += ", $agentsBroken broken" }
+        if ($agentsNotInstalled -gt 0) { $agentSummary += ", $agentsNotInstalled available to install" }
+        if ($agentsBroken -gt 0) {
+            Write-Color yellow "$agentSummary."
+            Write-Host "  Re-run .\install.ps1 to repair, or .\install.ps1 -Uninstall to clear."
+        } else {
+            Write-Host "$agentSummary."
+        }
+    }
     Write-Host ""
 }
 
@@ -897,8 +1269,11 @@ function Invoke-Main {
     }
 
     Get-ExistingInstall
+    Get-ExistingAgentInstall
     Find-Skills
+    Find-Agents
     Set-InitialSelection
+    Set-InitialAgentSelection
 
     Test-SymlinkSupport
 
