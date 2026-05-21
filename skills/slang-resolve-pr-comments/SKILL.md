@@ -284,7 +284,7 @@ gh pr checks "$PR"
 
 ## Merge Conflicts And Auto-Rebase Failures
 
-**Do not rebase proactively.** Only rebase when GitHub explicitly reports that the branch has merge conflicts (i.e. `mergeStateStatus` is `DIRTY` or the PR shows a conflict that blocks merge). If the branch is merely behind the base branch but has no conflicts, leave it alone — GitHub's auto-merge will rebase or merge it when the time comes.
+**Do not rebase proactively.** Only rebase when GitHub explicitly reports that the branch has merge conflicts (i.e. `mergeStateStatus` is `DIRTY` or the PR shows a conflict that blocks merge), or when a push is rejected because the branch is out of date. If the branch is merely behind the base branch but has no conflicts and you have no local changes to push, leave it alone — GitHub's auto-merge will rebase or merge it when the time comes.
 
 If GitHub reports that auto-merge or auto-rebase cannot continue because conflicts must be resolved, update the PR branch manually.
 
