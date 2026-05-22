@@ -75,7 +75,7 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
    git submodule update --init --recursive
    ```
 
-   This repo uses git submodules. Run `git submodule update --init --recursive` after any fetch from the remote (and again after resolving merge conflicts — see below) so submodule references stay in sync with the checked-out commit.
+   This repo uses git submodules. Run `git submodule update --init --recursive` after any update to the local branch — e.g. `gh pr checkout`, `git pull`, or `git rebase` (and again after resolving merge conflicts — see below) — so submodule references stay in sync with the checked-out commit. A bare `git fetch` only updates remote-tracking refs and does not require a submodule sync on its own.
 
 2. Inspect PR state, checks, mergeability, review-blocking notices, and review threads.
 3. Fix actionable review feedback and CI failures.
@@ -182,10 +182,12 @@ query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
 
 Classify threads conservatively:
 
+Check these in order — the first matching rule wins:
+
 - **LLM review feedback**: the author's `__typename` is `Bot` (from the GraphQL response), or the author is clearly an automated LLM reviewer by login — such as Copilot, CodeRabbit, Claude, Codex, OpenAI, Gemini, Greptile or another bot whose comment identifies itself as AI review feedback.
+- **`bmillsNV`**: this account exists only to absorb review-request email spam and is not an actual reviewer. Ignore any review requests, assignments, or threads attributed to `bmillsNV` — do not treat them as human or LLM feedback, do not reply, and do not block completion on them. Must be checked before the "Human feedback" rule below so the human rule doesn't match it first.
 - **Human feedback**: the author is a person, the `author` field is `null` (deleted account — treat as human to be safe), or the source is ambiguous.
 - **CI/static-analysis bot output**: handle it as CI feedback unless it is clearly an LLM review thread.
-- **`bmillsNV`**: this account exists only to absorb review-request email spam and is not an actual reviewer. Ignore any review requests, assignments, or threads attributed to `bmillsNV` — do not treat them as human or LLM feedback, do not reply, and do not block completion on them.
 
 For each unresolved, non-outdated (`isResolved = false` and `isOutdated = false`) LLM thread:
 
