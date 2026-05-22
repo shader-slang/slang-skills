@@ -72,7 +72,10 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
    ```bash
    gh pr checkout "$PR"
    git fetch --all --prune
+   git submodule update --init --recursive
    ```
+
+   This repo uses git submodules. Run `git submodule update --init --recursive` after any update to the local branch — e.g. `gh pr checkout`, `git pull`, or `git rebase` (and again after resolving merge conflicts — see below) — so submodule references stay in sync with the checked-out commit. A bare `git fetch` only updates remote-tracking refs and does not require a submodule sync on its own.
 
 2. Inspect PR state, checks, mergeability, review-blocking notices, and review threads.
 3. Fix actionable review feedback and CI failures.
@@ -201,6 +204,9 @@ query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
 
 Classify threads conservatively:
 
+Check these in order — the first matching rule wins:
+
+- **`bmillsNV`**: this account exists only to absorb review-request email spam and is not an actual reviewer. Ignore any review requests, assignments, or threads attributed to `bmillsNV` — do not treat them as human or LLM feedback, do not reply, and do not block completion on them. Checked first so this holds even if the account is ever a service/bot account.
 - **LLM review feedback**: the author's `__typename` is `Bot` (from the GraphQL response), or the author is clearly an automated LLM reviewer by login — such as Copilot, CodeRabbit, Claude, Codex, OpenAI, Gemini, Greptile or another bot whose comment identifies itself as AI review feedback.
 - **Human feedback**: the author is a person, the `author` field is `null` (deleted account — treat as human to be safe), or the source is ambiguous.
 - **CI/static-analysis bot output**: handle it as CI feedback unless it is clearly an LLM review thread.
@@ -340,7 +346,10 @@ Resolve conflicts in the files, then continue:
 ```bash
 git add <resolved-files>
 git rebase --continue
+git submodule update --init --recursive
 ```
+
+Always re-run `git submodule update --init --recursive` after a rebase or conflict resolution so submodule pointers match the new HEAD.
 
 Run relevant validation, then push with a lease:
 
