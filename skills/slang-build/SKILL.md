@@ -177,6 +177,9 @@ if [ -f build/CMakeCache.txt ]; then
   elif [ "$BUILD_HOST" = "linux" ] && \
        ! grep -q '^CMAKE_HOST_SYSTEM_NAME:INTERNAL=Linux$' build/CMakeCache.txt; then
     HOST_MISMATCH=1
+  elif [ "$BUILD_HOST" = "macos" ] && \
+       ! grep -q '^CMAKE_HOST_SYSTEM_NAME:INTERNAL=Darwin$' build/CMakeCache.txt; then
+    HOST_MISMATCH=1
   fi
 
   if [ "$HOST_MISMATCH" = "1" ]; then
