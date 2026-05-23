@@ -1,5 +1,5 @@
 ---
-description: Platform-aware build instructions for the Slang compiler. Use when Slang work requires configuring, building, or rebuilding the compiler, including as setup for validation, regression checks, and bisects. Can also be invoked via /slang-build.
+description: Provides platform-aware build instructions for the Slang compiler. Use for configuring, building, or rebuilding the compiler during validation, regression checks, or bisects. Can also be invoked via /slang-build.
 license: Apache-2.0
 metadata:
     github-path: skills/slang-build
