@@ -1,9 +1,8 @@
 ---
-name: slang-build
 description: Platform-aware build instructions for the Slang compiler. Only invoke when explicitly called via /slang-build or referenced by other skills.
 license: Apache-2.0
+name: slang-build
 ---
-
 # Slang Build
 
 **For**: Building the Slang compiler on any supported platform.
@@ -11,26 +10,30 @@ license: Apache-2.0
 **Usage**: Referenced by other skills. Can also be invoked directly:
 
 ```text
-/slang-build [action] [config]
+/slang-build [action] [config] [host]
 
   action  build (default) | rebuild | clean | configure
   config  debug (default) | release | releasewithdebug
+  host    native (default) | windows | linux
 ```
 
 ## Parse Arguments
 
 At the start of every invocation, parse the arguments to determine the action and build
-configuration. Both are optional and order-independent.
+configuration, and host. All are optional and order-independent. `native` means the preferred
+developer build for the current environment; on WSL, that is the native Windows build.
 
 ```bash
 ACTION="build"
 CONFIG="debug"
+BUILD_HOST="native"
 
 for ARG in $ARGUMENTS; do
   ARG_LOWER=$(echo "$ARG" | tr '[:upper:]' '[:lower:]')
   case "$ARG_LOWER" in
     build|rebuild|clean|configure) ACTION="$ARG_LOWER" ;;
     debug|release|releasewithdebug) CONFIG="$ARG_LOWER" ;;
+    native|windows|linux) BUILD_HOST="$ARG_LOWER" ;;
   esac
 done
 
@@ -63,11 +66,39 @@ esac
 if grep -qi microsoft /proc/version 2>/dev/null; then
   PLATFORM="wsl"
 fi
+
+# Select build host and CMake executable. Prefer the native Windows build from WSL unless
+# the user explicitly asks for a Linux build.
+if [ "$BUILD_HOST" = "native" ]; then
+  if [ "$PLATFORM" = "wsl" ]; then
+    BUILD_HOST="windows"
+  else
+    BUILD_HOST="$PLATFORM"
+  fi
+fi
+
+if [ "$BUILD_HOST" = "windows" ]; then
+  CMAKE="cmake.exe"
+else
+  CMAKE="cmake"
+fi
+
+if [ "$BUILD_HOST" = "windows" ]; then
+  CMAKE_CONFIGURE_PRESET="vs2026-dev"
+  CMAKE_CONFIGURE_ARGS="-DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF"
+else
+  CMAKE_CONFIGURE_PRESET="default"
+  CMAKE_CONFIGURE_ARGS="-DSLANG_EMBED_CORE_MODULE=OFF"
+fi
 ```
 
 ### WSL Notes
 
-On WSL, append `.exe` to host tools:
+On WSL, `/slang-build debug` defaults to the native Windows build through `cmake.exe` and the
+Visual Studio preset. Use `/slang-build debug linux` only when you explicitly want a Linux/Ninja
+build from inside WSL.
+
+When targeting the Windows host from WSL, append `.exe` to host tools:
 - `git.exe` instead of `git` (if Windows git was used to set up this repo — see detection below)
 - `cmake.exe` instead of `cmake`
 - `python.exe` instead of `python`
@@ -128,19 +159,44 @@ $GIT submodule update --init --recursive
 
 Run this step for actions `configure`, `build` (first time, no existing `build/`), and `rebuild`
 (after the old `build/` has been renamed away). Skip for `build` when `build/` already exists.
+Before skipping configure, make sure the existing cache matches `$BUILD_HOST`; a Linux CMake
+cache and a Windows CMake cache are not interchangeable. If the guard below reports a mismatch,
+run the **Clean Build** steps and then continue with configure.
 
 ```bash
-cmake --preset default -DSLANG_EMBED_CORE_MODULE=OFF
+if [ -f build/CMakeCache.txt ]; then
+  HOST_MISMATCH=0
+  if [ "$BUILD_HOST" = "windows" ] && \
+     ! grep -q '^CMAKE_HOST_SYSTEM_NAME:INTERNAL=Windows$' build/CMakeCache.txt; then
+    HOST_MISMATCH=1
+  elif [ "$BUILD_HOST" = "linux" ] && \
+       ! grep -q '^CMAKE_HOST_SYSTEM_NAME:INTERNAL=Linux$' build/CMakeCache.txt; then
+    HOST_MISMATCH=1
+  elif [ "$BUILD_HOST" = "macos" ] && \
+       ! grep -q '^CMAKE_HOST_SYSTEM_NAME:INTERNAL=Darwin$' build/CMakeCache.txt; then
+    HOST_MISMATCH=1
+  fi
+
+  if [ "$HOST_MISMATCH" = "1" ]; then
+    echo "Existing build/ was configured for a different host. Run the Clean Build steps, then configure."
+    exit 1
+  fi
+fi
 ```
 
-On Windows (including WSL targeting a Windows build), use the highest available Visual Studio preset in this order:
+```bash
+$CMAKE --preset "$CMAKE_CONFIGURE_PRESET" $CMAKE_CONFIGURE_ARGS
+```
+
+For Linux/macOS and explicit WSL Linux builds, use the `default` preset. For Windows and default
+WSL builds, use the highest available Visual Studio preset in this order:
 
 1. `vs2026-dev` (preferred)
 2. `vs2022-dev`
 3. `vs2019-dev`
 
 ```bash
-cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF
+$CMAKE --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF
 ```
 
 - `-DSLANG_IGNORE_ABORT_MSG=ON` suppresses modal abort dialogs during unattended builds.
@@ -169,7 +225,7 @@ tag="${tagVersion#v}"
 
 Then re-run configure with the `-DSLANG_SLANG_LLVM_BINARY_URL` flag appended:
 
-**Linux / WSL:**
+**Linux / explicit WSL Linux:**
 ```bash
 # append to your configure command:
 -DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-linux-x86_64.zip
@@ -183,13 +239,13 @@ Then re-run configure with the `-DSLANG_SLANG_LLVM_BINARY_URL` flag appended:
 
 Full example (Linux):
 ```bash
-cmake --preset default -DSLANG_EMBED_CORE_MODULE=OFF \
+$CMAKE --preset default -DSLANG_EMBED_CORE_MODULE=OFF \
   -DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-linux-x86_64.zip
 ```
 
 Full example (Windows/WSL):
 ```bash
-cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF \
+$CMAKE --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF \
   -DSLANG_SLANG_LLVM_BINARY_URL=https://github.com/shader-slang/slang/releases/download/$tagVersion/slang-$tag-windows-x86_64.zip
 ```
 
@@ -199,7 +255,7 @@ For faster rebuilds, pass `-DSLANG_USE_SCCACHE=ON` at configure time. Requires `
 
 **Debugging pitfall**: When debugging with printf/debug output, sccache may return cached
 objects that don't include your changes. If edits seem to have no effect, either:
-- Force recache: `SCCACHE_RECACHE=1 cmake --build --preset <preset> --target slangc`
+- Force recache: `SCCACHE_RECACHE=1 $CMAKE --build --preset <preset> --target slangc`
 - Or temporarily disable: reconfigure with `-DSLANG_USE_SCCACHE=OFF`
 
 ---
@@ -219,8 +275,8 @@ objects that don't include your changes. If edits seem to have no effect, either
 If `build/` does not yet exist, run Step 3 (configure) first, then build:
 
 ```bash
-cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
-  >/dev/null 2>&1 || cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test
+$CMAKE --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
+  >/dev/null 2>&1 || $CMAKE --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test
 ```
 
 ### Action: `rebuild`
@@ -269,7 +325,7 @@ ls "$BIN_PATH"/slang-test*
 Examples below use the defaults (`build`, `debug`). Substitute `$CMAKE_BUILD_PRESET` with
 `releaseWithDebugInfo` or `release` as needed.
 
-### One-liner: configure + build (first time, Linux/macOS)
+### One-liner: configure + build (first time, Linux/macOS or explicit WSL Linux)
 
 ```bash
 git submodule update --init --recursive && \
@@ -278,7 +334,7 @@ cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
   >/dev/null 2>&1 || cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test
 ```
 
-### One-liner: configure + build (first time, WSL / Git Bash)
+### One-liner: configure + build (first time, WSL default native Windows / Git Bash)
 
 ```bash
 GIT="${GIT:-git}" && \
@@ -300,8 +356,8 @@ if ($LASTEXITCODE -ne 0) { cmake.exe --build --preset $CMAKE_BUILD_PRESET --targ
 ### One-liner: rebuild (already configured)
 
 ```bash
-cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
-  >/dev/null 2>&1 || cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test
+$CMAKE --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
+  >/dev/null 2>&1 || $CMAKE --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test
 ```
 
 ---
