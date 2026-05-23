@@ -1,5 +1,5 @@
 ---
-description: Platform-aware build instructions for the Slang compiler. Use for configuring, building, or validating Slang in a checkout (including regression checks and bisects). Can also be invoked via /slang-build.
+description: Platform-aware build instructions for the Slang compiler. Use when Slang work requires configuring, building, or rebuilding the compiler, including as setup for validation, regression checks, and bisects. Can also be invoked via /slang-build.
 license: Apache-2.0
 metadata:
     github-path: skills/slang-build
@@ -12,7 +12,7 @@ name: slang-build
 **For**: Building the Slang compiler on any supported platform.
 
 **Usage**: Referenced by other skills. It can also be invoked directly via `/slang-build`
-for Slang compiler configuration, building, rebuilding, and validation (including regression checks and bisects):
+to configure, build, or rebuild the compiler for validation, regression checks, and bisects:
 
 ```text
 /slang-build [action] [config] [host]
