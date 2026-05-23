@@ -11,8 +11,8 @@ name: slang-build
 
 **For**: Building the Slang compiler on any supported platform.
 
-**Usage**: Use this workflow for Slang compiler configuration, building, rebuilding, and validation,
-including regression checks and bisects. It can also be invoked directly:
+**Usage**: Referenced by other skills. Can also be invoked directly for Slang compiler
+configuration, building, rebuilding, and validation (including regression checks and bisects):
 
 ```text
 /slang-build [action] [config] [host]
