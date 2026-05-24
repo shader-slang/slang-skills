@@ -30,6 +30,22 @@ The interactive installer lets you select which skills to install using arrow ke
 
 ## Skills
 
+### Naming convention
+
+Skill names use lowercase kebab-case and Slang-specific skills start with
+`slang-`. When a skill mirrors a `gh` command, keep the `gh` command word order
+after the `slang-` prefix. For example, `gh pr create` maps to
+`slang-pr-create`, not `slang-create-pr`.
+
+### WSL tool selection
+
+When a skill runs command-line tools, it must detect whether the agent is
+running under WSL. Under WSL, prefer Windows-native tools with the `.exe` suffix
+such as `git.exe` and `gh.exe` to avoid accidentally using a different WSL
+installation or authentication state. If the Windows-native tool is not
+available, the skill must stop and report the missing tool instead of silently
+falling back to the WSL version.
+
 ### Slang specific skills
 
 | Skill | Description | Dependencies |
@@ -39,6 +55,7 @@ The interactive installer lets you select which skills to install using arrow ke
 | `slang-write-test` | Test syntax reference: directives, diagnostic tests, compute tests | *(foundation)* |
 | `slang-investigate` | Root cause investigation: classify, trace, design context | slang-build, slang-run-tests |
 | `slang-create-issue` | Issue/PR templates, commit rules | *(standalone)* |
+| `slang-pr-create` | PR creation workflow: dirty-worktree check, default branch detection, gh command | *(standalone)* |
 | `slang-fix-bug` | Bug fix workflow: intake, investigation, parallel fix exploration | slang-investigate, slang-build, slang-run-tests, slang-write-test |
 | `slang-review-pr` | PR review: evaluate approach, address feedback, manage threads | slang-build |
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
