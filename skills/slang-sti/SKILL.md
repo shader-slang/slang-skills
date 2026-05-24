@@ -1,13 +1,14 @@
 ---
 name: slang-sti
 description: Install and use sti, a fast parallel test runner that replaces direct slang-test usage with crash recovery, retries, and better output.
+argument-hint: "[filter] [--wsl]"
 ---
 
 # Slang STI (Slang Test Interceptor)
 
 **For**: Running Slang tests faster and more reliably than `slang-test` directly.
 
-**Usage**: `/slang-sti [filter]` or referenced by other skills as a drop-in replacement for `slang-test`.
+**Usage**: `/slang-sti [filter] [--wsl]` or referenced by other skills as a drop-in replacement for `slang-test`.
 
 ---
 
@@ -57,8 +58,21 @@ Expand-Archive -Path $env:TEMP\sti.zip -DestinationPath $env:LOCALAPPDATA\sti -F
 
 Or build from source (requires Rust toolchain):
 
+Under WSL, use `git.exe` for the clone by default and stop if it is missing;
+only use native WSL `git` when the user explicitly requested a WSL-native run.
+
 ```bash
-git clone https://github.com/expipiplus1/slang-test-interceptor.git
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+fi
+GIT=git
+if { [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; } && [ "$USE_WSL_TOOLS" = false ]; then
+  command -v git.exe >/dev/null 2>&1 || { echo "Missing Windows-hosted tool: git.exe"; exit 1; }
+  GIT=git.exe
+fi
+"$GIT" clone https://github.com/expipiplus1/slang-test-interceptor.git
 cd slang-test-interceptor
 cargo build --release
 # Binary: target/release/sti
@@ -69,6 +83,9 @@ cargo build --release
 ## Usage
 
 Run from the Slang repository root. sti auto-detects the newest `slang-test` build.
+Under WSL with the default Windows-hosted Slang build, ensure sti is using
+`slang-test.exe` from that build. Stop if only a WSL-native `slang-test` is
+available; do not use it as a fallback for Windows-hosted validation.
 
 ```bash
 sti                              # All tests
@@ -103,7 +120,7 @@ sti --dry-run diagnostic         # List matching tests without running
 ## Interactive Workflow
 
 1. Check if `sti` is on PATH (`which sti`). If not, install it (see above).
-2. Verify Slang is built (`ls build/*/bin/slang-test`). If not, build first (see `slang-build` skill).
+2. Verify Slang is built (`ls build/*/bin/slang-test*`). Under WSL default Windows-hosted builds, require `slang-test.exe`. If not, build first (see `slang-build` skill).
 3. If `$ARGUMENTS` contains a build type, pass `--build-type <TYPE>`.
 4. If `$ARGUMENTS` contains filter patterns, pass them as positional arguments.
 5. Run `sti` from the repository root and monitor output.

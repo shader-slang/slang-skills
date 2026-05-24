@@ -233,7 +233,7 @@ not ready for review.
 
 ## After Creation
 
-Report the PR URL printed by `gh pr create`, the base branch, the head branch,
+Report the PR URL printed by `$GH pr create`, the base branch, the head branch,
 and whether any validation was run. If PR creation fails because the branch was
 not pushed to a usable remote or the target repo differs from the local `origin`,
 explain the failure and ask before adding remotes or changing push destinations.

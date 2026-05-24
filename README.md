@@ -41,10 +41,21 @@ after the `slang-` prefix. For example, `gh pr create` maps to
 
 When a skill runs command-line tools, it must detect whether the agent is
 running under WSL. Under WSL, prefer Windows-native tools with the `.exe` suffix
-such as `git.exe` and `gh.exe` to avoid accidentally using a different WSL
-installation or authentication state. If the Windows-native tool is not
-available, the skill must stop and report the missing tool instead of silently
-falling back to the WSL version.
+for tools whose Windows and WSL versions are materially different.
+
+The critical tools are:
+- `git.exe`: a worktree created or touched by Git for Windows can be
+  incompatible with WSL `git`.
+- `cmake.exe`: WSL `cmake` does not recognize the Visual Studio presets, which
+  significantly limits Windows testing coverage.
+- `slangc.exe` and `slang-test.exe`: when using the Windows-hosted build, these
+  must match that build. Running WSL-native `slangc` or `slang-test` can test a
+  different compiler build and hide Windows-specific behavior.
+
+GitHub-oriented skills may also select `gh.exe` to avoid authentication-state
+mismatches. If a required Windows-native tool is not available, the skill must
+stop and report the missing tool instead of silently falling back to the WSL
+version.
 
 ### Slang specific skills
 

@@ -9,7 +9,7 @@ description: >-
   sessions are doing, send a message to an agent, or monitor for sessions
   that need input or are stuck. Works on native Linux, macOS, WSL (inside),
   and Windows with WSL (Git Bash or PowerShell host).
-argument-hint: "[status | send [session] <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
+argument-hint: "[--wsl] [status | send [session] <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
 allowed-tools: Bash
 license: Apache-2.0
 ---
@@ -27,6 +27,12 @@ used throughout. Run it as a plain bash block (no subshell wrapper) so the
 variables are available in your reasoning context for all subsequent steps:
 
 ```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+    USE_WSL_TOOLS=true
+fi
+
 # How to reach tmux
 if command -v tmux &>/dev/null; then
     TMUX_EXEC="tmux"
@@ -40,31 +46,59 @@ else
     exit 1
 fi
 
-# Which git binary produces consistent paths
-# Inside WSL, git.exe gives Windows-style paths that match the worktree list
+choose_tool() {
+    tool="$1"
+    if grep -qi microsoft /proc/version 2>/dev/null && [ "$USE_WSL_TOOLS" = false ]; then
+        if command -v "${tool}.exe" >/dev/null 2>&1; then
+            printf '%s.exe\n' "$tool"
+            return 0
+        fi
+        printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+        printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+        return 1
+    fi
+
+    if [ "$TMUX_EXEC" = "wsl tmux" ]; then
+        if command -v "${tool}.exe" >/dev/null 2>&1; then
+            printf '%s.exe\n' "$tool"
+            return 0
+        fi
+        printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+        return 1
+    fi
+
+    if command -v "$tool" >/dev/null 2>&1; then
+        printf '%s\n' "$tool"
+        return 0
+    fi
+    printf 'Missing native tool: %s\n' "$tool" >&2
+    return 1
+}
+
+# Which git/gh binaries produce consistent paths and authentication.
+# Inside WSL, use git.exe/gh.exe by default; --wsl opts into native WSL tools.
 if grep -qi microsoft /proc/version 2>/dev/null; then
     HOST="wsl_inside"
-    GIT="git.exe"
     RM="rm -f"
 elif [ "$TMUX_EXEC" = "wsl tmux" ]; then
     HOST="windows"
-    GIT="git.exe"
     RM="wsl rm -f"     # WSL temp files must be removed via wsl
 else
     HOST="unix"         # native Linux or macOS
-    GIT="git"
     RM="rm -f"
 fi
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
 
 PREV_PANE_DIR="${HOME}/.cache/tmux-agent-manager/prev_pane"
 YOLO_MODE_DIR="${HOME}/.cache/tmux-agent-manager/yolo_mode"
 AGENT_TYPE_DIR="${HOME}/.cache/tmux-agent-manager/agent_type"
 mkdir -p "$PREV_PANE_DIR" "$YOLO_MODE_DIR" "$AGENT_TYPE_DIR"
 
-echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT RM=$RM"
+echo "TMUX_EXEC=$TMUX_EXEC SH=$SH HOST=$HOST GIT=$GIT GH=$GH RM=$RM"
 ```
 
-Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `RM`, `PREV_PANE_DIR`, `YOLO_MODE_DIR`, and `AGENT_TYPE_DIR` at the top of every subsequent
+Re-declare `TMUX_EXEC`, `SH`, `HOST`, `GIT`, `GH`, `RM`, `PREV_PANE_DIR`, `YOLO_MODE_DIR`, and `AGENT_TYPE_DIR` at the top of every subsequent
 bash block that needs them, using the values set above.
 
 **Variable reference used in all steps below:**
@@ -73,7 +107,8 @@ bash block that needs them, using the values set above.
 |---|---|---|---|
 | `TMUX_EXEC` | `wsl tmux` | `tmux` | `tmux` |
 | `SH` | `wsl bash -c` | `bash -c` | `bash -c` |
-| `GIT` | `git.exe` | `git.exe` | `git` |
+| `GIT` | `git.exe` | `git.exe` by default, `git` with `--wsl` | `git` |
+| `GH` | `gh.exe` | `gh.exe` by default, `gh` with `--wsl` | `gh` |
 | `HOST` | `windows` | `wsl_inside` | `unix` |
 
 **Path helpers** — use these when building paths for tmux vs. for git:
@@ -81,6 +116,7 @@ bash block that needs them, using the values set above.
 - On `unix`: only one path form; no conversion needed.
 - On `wsl_inside`: `git.exe` returns Windows paths (`D:/foo`); convert with `wslpath` before
   passing to tmux or bash. Shell path = `wslpath "D:/foo"` → `/mnt/d/foo`.
+  With `--wsl`, native `git` returns WSL paths and conversion is not needed.
 - On `windows`: `git.exe` returns Windows paths; convert with `wsl wslpath` before passing to
   `wsl tmux` or `wsl bash`. Windows path → WSL path: `wsl wslpath "D:/foo"` → `/mnt/d/foo`.
 
@@ -658,14 +694,14 @@ Run this inside a single shell call (adapt prefix for HOST):
 
 ```bash
 # Get the main worktree path (first entry — always the primary checkout)
-MAIN_NATIVE=$($GIT worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 1 | tr -d '\r')
+MAIN_NATIVE=$("$GIT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -n 1 | tr -d '\r')
 if [ -z "$MAIN_NATIVE" ]; then
     echo "Error: not in a git repository or could not determine main worktree."
     exit 1
 fi
 
 # Convert to the shell's native path if needed
-if [ "$HOST" = "wsl_inside" ]; then
+if [ "$HOST" = "wsl_inside" ] && [ "${GIT%.exe}" != "$GIT" ]; then
     MAIN_SHELL=$(wslpath "$MAIN_NATIVE")       # D:/foo → /mnt/d/foo
 elif [ "$HOST" = "windows" ]; then
     MAIN_SHELL="$MAIN_NATIVE"                  # Git Bash handles Windows paths; convert to WSL path at call sites that need it
@@ -678,9 +714,9 @@ PARENT_SHELL=$(dirname "$MAIN_SHELL")          # sibling worktrees live here
 PARENT_NATIVE=$(dirname "$MAIN_NATIVE")
 
 # Derive GitHub repo (owner/name) via gh CLI (robust across URL formats)
-REPO=$(cd "$MAIN_SHELL" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr -d '\r')
+REPO=$(cd "$MAIN_SHELL" && "$GH" repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr -d '\r')
 if [ -z "$REPO" ]; then
-    echo "Error: could not determine GitHub repository. Ensure gh is authenticated and the directory is a GitHub repo."
+    echo "Error: could not determine GitHub repository. Ensure $GH is authenticated and the directory is a GitHub repo."
     exit 1
 fi
 ```
@@ -693,16 +729,16 @@ New worktree paths:
 
 **Issue number path** (`$REPO` is now set from Step 7a):
 ```bash
-gh issue view <number> --repo "$REPO" --json number,title,body,labels
+"$GH" issue view <number> --repo "$REPO" --json number,title,body,labels
 ```
 - `slug` ← from `title`
 - `branch prefix` ← labels: "bug"/"crash" → `fix/`; "feature"/"enhancement" → `feature/`; else `fix/`
-- Claude prompt: issue title + body (truncated to 3000 chars) + instruction to fix, test, commit
+- Claude prompt: issue title + body (truncated to 3000 chars) + instruction to fix, test, commit, and follow WSL tool handling (`git.exe`, `cmake.exe`, `slangc.exe`, and `slang-test.exe` for Windows-hosted WSL work)
 
 **Free-form path:**
 - `slug` ← from the prompt text
 - `branch prefix` ← prompt contains "feature"/"add" → `feature/`; else `fix/`
-- Claude prompt: the user's prompt verbatim + instruction to test and commit
+- Claude prompt: the user's prompt verbatim + instruction to test, commit, and follow WSL tool handling (`git.exe`, `cmake.exe`, `slangc.exe`, and `slang-test.exe` for Windows-hosted WSL work)
 
 **Slug rule:** lowercase → replace runs of non-alphanumeric chars with `-` → collapse
 consecutive `-` → strip leading/trailing `-` → truncate to 40 chars → strip any
@@ -733,11 +769,11 @@ Stop and tell the user if either returns `EXISTS`.
 ### 7d — Create the worktree
 
 ```bash
-if $GIT -C "$MAIN_NATIVE" rev-parse --verify "<branch>" >/dev/null 2>&1; then
+if "$GIT" -C "$MAIN_NATIVE" rev-parse --verify "<branch>" >/dev/null 2>&1; then
     # Branch already exists — attach to it
-    $GIT -C "$MAIN_NATIVE" worktree add "$PARENT_NATIVE/<slug>" "<branch>"
+    "$GIT" -C "$MAIN_NATIVE" worktree add "$PARENT_NATIVE/<slug>" "<branch>"
 else
-    $GIT -C "$MAIN_NATIVE" worktree add "$PARENT_NATIVE/<slug>" -b "<branch>"
+    "$GIT" -C "$MAIN_NATIVE" worktree add "$PARENT_NATIVE/<slug>" -b "<branch>"
 fi
 ```
 
@@ -748,7 +784,7 @@ In a git worktree, submodules already share the object store of the primary repo
 Use `-C` with the native path instead of `cd` — avoids WSL/Windows path resolution issues:
 
 ```bash
-$GIT -C "$PARENT_NATIVE/<slug>" submodule update --init --recursive
+"$GIT" -C "$PARENT_NATIVE/<slug>" submodule update --init --recursive
 ```
 
 Tell the user this step is running; it may take up to a minute the first time.

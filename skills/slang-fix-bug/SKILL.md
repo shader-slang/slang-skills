@@ -1,6 +1,7 @@
 ---
 name: slang-fix-bug
 description: Analyze a Slang compiler bug from a test failure, CI log, or GitHub issue. Only invoke when explicitly called via /slang-fix-bug.
+argument-hint: "<bug-source> [--parallel N] [--wsl]"
 license: Apache-2.0
 ---
 
@@ -12,7 +13,7 @@ license: Apache-2.0
 why the bug exists and what invariants are violated. Present alternative fix strategies to the
 user before implementing.
 
-**Usage**: `/slang-fix-bug <bug-source> [--parallel N]`
+**Usage**: `/slang-fix-bug <bug-source> [--parallel N] [--wsl]`
 
 Where `<bug-source>` is one of:
 - A GitHub issue number or URL (e.g., `#10419` or `https://github.com/shader-slang/slang/issues/10419`)
@@ -22,6 +23,51 @@ Where `<bug-source>` is one of:
 
 Options:
 - `--parallel N`: Launch N parallel fix agents (default: sequential, one at a time)
+- `--wsl`: Force native WSL `git`/`gh` when running under WSL. Without it, WSL
+  requires Windows-native `git.exe`/`gh.exe` and stops if either is missing.
+
+## Tool Selection
+
+Before running any `git` or `gh` command, initialize selected tools:
+
+```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--wsl([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+  tool="$1"
+  if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+    if command -v "${tool}.exe" >/dev/null 2>&1; then
+      printf '%s.exe\n' "$tool"
+      return 0
+    fi
+    printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+    printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+    return 1
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf 'Missing native tool: %s\n' "$tool" >&2
+  return 1
+}
+
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+clean_line() { tr -d '\r'; }
+```
+
+Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands.
 
 ---
 
@@ -32,7 +78,7 @@ Gather all available information about the bug from the provided source.
 ### From a GitHub Issue
 
 ```bash
-gh issue view <number> --repo shader-slang/slang --json title,body,labels,comments
+"$GH" issue view <number> --repo shader-slang/slang --json title,body,labels,comments
 ```
 
 Extract: reproducer code (mandatory), target(s) affected, error message, expected vs actual behavior.
@@ -135,6 +181,12 @@ in each agent's prompt at the marked `{placeholder}` locations:
 - `slang-write-test` → `{slang-write-test content}` (test syntax reference)
 - `slang-create-issue` "Commit Rules" section → `{commit-rules}`
 
+Also include the WSL tool rule in every agent prompt: when running under WSL,
+use Windows-native `git.exe`/`gh.exe`, and `slangc.exe`/`slang-test.exe` for
+Windows-hosted builds, by default. Stop if any selected tool or binary is
+missing; only use native WSL tools/binaries when the user explicitly requested
+`--wsl`.
+
 ### Agent Prompt Template
 
 ```text
@@ -221,8 +273,8 @@ Do NOT cherry-pick — worktree branches share the same base commit, so cherry-p
 produces empty commits or conflicts. Instead, extract the diff and apply it:
 
 ```bash
-git checkout -b fix-<issue-number>-<short-description>
-git diff master..<winning-agent-branch> -- source/ tests/ | git apply
+"$GIT" checkout -b fix-<issue-number>-<short-description>
+"$GIT" diff master..<winning-agent-branch> -- source/ tests/ | "$GIT" apply
 ```
 
 **Branch naming**: Always include the GitHub issue number. Example: `fix-10314-global-interface-param-crash`, not `fix-global-interface-param-crash`.
@@ -241,15 +293,15 @@ Follow commit rules from the `slang-create-issue` skill.
 ```bash
 ./extras/formatting.sh
 
-git add <changed-files>
-git commit -m "$(cat <<'EOF'
+"$GIT" add <changed-files>
+"$GIT" commit -m "$(cat <<'EOF'
 Fix [short description of what was broken]
 
 [1-2 sentences explaining the root cause and the fix approach]
 EOF
 )"
 
-git push -u origin HEAD
+"$GIT" push -u origin HEAD
 ```
 
 ### Verify Pre-existing Failures
@@ -263,7 +315,7 @@ Create PR using the `slang-create-issue` skill PR format:
 - Assignee: `--assignee @me`
 - Link to issue: `Fixes #NNNN`
 - Include: root cause, approach, alternatives considered, test plan
-- Suggest reviewers based on `git log --format='%an' -- <changed-files> | sort | uniq -c | sort -rn`
+- Suggest reviewers based on `"$GIT" log --format='%an' -- <changed-files> | sort | uniq -c | sort -rn`
 
 ---
 
