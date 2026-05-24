@@ -68,8 +68,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   PLATFORM="wsl"
 fi
 
-# Select build host and CMake executable. Prefer the native Windows build from WSL unless
-# the user explicitly asks for a Linux build.
+# Select build host. Prefer the native Windows build from WSL unless the user
+# explicitly asks for a Linux build.
 if [ "$BUILD_HOST" = "native" ]; then
   if [ "$PLATFORM" = "wsl" ]; then
     BUILD_HOST="windows"
@@ -78,10 +78,28 @@ if [ "$BUILD_HOST" = "native" ]; then
   fi
 fi
 
+require_tool() {
+  tool="$1"
+  message="$2"
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf '%s\n' "$message" >&2
+  return 1
+}
+
 if [ "$BUILD_HOST" = "windows" ]; then
-  CMAKE="cmake.exe"
+  if [ "$PLATFORM" = "wsl" ]; then
+    GIT="$(require_tool git.exe "Missing Windows-hosted tool: git.exe. Install it on Windows or rerun /slang-build with the linux host.")" || exit 1
+    CMAKE="$(require_tool cmake.exe "Missing Windows-hosted tool: cmake.exe. Install it on Windows or rerun /slang-build with the linux host.")" || exit 1
+  else
+    GIT="$(require_tool git "Missing git command.")" || exit 1
+    CMAKE="$(require_tool cmake.exe "Missing cmake.exe command.")" || exit 1
+  fi
 else
-  CMAKE="cmake"
+  GIT="$(require_tool git "Missing native tool: git.")" || exit 1
+  CMAKE="$(require_tool cmake "Missing native tool: cmake.")" || exit 1
 fi
 
 if [ "$BUILD_HOST" = "windows" ]; then
@@ -99,32 +117,30 @@ On WSL, `/slang-build debug` defaults to the native Windows build through `cmake
 Visual Studio preset. Use `/slang-build debug linux` only when you explicitly want a Linux/Ninja
 build from inside WSL.
 
-When targeting the Windows host from WSL, append `.exe` to host tools:
-- `git.exe` instead of `git` (if Windows git was used to set up this repo — see detection below)
-- `cmake.exe` instead of `cmake`
-- `python.exe` instead of `python`
-- `gh.exe` instead of `gh`
+When targeting the Windows host from WSL, append `.exe` to Windows-hosted tools
+and stop if they are missing. Do not silently fall back to WSL-native tools.
+The critical tools are:
+- `git.exe` instead of `git`: Git for Windows worktrees can be incompatible
+  with WSL `git`.
+- `cmake.exe` instead of `cmake`: WSL `cmake` cannot use the Visual Studio
+  presets needed for Windows coverage.
+- `slangc.exe` and `slang-test.exe` after the build: these binaries must match
+  the Windows-hosted build. Do not run WSL-native `slangc` or `slang-test` when
+  validating a Windows-hosted build.
 
-### Detect git binary (Windows / WSL)
+For other host tools used in a workflow, such as `python` or `gh`, prefer the
+matching `.exe` form when the workflow depends on Windows-side state.
 
-On WSL, both `git` (WSL/Linux git) and `git.exe` (Windows Git for Windows) exist on PATH but
-are **not interchangeable**. Whichever was used to clone or init the repo must be used for all
-subsequent operations — mixing them corrupts the index regardless of which filesystem the repo
-lives on.
+### Selected git binary
 
-Detect by probing which git can actually read the repo:
+On WSL, both `git` (WSL/Linux git) and `git.exe` (Windows Git for Windows) can
+exist on PATH but are **not interchangeable**. Pick the binary from Step 1 and
+use it consistently for every git operation in the invocation.
 
-```bash
-GIT="git"
-if [ "$PLATFORM" = "wsl" ]; then
-  if ! git rev-parse --git-dir > /dev/null 2>&1; then
-    if git.exe rev-parse --git-dir > /dev/null 2>&1; then
-      GIT="git.exe"
-    fi
-  fi
-fi
-# On native Windows (MINGW/MSYS), 'git' already resolves to git.exe — no change needed.
-```
+The Step 1 tool selection sets `$GIT` to `git.exe` for the default WSL Windows
+build host and stops if `git.exe` is unavailable. It sets `$GIT` to native
+`git` only for Linux/macOS, native Windows shells where `git` already resolves
+to Git for Windows, or an explicit WSL Linux build.
 
 Use `$GIT` in place of `git` for all subsequent commands in this session.
 
@@ -152,7 +168,8 @@ Required before first build:
 $GIT submodule update --init --recursive
 ```
 
-(`$GIT` is set in Step 1 — `git` on Linux/macOS, `git.exe` on WSL with a Windows-hosted repo.)
+(`$GIT` is set in Step 1 — `git` on Linux/macOS and explicit WSL Linux builds,
+`git.exe` on default WSL Windows-hosted builds.)
 
 ---
 
@@ -319,6 +336,10 @@ ls "$BIN_PATH"/slangc*
 ls "$BIN_PATH"/slang-test*
 ```
 
+For default WSL Windows-hosted builds, verify that `slangc.exe` and
+`slang-test.exe` exist. If they are missing, stop instead of running non-`.exe`
+binaries from a different build.
+
 ---
 
 ## Quick Reference
@@ -338,8 +359,9 @@ cmake --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
 ### One-liner: configure + build (first time, WSL default native Windows / Git Bash)
 
 ```bash
-GIT="${GIT:-git}" && \
-$GIT submodule update --init --recursive && \
+command -v git.exe >/dev/null 2>&1 || { echo "Missing Windows-hosted tool: git.exe"; exit 1; }
+command -v cmake.exe >/dev/null 2>&1 || { echo "Missing Windows-hosted tool: cmake.exe"; exit 1; }
+git.exe submodule update --init --recursive && \
 cmake.exe --preset vs2026-dev -DSLANG_IGNORE_ABORT_MSG=ON -DSLANG_EMBED_CORE_MODULE=OFF && \
 cmake.exe --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test \
   >/dev/null 2>&1 || cmake.exe --build --preset $CMAKE_BUILD_PRESET --target slangc slang-test

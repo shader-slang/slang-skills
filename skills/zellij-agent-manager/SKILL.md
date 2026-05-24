@@ -9,7 +9,7 @@ description: >-
   agents running under Zellij, check what sessions are doing, send a
   message to an agent, or monitor for sessions that need input or are
   stuck. Linux and macOS only — Zellij is not supported on Windows.
-argument-hint: "[status | send <session> <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
+argument-hint: "[--wsl] [status | send <session> <message> | monitor [interval_seconds] | new <issue_number_or_prompt>]"
 allowed-tools: Bash
 license: Apache-2.0
 ---
@@ -27,6 +27,12 @@ and `attach -b` (create background).
 
 ```bash
 bash << 'DETECT'
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+    USE_WSL_TOOLS=true
+fi
+
 if ! command -v zellij &>/dev/null; then
     echo "zellij is not on PATH. Install Zellij (https://zellij.dev) and retry."
     exit 1
@@ -38,13 +44,39 @@ case "$(uname -s)" in
     *) echo "zellij-agent-manager supports Linux and macOS only. Detected: $(uname -s)"; exit 1 ;;
 esac
 
+is_wsl() {
+    [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+    tool="$1"
+    if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+        if command -v "${tool}.exe" >/dev/null 2>&1; then
+            printf '%s.exe\n' "$tool"
+            return 0
+        fi
+        printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+        printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+        return 1
+    fi
+
+    if command -v "$tool" >/dev/null 2>&1; then
+        printf '%s\n' "$tool"
+        return 0
+    fi
+    printf 'Missing native tool: %s\n' "$tool" >&2
+    return 1
+}
+
 ZJ="zellij"
-GIT="git"
-echo "ZJ=$ZJ GIT=$GIT HOST=$HOST"
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+clean_line() { tr -d '\r'; }
+echo "ZJ=$ZJ GIT=$GIT GH=$GH HOST=$HOST"
 DETECT
 ```
 
-Variables used throughout: `ZJ` (zellij binary), `GIT`, `HOST=unix`.
+Variables used throughout: `ZJ` (zellij binary), `GIT`, `GH`, `HOST=unix`.
 
 ---
 
@@ -323,20 +355,23 @@ When command is `new <args>`:
 **Issue number path:**
 
 ```bash
-gh issue view <number> --repo <REPO> --json number,title,body,labels
+"$GH" issue view <number> --repo <REPO> --json number,title,body,labels
 ```
 
 - `slug` ← from `title`
 - `branch prefix` ← labels: "bug"/"crash" → `fix/`; "feature"/"enhancement" → `feature/`;
   else `fix/`
 - Claude prompt: issue title + body (truncated to 3000 chars) + instruction to fix,
-  test, commit
+  test, commit, and follow WSL tool handling (`git.exe`, `cmake.exe`,
+  `slangc.exe`, and `slang-test.exe` for Windows-hosted WSL work)
 
 **Free-form path:**
 
 - `slug` ← from the prompt text
 - `branch prefix` ← prompt contains "feature"/"add" → `feature/`; else `fix/`
-- Claude prompt: the user's prompt verbatim + instruction to test and commit
+- Claude prompt: the user's prompt verbatim + instruction to test, commit, and
+  follow WSL tool handling (`git.exe`, `cmake.exe`, `slangc.exe`, and
+  `slang-test.exe` for Windows-hosted WSL work)
 
 **Slug rule:** lowercase → replace runs of non-alphanumeric chars with `-` → collapse
 consecutive `-` → strip leading/trailing `-` → truncate to 45 chars.
@@ -350,10 +385,18 @@ Session/worktree name: `<slug>` (no prefix)
 ### 7b — Discover paths
 
 ```bash
-MAIN=$($GIT worktree list --porcelain | awk '/^worktree/{print $2; exit}')
+MAIN=$("$GIT" worktree list --porcelain | awk '/^worktree/{print $2; exit}' | clean_line)
+if [ "${GIT%.exe}" != "$GIT" ] && command -v wslpath >/dev/null 2>&1; then
+    MAIN=$(wslpath -u "$MAIN")
+fi
 PARENT=$(dirname "$MAIN")
-REPO=$($GIT -C "$MAIN" remote get-url origin 2>/dev/null \
-    | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)|\1|')
+GIT_MAIN="$MAIN"
+if [ "${GIT%.exe}" != "$GIT" ] && command -v wslpath >/dev/null 2>&1; then
+    GIT_MAIN=$(wslpath -w "$MAIN")
+fi
+REPO=$("$GIT" -C "$GIT_MAIN" remote get-url origin 2>/dev/null \
+    | sed 's|.*github\.com[:/]\(.*\)\.git$|\1|; s|.*github\.com[:/]\(.*\)|\1|' \
+    | clean_line)
 ```
 
 New worktree path: `$PARENT/<slug>`.
@@ -372,14 +415,25 @@ reusing it — `zellij delete-session <slug>` is destructive.
 ### 7d — Create the worktree
 
 ```bash
-$GIT -C "$MAIN" worktree add "$PARENT/<slug>" -b "<branch>"
+GIT_MAIN="$MAIN"
+GIT_WORKTREE="$PARENT/<slug>"
+if [ "${GIT%.exe}" != "$GIT" ] && command -v wslpath >/dev/null 2>&1; then
+    GIT_MAIN=$(wslpath -w "$MAIN")
+    GIT_WORKTREE=$(wslpath -w "$PARENT/<slug>")
+fi
+"$GIT" -C "$GIT_MAIN" worktree add "$GIT_WORKTREE" -b "<branch>"
 ```
 
 ### 7e — Initialize submodules with local reference
 
 ```bash
-cd "$PARENT/<slug>"
-$GIT submodule update --init --recursive --reference "$MAIN"
+GIT_REFERENCE="$MAIN"
+GIT_WORKTREE="$PARENT/<slug>"
+if [ "${GIT%.exe}" != "$GIT" ] && command -v wslpath >/dev/null 2>&1; then
+    GIT_REFERENCE=$(wslpath -w "$MAIN")
+    GIT_WORKTREE=$(wslpath -w "$PARENT/<slug>")
+fi
+"$GIT" -C "$GIT_WORKTREE" submodule update --init --recursive --reference "$GIT_REFERENCE"
 ```
 
 Tell the user this step is running; it may take up to a minute the first time.

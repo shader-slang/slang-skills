@@ -1,6 +1,7 @@
 ---
 name: slang-investigate
 description: Root cause investigation for Slang compiler bugs. Only invoke when explicitly called via /slang-investigate or from slang-fix-bug.
+argument-hint: "<bug-source> [--wsl]"
 license: Apache-2.0
 ---
 
@@ -11,9 +12,59 @@ license: Apache-2.0
 **Core Principle**: Understand before fixing. The first plausible explanation is often wrong. Trace
 the full code path before proposing any fix.
 
-**Usage**: `/slang-investigate <bug-source>`
+**Usage**: `/slang-investigate <bug-source> [--wsl]`
 
 Where `<bug-source>` is a GitHub issue, test file, CI log, or symptom description.
+
+`--wsl` forces native WSL `git`/`gh` when running under WSL. Without it, WSL
+requires Windows-native `git.exe`/`gh.exe` and stops if either is missing.
+
+## Tool Selection
+
+Before running any `git` or `gh` command, initialize selected tools:
+
+```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--wsl([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+  tool="$1"
+  if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+    if command -v "${tool}.exe" >/dev/null 2>&1; then
+      printf '%s.exe\n' "$tool"
+      return 0
+    fi
+    printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+    printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+    return 1
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf 'Missing native tool: %s\n' "$tool" >&2
+  return 1
+}
+
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+```
+
+Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands.
+
+For local compiler/test invocations, follow the `slang-run-tests` binary
+selection rule. Under WSL with the default Windows-hosted build, use
+`slangc.exe` and `slang-test.exe`; stop if either is missing instead of running
+a WSL-native binary from another build.
 
 ---
 
@@ -23,13 +74,13 @@ Build if needed (see `slang-build` skill), then confirm the bug:
 
 ```bash
 # For ICE/crash
-./build/<preset>/bin/slangc -target <target> test.slang
+"$SLANGC" -target <target> test.slang
 
 # For SPIRV validation
-SLANG_RUN_SPIRV_VALIDATION=1 ./build/<preset>/bin/slangc -target spirv test.slang
+SLANG_RUN_SPIRV_VALIDATION=1 "$SLANGC" -target spirv test.slang
 
 # For wrong codegen (compute test)
-./build/<preset>/bin/slang-test tests/path/to/test.slang
+"$SLANG_TEST" tests/path/to/test.slang
 ```
 
 If the bug does not reproduce, document why and stop.
@@ -70,11 +121,11 @@ Use IR dumps to understand which pass is involved:
 
 ```bash
 # Dump IR at every pass (split into per-pass files)
-./build/<preset>/bin/slangc -dump-ir -target <target> -o /dev/null test.slang 2>&1 | \
+"$SLANGC" -dump-ir -target <target> -o /dev/null test.slang 2>&1 | \
   python extras/split-ir-dump.py
 
 # Dump IR around a suspected pass
-./build/<preset>/bin/slangc \
+"$SLANGC" \
   -dump-ir-before <pass-name> \
   -dump-ir-after <pass-name> \
   -target <target> -o /dev/null test.slang > pass-dump.txt 2>&1
@@ -147,10 +198,10 @@ performance trade-offs, known limitations documented in issues).
 
 ```bash
 # Search for related issues
-gh issue list --repo shader-slang/slang --search "error message keywords" --limit 10
+"$GH" issue list --repo shader-slang/slang --search "error message keywords" --limit 10
 
 # Search for related fixes in git history
-git log --all --oneline --grep="error message keywords" -- source/slang/
+"$GIT" log --all --oneline --grep="error message keywords" -- source/slang/
 
 # Check for TODOs near the crash site
 rg "TODO|FIXME|HACK|WORKAROUND" source/slang/<file>.cpp --context 3

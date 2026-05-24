@@ -1,7 +1,7 @@
 ---
-name: slang-resolve-pr-comments
+name: slang-pr-resolve-comments
 description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, notify the user about draft/WIP/DNI review-blocking LLM messages, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until the PR is clean.
-argument-hint: "<PR URL or number> [--single-pass]"
+argument-hint: "<PR URL or number> [--single-pass] [--wsl]"
 allowed-tools: Bash Read Write Edit Grep Glob ScheduleWakeup
 required-capabilities: shell git github-cli file-read file-edit search
 ---
@@ -23,10 +23,11 @@ The `argument-hint`, `allowed-tools`, and `required-capabilities` metadata are C
 
 ## Prerequisites
 
-- GitHub CLI (`gh`) is installed and authenticated for the PR repository.
-- The `gh` token can read PR reviews/checks and push to the PR branch.
+- GitHub CLI (`gh` or `gh.exe`) is installed and authenticated for the PR repository.
+- The selected `gh` token can read PR reviews/checks and push to the PR branch.
 - A PR URL or PR number is provided by the user or agent invocation. In Claude Code slash commands, this arrives in `$ARGUMENTS`. If it is missing, ask the user for the PR.
 - Optional: `--single-pass` disables automatic follow-up scheduling. In single-pass mode, report what remains pending, when to check again, and the exact rerun prompt/command instead of scheduling the next pass.
+- Optional: `--wsl` forces native WSL `git`/`gh` when running under WSL. Without it, WSL requires Windows-native `git.exe`/`gh.exe` and stops if either is missing.
 
 Initialize the PR selector once before any use, adapting the input variable to the current agent host:
 
@@ -39,26 +40,62 @@ if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--single-pass([[:space:]]|$)
   SINGLE_PASS=true
   ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--single-pass([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
 fi
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--wsl([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
 PR="$ARGS"
 if [ -z "$PR" ]; then
   echo "Missing PR argument (URL or number)."
   exit 1
 fi
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+  tool="$1"
+  if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+    if command -v "${tool}.exe" >/dev/null 2>&1; then
+      printf '%s.exe\n' "$tool"
+      return 0
+    fi
+    printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+    printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+    return 1
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf 'Missing native tool: %s\n' "$tool" >&2
+  return 1
+}
+
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+clean_line() { tr -d '\r'; }
 ```
+
+Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands in this skill.
+Strip `\r` from command substitutions that capture selected-tool output.
 
 Check before making changes:
 
 ```bash
-gh auth status
-git status --short
-gh pr view "$PR" --json number,title,url,baseRefName,headRefName,headRepository,headRepositoryOwner,mergeStateStatus,isDraft
+"$GH" auth status
+"$GIT" status --short
+"$GH" pr view "$PR" --json number,title,url,baseRefName,headRefName,headRepository,headRepositoryOwner,mergeStateStatus,isDraft
 ```
 
-If `git status --short` shows any output, **stop and ask the user** how to proceed before continuing. Do not commit, stash, or discard anything automatically. Present the list of changed/untracked files and offer these options:
+If `"$GIT" status --short` shows any output, **stop and ask the user** how to proceed before continuing. Do not commit, stash, or discard anything automatically. Present the list of changed/untracked files and offer these options:
 
-1. **Commit all changes** — ask for a commit message, then `git add -A && git commit -m "<message>"`.
-2. **Commit only staged changes** — if `git diff --cached --name-only` is non-empty, ask for a commit message, then `git commit -m "<message>"` (leaves unstaged changes untouched).
-3. **Stash changes** — run `git stash push -m "slang-resolve-pr-comments stash"` to set them aside, then proceed with the current HEAD.
+1. **Commit all changes** — ask for a commit message, then `"$GIT" add -A && "$GIT" commit -m "<message>"`.
+2. **Commit only staged changes** — if `"$GIT" diff --cached --name-only` is non-empty, ask for a commit message, then `"$GIT" commit -m "<message>"` (leaves unstaged changes untouched).
+3. **Stash changes** — run `"$GIT" stash push -m "slang-pr-resolve-comments stash"` to set them aside, then proceed with the current HEAD.
 4. **Abort** — stop the skill so the user can handle the changes manually.
 
 Wait for the user's choice before continuing.
@@ -70,12 +107,12 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
 1. Check out the PR branch:
 
    ```bash
-   gh pr checkout "$PR"
-   git fetch --all --prune
-   git submodule update --init --recursive
+   "$GH" pr checkout "$PR"
+   "$GIT" fetch --all --prune
+   "$GIT" submodule update --init --recursive
    ```
 
-   This repo uses git submodules. Run `git submodule update --init --recursive` after any update to the local branch — e.g. `gh pr checkout`, `git pull`, or `git rebase` (and again after resolving merge conflicts — see below) — so submodule references stay in sync with the checked-out commit. A bare `git fetch` only updates remote-tracking refs and does not require a submodule sync on its own.
+   This repo uses git submodules. Run `"$GIT" submodule update --init --recursive` after any update to the local branch — e.g. `"$GH" pr checkout`, `"$GIT" pull`, or `"$GIT" rebase` (and again after resolving merge conflicts — see below) — so submodule references stay in sync with the checked-out commit. A bare fetch only updates remote-tracking refs and does not require a submodule sync on its own.
 
 2. Inspect PR state, checks, mergeability, review-blocking notices, and review threads.
 3. Fix actionable review feedback and CI failures.
@@ -102,7 +139,7 @@ In Claude Code, call `ScheduleWakeup`:
 ```text
 ScheduleWakeup(
   delaySeconds = <interval>,
-  prompt       = "/slang-resolve-pr-comments <PR>",
+  prompt       = "/slang-pr-resolve-comments <PR>",
   reason       = "polling PR <PR> for new review feedback"
 )
 ```
@@ -111,14 +148,14 @@ For other agents, use the host's native equivalent if available. If no schedulin
 
 - What is still pending.
 - When to check again — use 240 s by default (see **Choosing `<interval>`** above if the cache TTL differs).
-- The exact rerun prompt, for example `/slang-resolve-pr-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
+- The exact rerun prompt, for example `/slang-pr-resolve-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
 
 ## Review-Blocking PR State
 
 Before processing normal review feedback, check whether the PR is in a state where LLM reviewers may intentionally skip review:
 
 ```bash
-gh pr view "$PR" --json title,isDraft,url
+"$GH" pr view "$PR" --json title,isDraft,url
 ```
 
 Treat the PR as review-blocked when it is a draft or when the title contains markers such as `WIP`, `DNI`, `DNM`, `do not review`, `do not merge`, or similar wording. Also inspect LLM comments for messages saying that review was skipped, paused, or unavailable because the PR is draft, WIP, DNI, or otherwise not ready for review.
@@ -133,14 +170,14 @@ If an LLM left a review-blocking message:
 
 ## Commit Policy
 
-When the PR is modified for any reason, preserve the change history by creating a new commit for the modification. Do not use `git commit --amend` for review fixes, CI fixes, conflict-resolution follow-up edits, formatting changes, or any other PR update.
+When the PR is modified for any reason, preserve the change history by creating a new commit for the modification. Do not use `"$GIT" commit --amend` for review fixes, CI fixes, conflict-resolution follow-up edits, formatting changes, or any other PR update.
 
 Use concise commit messages that describe the reason for the follow-up change, for example:
 
 ```bash
-git add <changed-files>
-git commit -m "Address review feedback"
-git push
+"$GIT" add <changed-files>
+"$GIT" commit -m "Address review feedback"
+"$GIT" push
 ```
 
 ## PR Description Updates
@@ -154,26 +191,26 @@ After pushing any new commit to the PR branch, check whether the PR description 
 
 Skip the update when the new commits are purely cosmetic (formatting, typo fixes, comment tweaks) or when they only address narrow review feedback that does not change the summary-level meaning of the PR.
 
-Fetch the current description, edit it, and push the update with `gh`:
+Fetch the current description, edit it, and push the update with `$GH`:
 
 ```bash
-gh pr view "$PR" --json body --jq .body > /tmp/pr-body.md
+"$GH" pr view "$PR" --json body --jq .body > /tmp/pr-body.md
 # Edit /tmp/pr-body.md to reflect the current state of the PR.
-gh pr edit "$PR" --body-file /tmp/pr-body.md
+"$GH" pr edit "$PR" --body-file /tmp/pr-body.md
 ```
 
 Preserve any existing sections (summary, test plan, generated-by footers, issue links) unless they are now inaccurate. Do not rewrite the description from scratch when a targeted edit will do.
 
 ## Review Threads
 
-Use GitHub GraphQL to list review threads, because `gh pr view` does not expose all thread resolution state:
+Use GitHub GraphQL to list review threads, because `$GH pr view` does not expose all thread resolution state:
 
 ```bash
-PR_NUMBER="$(gh pr view "$PR" --json number --jq .number)"
-OWNER="$(gh pr view "$PR" --json baseRepository --jq .baseRepository.owner.login)"
-REPO="$(gh pr view "$PR" --json baseRepository --jq .baseRepository.name)"
+PR_NUMBER="$("$GH" pr view "$PR" --json number --jq .number | clean_line)"
+OWNER="$("$GH" pr view "$PR" --json baseRepository --jq .baseRepository.owner.login | clean_line)"
+REPO="$("$GH" pr view "$PR" --json baseRepository --jq .baseRepository.name | clean_line)"
 
-gh api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query='
+"$GH" api graphql -F owner="$OWNER" -F repo="$REPO" -F pr="$PR_NUMBER" -f query='
 query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$pr) {
@@ -215,7 +252,10 @@ For each unresolved, non-outdated (`isResolved = false` and `isOutdated = false`
 
 1. Read the full thread and relevant code.
 2. Apply the fix, or determine that the suggestion is invalid with evidence.
-3. Run focused validation.
+3. Run focused validation. For Slang compiler/test invocations, use the
+   `slang-run-tests` binary selection rule: under WSL with a Windows-hosted
+   build, require `slangc.exe` and `slang-test.exe` and do not fall back to
+   WSL-native binaries.
 4. Push the fix if code changed.
 5. Reply on the thread with what changed, what validation ran, or why no code change was needed. **Always start the reply body with `[Agent] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
 6. Resolve the thread only after the reply is posted and the issue is actually addressed.
@@ -223,7 +263,7 @@ For each unresolved, non-outdated (`isResolved = false` and `isOutdated = false`
 Reply to an LLM thread:
 
 ```bash
-gh api graphql -F thread="$THREAD_ID" -F body="$REPLY_BODY" -f query='
+"$GH" api graphql -F thread="$THREAD_ID" -F body="$REPLY_BODY" -f query='
 mutation($thread:ID!, $body:String!) {
   addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread, body:$body}) {
     comment { url }
@@ -234,7 +274,7 @@ mutation($thread:ID!, $body:String!) {
 Resolve an addressed LLM thread:
 
 ```bash
-gh api graphql -F thread="$THREAD_ID" -f query='
+"$GH" api graphql -F thread="$THREAD_ID" -f query='
 mutation($thread:ID!) {
   resolveReviewThread(input:{threadId:$thread}) {
     thread { id isResolved }
@@ -245,18 +285,18 @@ mutation($thread:ID!) {
 For human threads, do not mark them resolved. If you fixed the issue, reply with a concise summary and ask the reviewer to resolve the thread if satisfied. **Always start the reply body with `[Agent] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
 
 If `pageInfo.hasNextPage` is true, paginate and inspect every review thread before deciding that the PR has no remaining feedback.
-For pagination, repeat the query adding `-F after="$END_CURSOR"` (using the value from `pageInfo.endCursor`) to the `gh api graphql` command, with `reviewThreads(first:100, after:$after)` in the query.
+For pagination, repeat the query adding `-F after="$END_CURSOR"` (using the value from `pageInfo.endCursor`) to the `$GH api graphql` command, with `reviewThreads(first:100, after:$after)` in the query.
 
 ## CI Failures
 
 Inspect checks with:
 
 ```bash
-gh pr checks "$PR"
-gh run list --branch "$(git branch --show-current)" --limit 10
-RUN_ID="$(gh run list --branch "$(git branch --show-current)" --status failure --limit 1 --json databaseId --jq '.[0].databaseId')"
+"$GH" pr checks "$PR"
+"$GH" run list --branch "$("$GIT" branch --show-current | clean_line)" --limit 10
+RUN_ID="$("$GH" run list --branch "$("$GIT" branch --show-current | clean_line)" --status failure --limit 1 --json databaseId --jq '.[0].databaseId' | clean_line)"
 if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-  gh run view "$RUN_ID" --log-failed
+  "$GH" run view "$RUN_ID" --log-failed
 else
   echo "No failed workflow runs found for current branch."
 fi
@@ -286,7 +326,7 @@ Treat a failure as intermittent or infrastructure-related when the logs show any
 When a failure matches any of these, **do not attempt a code fix**. Instead, retry the failed run:
 
 ```bash
-gh run rerun "$RUN_ID" --failed
+"$GH" run rerun "$RUN_ID" --failed
 ```
 
 The `--failed` flag re-runs only the failed jobs, not the entire workflow.
@@ -294,11 +334,11 @@ The `--failed` flag re-runs only the failed jobs, not the entire workflow.
 **Waiting for the retry option to become available:** GitHub only allows rerunning once the run `status` is `completed` (the only terminal status value; `queued` and `in_progress` are non-terminal). The run outcome — `success`, `failure`, `cancelled`, etc. — is stored in the separate `conclusion` field, which is only populated after `status` becomes `completed`. The script below correctly gates on `.status == "completed"` before attempting the rerun. If the run is still in progress when you first inspect it, schedule a wakeup and try again:
 
 ```bash
-RUN_STATUS="$(gh run view "$RUN_ID" --json status --jq .status)"
+RUN_STATUS="$("$GH" run view "$RUN_ID" --json status --jq .status | clean_line)"
 if [ "$RUN_STATUS" != "completed" ]; then
   echo "Run $RUN_ID is still $RUN_STATUS — will retry rerun after next wakeup."
 else
-  gh run rerun "$RUN_ID" --failed
+  "$GH" run rerun "$RUN_ID" --failed
 fi
 ```
 
@@ -307,65 +347,65 @@ After issuing a rerun, proceed to the **Completion Criteria** section to schedul
 If checks are still running and there is no review work to do, do not block — use a non-blocking check, then proceed to the **Completion Criteria** section to schedule or request the next pass and return:
 
 ```bash
-gh pr checks "$PR"
+"$GH" pr checks "$PR"
 ```
 
 ## Merge Conflicts And Auto-Rebase Failures
 
-**Do not rebase proactively.** Only rebase onto the base branch when GitHub explicitly reports merge conflicts (i.e. `mergeStateStatus` is `DIRTY` or the PR shows a conflict that blocks merge). If a push is rejected because the remote PR branch has newer commits, synchronize with the remote first (e.g. `git pull --rebase`). If the branch is merely behind the base branch but has no conflicts and you have no local changes to push, leave it alone — GitHub's auto-merge will rebase or merge it when the time comes.
+**Do not rebase proactively.** Only rebase onto the base branch when GitHub explicitly reports merge conflicts (i.e. `mergeStateStatus` is `DIRTY` or the PR shows a conflict that blocks merge). If a push is rejected because the remote PR branch has newer commits, synchronize with the remote first (e.g. `"$GIT" pull --rebase`). If the branch is merely behind the base branch but has no conflicts and you have no local changes to push, leave it alone — GitHub's auto-merge will rebase or merge it when the time comes.
 
 If GitHub reports that auto-merge or auto-rebase cannot continue because conflicts must be resolved, update the PR branch manually.
 
 Inspect merge state:
 
 ```bash
-gh pr view "$PR" --json baseRefName,headRefName,mergeStateStatus,headRepository,headRepositoryOwner
+"$GH" pr view "$PR" --json baseRefName,headRefName,mergeStateStatus,headRepository,headRepositoryOwner
 ```
 
 Resolve by rebasing onto the latest base branch:
 
 ```bash
-BASE="$(gh pr view "$PR" --json baseRefName --jq .baseRefName)"
-HEAD_BRANCH="$(gh pr view "$PR" --json headRefName --jq .headRefName)"
-BASE_REPO="$(gh pr view "$PR" --json baseRepository --jq .baseRepository.nameWithOwner)"
+BASE="$("$GH" pr view "$PR" --json baseRefName --jq .baseRefName | clean_line)"
+HEAD_BRANCH="$("$GH" pr view "$PR" --json headRefName --jq .headRefName | clean_line)"
+BASE_REPO="$("$GH" pr view "$PR" --json baseRepository --jq .baseRepository.nameWithOwner | clean_line)"
 BASE_REPO_ESC="$(printf '%s' "$BASE_REPO" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
-BASE_REMOTE="$(git remote -v | grep -Em1 "github\.com[:/]${BASE_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}')"
+BASE_REMOTE="$("$GIT" remote -v | grep -Em1 "github\.com[:/]${BASE_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}' | clean_line)"
 if [ -z "$BASE_REMOTE" ]; then
   BASE_REMOTE="upstream"
-  if ! git remote get-url "$BASE_REMOTE" 2>/dev/null; then
+  if ! "$GIT" remote get-url "$BASE_REMOTE" 2>/dev/null; then
     echo "Could not determine base remote for $BASE_REPO and 'upstream' does not exist"
     exit 1
   fi
 fi
-git fetch "$BASE_REMOTE" "$BASE"
-git rebase "$BASE_REMOTE/$BASE"
+"$GIT" fetch "$BASE_REMOTE" "$BASE"
+"$GIT" rebase "$BASE_REMOTE/$BASE"
 ```
 
 Resolve conflicts in the files, then continue:
 
 ```bash
-git add <resolved-files>
-git rebase --continue
-git submodule update --init --recursive
+"$GIT" add <resolved-files>
+"$GIT" rebase --continue
+"$GIT" submodule update --init --recursive
 ```
 
-Always re-run `git submodule update --init --recursive` after a rebase or conflict resolution so submodule pointers match the new HEAD.
+Always re-run `"$GIT" submodule update --init --recursive` after a rebase or conflict resolution so submodule pointers match the new HEAD.
 
 Run relevant validation, then push with a lease:
 
 ```bash
-HEAD_REPO="$(gh pr view "$PR" --json headRepository --jq .headRepository.nameWithOwner)"
+HEAD_REPO="$("$GH" pr view "$PR" --json headRepository --jq .headRepository.nameWithOwner | clean_line)"
 HEAD_REPO_ESC="$(printf '%s' "$HEAD_REPO" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
-PUSH_REMOTE="$(git remote -v | grep -Em1 "github\.com[:/]${HEAD_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}')"
+PUSH_REMOTE="$("$GIT" remote -v | grep -Em1 "github\.com[:/]${HEAD_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}' | clean_line)"
 if [ -z "$PUSH_REMOTE" ]; then
-  gh pr checkout "$PR"
-  PUSH_REMOTE="$(git remote -v | grep -Em1 "github\.com[:/]${HEAD_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}')"
+  "$GH" pr checkout "$PR"
+  PUSH_REMOTE="$("$GIT" remote -v | grep -Em1 "github\.com[:/]${HEAD_REPO_ESC}(\.git)?([[:space:]]|$)" | awk '{print $1}' | clean_line)"
 fi
 if [ -z "$PUSH_REMOTE" ]; then
   echo "Could not determine push remote for $HEAD_REPO"
   exit 1
 fi
-git push --force-with-lease "$PUSH_REMOTE" "HEAD:$HEAD_BRANCH"
+"$GIT" push --force-with-lease "$PUSH_REMOTE" "HEAD:$HEAD_BRANCH"
 ```
 
 ## Completion Criteria
@@ -374,10 +414,10 @@ After every pass, evaluate whether to stop or reschedule:
 
 **Stop and report success** when all of these are true — do not schedule another pass:
 
-- `gh pr checks "$PR"` shows all required checks passing.
+- `"$GH" pr checks "$PR"` shows all required checks passing.
 - The PR is not in a draft/WIP/DNI-style state that LLM reviewers reported as blocking review.
 - There are no unresolved, non-outdated LLM review threads.
-- `gh pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus` does not report `DIRTY` (actual merge conflicts) or `UNKNOWN` (still calculating). A status of `BEHIND` (branch is behind base but no conflicts) is acceptable — GitHub auto-merge handles it.
+- `"$GH" pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus` does not report `DIRTY` (actual merge conflicts) or `UNKNOWN` (still calculating). A status of `BEHIND` (branch is behind base but no conflicts) is acceptable — GitHub auto-merge handles it.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
 **Continue later** when any of the above is not yet true. If a single-pass run was requested (`--single-pass` or `SINGLE_PASS=true`) or scheduling is unavailable, report what is still pending, when to check again, and the exact rerun prompt/command, then return. Otherwise, schedule a non-blocking follow-up when the current agent host supports one, using `delaySeconds = <interval>` (see **Choosing `<interval>`** above), then return.
