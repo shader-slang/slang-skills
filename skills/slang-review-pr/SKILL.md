@@ -88,10 +88,14 @@ Collect all information about the PR, its linked issues, and review feedback in 
 
 ### Step 2: Fetch Linked Issues
 
-Extract issue numbers from the PR body (e.g., `Fixes #10153`) and fetch them:
+Extract closing issue references from the PR body. Accept both full references
+such as `Fixes shader-slang/slang#10153` and bare references such as
+`Fixes #10153`. Resolve bare references to `shader-slang/slang`, preserve the
+repository from full references, and deduplicate by `owner/repo#number` before
+fetching issues:
 
 ```bash
-"$GH" issue view <number> --repo shader-slang/slang --json title,body,labels
+"$GH" issue view <number> --repo <owner/repo> --json title,body,labels
 ```
 
 ### Step 3: Fetch Review Thread Status
