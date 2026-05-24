@@ -1,5 +1,5 @@
 ---
-name: slang-resolve-pr-comments
+name: slang-pr-resolve-comments
 description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, notify the user about draft/WIP/DNI review-blocking LLM messages, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until the PR is clean.
 argument-hint: "<PR URL or number> [--single-pass] [--wsl]"
 allowed-tools: Bash Read Write Edit Grep Glob ScheduleWakeup
@@ -95,7 +95,7 @@ If `"$GIT" status --short` shows any output, **stop and ask the user** how to pr
 
 1. **Commit all changes** — ask for a commit message, then `"$GIT" add -A && "$GIT" commit -m "<message>"`.
 2. **Commit only staged changes** — if `"$GIT" diff --cached --name-only` is non-empty, ask for a commit message, then `"$GIT" commit -m "<message>"` (leaves unstaged changes untouched).
-3. **Stash changes** — run `"$GIT" stash push -m "slang-resolve-pr-comments stash"` to set them aside, then proceed with the current HEAD.
+3. **Stash changes** — run `"$GIT" stash push -m "slang-pr-resolve-comments stash"` to set them aside, then proceed with the current HEAD.
 4. **Abort** — stop the skill so the user can handle the changes manually.
 
 Wait for the user's choice before continuing.
@@ -139,7 +139,7 @@ In Claude Code, call `ScheduleWakeup`:
 ```text
 ScheduleWakeup(
   delaySeconds = <interval>,
-  prompt       = "/slang-resolve-pr-comments <PR>",
+  prompt       = "/slang-pr-resolve-comments <PR>",
   reason       = "polling PR <PR> for new review feedback"
 )
 ```
@@ -148,7 +148,7 @@ For other agents, use the host's native equivalent if available. If no schedulin
 
 - What is still pending.
 - When to check again — use 240 s by default (see **Choosing `<interval>`** above if the cache TTL differs).
-- The exact rerun prompt, for example `/slang-resolve-pr-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
+- The exact rerun prompt, for example `/slang-pr-resolve-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
 
 ## Review-Blocking PR State
 

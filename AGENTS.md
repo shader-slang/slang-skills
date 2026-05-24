@@ -9,6 +9,9 @@ When a skill mirrors a `gh` command, preserve the `gh` command word order after
 the `slang-` prefix. For example, `gh pr create` maps to `slang-pr-create`, not
 `slang-create-pr`.
 
+When adding a new skill, list it in the appropriate skills table in
+`README.md` with a concise description and dependency note.
+
 ## WSL Tool Handling
 
 Every new or updated skill that runs command-line tools must explicitly handle
