@@ -16,7 +16,8 @@ Create a focused GitHub pull request from the current branch. Default to
 PRs are created as drafts by default. Use `--no-draft` only when the PR should
 be ready for review immediately. Created PRs are assigned to `@me` by default.
 After creating a draft PR, request CodeRabbit review by commenting
-`@coderabbitai review`.
+`@coderabbitai review`. If the target repository is under `shader-slang/`, also
+post `/ci all` to trigger CI.
 
 `--wsl` means "use native WSL tools" when running inside WSL. Without it,
 require Windows-hosted `.exe` tools such as `gh.exe`. If they are missing, stop
@@ -224,6 +225,19 @@ request_coderabbit_review_if_draft() {
   fi
 }
 
+trigger_shader_slang_ci_if_needed() {
+  pr_ref="$1"
+  repo_name_with_owner="$REPO"
+  repo_name_with_owner="${repo_name_with_owner#https://github.com/}"
+  repo_name_with_owner="${repo_name_with_owner#git@github.com:}"
+  repo_name_with_owner="${repo_name_with_owner%.git}"
+  case "$repo_name_with_owner" in
+    shader-slang/*)
+      "$GH" pr comment "$pr_ref" --body '/ci all'
+      ;;
+  esac
+}
+
 PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
@@ -235,6 +249,7 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
+trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
@@ -259,6 +274,7 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
+trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
@@ -275,6 +291,10 @@ $prUrl = gh.exe pr create `
   --draft `
   --label "pr: non-breaking"
 gh.exe pr comment $prUrl --body "@coderabbitai review"
+$repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
+if ($repoNameWithOwner -like "shader-slang/*") {
+  gh.exe pr comment $prUrl --body "/ci all"
+}
 $prUrl
 ```
 
@@ -284,7 +304,8 @@ that is ready for review.
 ## After Creation
 
 Report the PR URL, the base branch, the head branch, whether a CodeRabbit review
-request was posted, and whether any validation was run. If PR creation fails
+request was posted, whether `/ci all` was posted, and whether any validation was
+run. If PR creation fails
 because the branch was not pushed to a usable remote or the target repo differs
 from the local `origin`, explain the failure and ask before adding remotes or
 changing push destinations.
