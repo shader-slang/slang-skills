@@ -155,6 +155,9 @@ mapfile -t LINKED_ISSUE_REFS < <("$GH" api graphql --paginate --slurp \
   ')
 ```
 
+This uses `gh api --slurp` with `--paginate` so `gh` wraps paginated GraphQL
+responses in one JSON array before `jq` processes them.
+
 If `jq` is unavailable, run the same GraphQL query and inspect the JSON output
 manually for `linkedBranches` entries whose `ref.name` equals `$BRANCH`.
 
@@ -176,6 +179,36 @@ $repo = "shader-slang/slang"
 $repoNameWithOwner = gh.exe repo view $repo --json nameWithOwner --jq ".nameWithOwner"
 $base = gh.exe repo view $repo --json defaultBranchRef --jq ".defaultBranchRef.name"
 $branch = git branch --show-current
+$owner, $name = $repoNameWithOwner -split '/', 2
+$query = @'
+query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: OPEN, after: $endCursor) {
+      nodes {
+        number
+        repository { nameWithOwner }
+        linkedBranches(first: 20) {
+          nodes { ref { name repository { nameWithOwner } } }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+'@
+$pages = gh.exe api graphql --paginate --slurp `
+  -F "owner=$owner" `
+  -F "name=$name" `
+  -f "query=$query" | ConvertFrom-Json
+$linkedIssueRefs = @()
+foreach ($page in $pages) {
+  foreach ($issue in $page.data.repository.issues.nodes) {
+    if ($issue.linkedBranches.nodes | Where-Object { $_.ref -and $_.ref.name -eq $branch }) {
+      $linkedIssueRefs += "$($issue.repository.nameWithOwner)#$($issue.number)"
+    }
+  }
+}
+$linkedIssueRefs = $linkedIssueRefs | Sort-Object -Unique
 ```
 
 ## Required Safety Check
