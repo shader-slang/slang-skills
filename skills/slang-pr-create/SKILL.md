@@ -171,12 +171,13 @@ Push the branch if needed:
 ```bash
 PUSH_REMOTE="$("$GIT" config --get "branch.$BRANCH.remote" | clean_line || true)"
 if [ -z "$PUSH_REMOTE" ]; then
-  for remote in $("$GIT" remote); do
+  while IFS= read -r remote; do
+    [ -z "$remote" ] && continue
     if "$GIT" remote get-url --push "$remote" >/dev/null 2>&1; then
       PUSH_REMOTE="$remote"
       break
     fi
-  done
+  done < <("$GIT" remote | clean_line)
 fi
 if [ -z "$PUSH_REMOTE" ]; then
   echo "Could not determine a push remote. Ask before adding a remote or changing push destinations."
