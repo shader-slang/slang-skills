@@ -15,6 +15,8 @@ Create a focused GitHub pull request from the current branch. Default to
 
 PRs are created as drafts by default. Use `--no-draft` only when the PR should
 be ready for review immediately. Created PRs are assigned to `@me` by default.
+After creating a draft PR, request CodeRabbit review by commenting
+`@coderabbitai review`.
 
 `--wsl` means "use native WSL tools" when running inside WSL. Without it,
 require Windows-hosted `.exe` tools such as `gh.exe`. If they are missing, stop
@@ -215,7 +217,14 @@ if [ "$DRAFT" = true ]; then
   DRAFT_ARGS=(--draft)
 fi
 
-"$GH" pr create \
+request_coderabbit_review_if_draft() {
+  pr_ref="$1"
+  if [ "$DRAFT" = true ]; then
+    "$GH" pr comment "$pr_ref" --body '@coderabbitai review'
+  fi
+}
+
+PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
   --head "$BRANCH" \
@@ -223,7 +232,10 @@ fi
   --body-file "$BODY_FILE_ARG" \
   --assignee @me \
   "${DRAFT_ARGS[@]}" \
-  "${LABEL_ARGS[@]}"
+  "${LABEL_ARGS[@]}")" || exit 1
+PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
+request_coderabbit_review_if_draft "$PR_URL"
+printf '%s\n' "$PR_URL"
 ```
 
 Keep `--assignee @me` in the command unless the user explicitly requests a
@@ -236,7 +248,7 @@ If the branch was pushed to a fork rather than the target repository, use
 PUSH_URL="$("$GIT" remote get-url --push "$PUSH_REMOTE" | clean_line)"
 HEAD_REPO="$("$GH" repo view "$PUSH_URL" --json nameWithOwner --jq .nameWithOwner | clean_line)"
 HEAD_OWNER="${HEAD_REPO%%/*}"
-"$GH" pr create \
+PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
   --head "$HEAD_OWNER:$BRANCH" \
@@ -244,13 +256,16 @@ HEAD_OWNER="${HEAD_REPO%%/*}"
   --body-file "$BODY_FILE_ARG" \
   --assignee @me \
   "${DRAFT_ARGS[@]}" \
-  "${LABEL_ARGS[@]}"
+  "${LABEL_ARGS[@]}")" || exit 1
+PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
+request_coderabbit_review_if_draft "$PR_URL"
+printf '%s\n' "$PR_URL"
 ```
 
 For Windows PowerShell:
 
 ```powershell
-gh.exe pr create `
+$prUrl = gh.exe pr create `
   --repo $repo `
   --base $base `
   --head $branch `
@@ -259,6 +274,8 @@ gh.exe pr create `
   --assignee "@me" `
   --draft `
   --label "pr: non-breaking"
+gh.exe pr comment $prUrl --body "@coderabbitai review"
+$prUrl
 ```
 
 Omit `--draft` only if the user passes `--no-draft` or explicitly requests a PR
@@ -266,7 +283,8 @@ that is ready for review.
 
 ## After Creation
 
-Report the PR URL printed by `$GH pr create`, the base branch, the head branch,
-and whether any validation was run. If PR creation fails because the branch was
-not pushed to a usable remote or the target repo differs from the local `origin`,
-explain the failure and ask before adding remotes or changing push destinations.
+Report the PR URL, the base branch, the head branch, whether a CodeRabbit review
+request was posted, and whether any validation was run. If PR creation fails
+because the branch was not pushed to a usable remote or the target repo differs
+from the local `origin`, explain the failure and ask before adding remotes or
+changing push destinations.
