@@ -292,9 +292,10 @@ Use the exact tests or checks that were actually run. If no validation was run,
 state that clearly in the Test Plan.
 
 When one or more fixed issue references are known, append one
-`Fixes shader-slang/slang#123`-style line per fixed issue, and do not duplicate
-issue references. Do not include placeholder closing text. If no issue
-reference is known, omit `Fixes` lines and continue creating the PR.
+`Fixes owner/repo#123` line per fixed issue, using the full repository
+reference from each issue. Do not duplicate issue references or include
+placeholder closing text. If no issue reference is known, omit `Fixes` lines
+and continue creating the PR.
 
 For `shader-slang/slang`, label the PR as `pr: non-breaking` by default unless
 the change is intentionally breaking. For any other repo, only pass a label if

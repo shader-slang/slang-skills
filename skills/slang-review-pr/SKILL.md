@@ -92,7 +92,8 @@ Extract closing issue references from the PR body. Accept both full references
 such as `Fixes shader-slang/slang#10153` and bare references such as
 `Fixes #10153`. Resolve bare references to `shader-slang/slang`, preserve the
 repository from full references, and deduplicate by `owner/repo#number` before
-fetching issues:
+fetching issues. For each deduplicated reference, parse the `owner/repo` and
+`number` components from the same reference, then fetch that issue:
 
 ```bash
 "$GH" issue view <number> --repo <owner/repo> --json title,body,labels
