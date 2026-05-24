@@ -113,16 +113,102 @@ Always query the target repository's default branch instead of assuming `master`
 or `main`:
 
 ```bash
+REPO_NAME_WITH_OWNER="$("$GH" repo view "$REPO" --json nameWithOwner --jq .nameWithOwner | clean_line)"
 BASE="$("$GH" repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name | clean_line)"
 BRANCH="$("$GIT" branch --show-current | clean_line)"
 ```
+
+Try to determine the full issue references that the PR is intended to fix
+before creating the PR. Closing references must use `owner/repo#123`, not just
+`#123`.
+
+First ask GitHub whether the current branch is already linked to one or more
+issue development branches. `gh issue develop --list` works once an issue
+number is known; to discover issues from the current branch, query the linked
+branch metadata:
+
+```bash
+OWNER="${REPO_NAME_WITH_OWNER%/*}"
+NAME="${REPO_NAME_WITH_OWNER#*/}"
+mapfile -t LINKED_ISSUE_REFS < <("$GH" api graphql --paginate --slurp \
+  -F owner="$OWNER" \
+  -F name="$NAME" \
+  -f query='query($owner: String!, $name: String!, $endCursor: String) {
+    repository(owner: $owner, name: $name) {
+      issues(first: 100, states: OPEN, after: $endCursor) {
+        nodes {
+          number
+          repository { nameWithOwner }
+          linkedBranches(first: 20) {
+            nodes { ref { name repository { nameWithOwner } } }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }' | jq -r --arg branch "$BRANCH" '
+    [.[].data.repository.issues.nodes[]
+      | select(any(.linkedBranches.nodes[]?; .ref.name == $branch))
+      | "\(.repository.nameWithOwner)#\(.number)"]
+    | unique
+    | .[]
+  ')
+```
+
+This uses `gh api --slurp` with `--paginate` so `gh` wraps paginated GraphQL
+responses in one JSON array before `jq` processes them.
+
+If `jq` is unavailable, run the same GraphQL query and inspect the JSON output
+manually for `linkedBranches` entries whose `ref.name` equals `$BRANCH`.
+
+If this returns one or more issue references, include all of the references
+that the PR fixes. If it returns none, use any full issue references explicitly
+provided by the user. If only issue numbers are provided or inferred from clear
+local evidence such as the branch name, commit message, or existing task
+context, combine each issue number with `$REPO_NAME_WITH_OWNER`. If any issue
+belongs to a different repository, use that issue's `owner/repo` instead.
+
+Do not stop PR creation only because issue references cannot be inferred. Use
+only confidently determined issue references, skip ambiguous or unavailable
+ones, and omit closing lines entirely if no issue reference is known.
 
 PowerShell / `gh.exe` equivalent:
 
 ```powershell
 $repo = "shader-slang/slang"
+$repoNameWithOwner = gh.exe repo view $repo --json nameWithOwner --jq ".nameWithOwner"
 $base = gh.exe repo view $repo --json defaultBranchRef --jq ".defaultBranchRef.name"
 $branch = git branch --show-current
+$owner, $name = $repoNameWithOwner -split '/', 2
+$query = @'
+query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: OPEN, after: $endCursor) {
+      nodes {
+        number
+        repository { nameWithOwner }
+        linkedBranches(first: 20) {
+          nodes { ref { name repository { nameWithOwner } } }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+'@
+$pages = gh.exe api graphql --paginate --slurp `
+  -F "owner=$owner" `
+  -F "name=$name" `
+  -f "query=$query" | ConvertFrom-Json
+$linkedIssueRefs = @()
+foreach ($page in $pages) {
+  foreach ($issue in $page.data.repository.issues.nodes) {
+    if ($issue.linkedBranches.nodes | Where-Object { $_.ref -and $_.ref.name -eq $branch }) {
+      $linkedIssueRefs += "$($issue.repository.nameWithOwner)#$($issue.number)"
+    }
+  }
+}
+$linkedIssueRefs = $linkedIssueRefs | Sort-Object -Unique
 ```
 
 ## Required Safety Check
@@ -204,6 +290,12 @@ Prepare a concise PR body in `$BODY_FILE`. Prefer this structure:
 
 Use the exact tests or checks that were actually run. If no validation was run,
 state that clearly in the Test Plan.
+
+When one or more fixed issue references are known, append one
+`Fixes owner/repo#123` line per fixed issue, using the full repository
+reference from each issue. Do not duplicate issue references or include
+placeholder closing text. If no issue reference is known, omit `Fixes` lines
+and continue creating the PR.
 
 For `shader-slang/slang`, label the PR as `pr: non-breaking` by default unless
 the change is intentionally breaking. For any other repo, only pass a label if
