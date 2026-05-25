@@ -199,6 +199,7 @@ fi
 PUBLISHED_BRANCH="$BRANCH"
 PR_HEAD="$PUBLISHED_BRANCH"
 PUSH_LOG="$(mktemp "${TMPDIR:-/tmp}/slang-pr-push.XXXXXX")"
+trap 'rm -f "$PUSH_LOG"' EXIT
 if ! "$GIT" push -u "$PUSH_REMOTE" "HEAD:refs/heads/$PUBLISHED_BRANCH" 2>"$PUSH_LOG"; then
   PUSH_OUTPUT="$(clean_line < "$PUSH_LOG")"
   if printf '%s\n' "$PUSH_OUTPUT" | grep -Eiq 'non-fast-forward|fetch first|stale info|already exists|remote contains work that you do not have'; then
