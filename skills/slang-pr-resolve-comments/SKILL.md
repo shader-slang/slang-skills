@@ -1,6 +1,6 @@
 ---
 name: slang-pr-resolve-comments
-description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, report draft/WIP/DNI review-readiness notices without treating them as blockers, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until no agent-actionable work remains.
+description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, report draft/WIP/DNI status and review-readiness notices without treating them as blockers, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until no agent-actionable work remains.
 argument-hint: "<PR URL or number> [--single-pass] [--wsl]"
 allowed-tools: Bash Read Write Edit Grep Glob ScheduleWakeup
 required-capabilities: shell git github-cli file-read file-edit search
@@ -166,7 +166,7 @@ If an LLM left a review-readiness notice:
 1. Notify the user with the PR URL, the LLM comment URL, and the exact readiness reason.
 2. Do not change the draft state or title unless the user explicitly asks.
 3. Do not treat the message as code feedback, and do not mark the thread resolved on behalf of the user.
-4. Continue with the normal workflow. Do not stop, reschedule, or withhold success solely because the PR remains draft or the title contains WIP/DNI/DNM-style wording.
+4. Continue with the normal workflow. Do not stop, reschedule, or withhold success solely because the PR remains draft, the title contains WIP/DNI/DNM-style wording, or an LLM left a skipped-review notice.
 
 ## Commit Policy
 
@@ -424,4 +424,4 @@ After every pass, evaluate whether to stop or reschedule:
 **The following conditions are not grounds for rescheduling:**
 
 1. **Unresolved human review threads**: human-owned threads are outside the agent's control. Stop rescheduling and report "PR is ready — waiting for human reviewers to resolve N thread(s)."
-2. **Draft/WIP/DNI/DNM readiness notices**: report them as context, but do not keep polling or delay success solely because the PR is draft, the title contains readiness markers, or an LLM said it skipped review for that reason.
+2. **Draft/WIP/DNI/DNM status and readiness notices**: report them as context, but do not keep polling or delay success solely because the PR is draft, the title contains readiness markers, or an LLM said it skipped review for that reason.
