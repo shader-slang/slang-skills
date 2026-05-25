@@ -172,7 +172,13 @@ Fetch the target default branch and verify the branch has commits for the PR:
 If there are no commits ahead of the target default branch, stop and report that
 there is nothing committed to open as a PR.
 
-Push the branch if needed:
+Push the branch if needed. Track the remote branch that was actually published
+and use it later for `gh pr create`:
+
+If the same-name push is rejected because the remote branch already exists or
+has diverged, push `HEAD` to a new remote branch name and create the PR from that
+new branch. For authentication, permission, or missing-remote failures, stop
+instead of trying a new branch name.
 
 ```bash
 PUSH_REMOTE="$("$GIT" config --get "branch.$BRANCH.remote" | clean_line || true)"
@@ -189,7 +195,29 @@ if [ -z "$PUSH_REMOTE" ]; then
   echo "Could not determine a push remote. Ask before adding a remote or changing push destinations."
   exit 1
 fi
-"$GIT" push -u "$PUSH_REMOTE" HEAD
+
+PUBLISHED_BRANCH="$BRANCH"
+PR_HEAD="$PUBLISHED_BRANCH"
+PUSH_LOG="$(mktemp "${TMPDIR:-/tmp}/slang-pr-push.XXXXXX")"
+if ! "$GIT" push -u "$PUSH_REMOTE" "HEAD:refs/heads/$PUBLISHED_BRANCH" 2>"$PUSH_LOG"; then
+  PUSH_OUTPUT="$(clean_line < "$PUSH_LOG")"
+  if printf '%s\n' "$PUSH_OUTPUT" | grep -Eiq 'non-fast-forward|fetch first|stale info|already exists|remote contains work that you do not have'; then
+    SHORT_HEAD="$("$GIT" rev-parse --short HEAD | clean_line)"
+    PUBLISHED_BRANCH="${BRANCH}-${SHORT_HEAD}"
+    suffix=1
+    while "$GIT" ls-remote --exit-code --heads "$PUSH_REMOTE" "$PUBLISHED_BRANCH" >/dev/null 2>&1; do
+      suffix=$((suffix + 1))
+      PUBLISHED_BRANCH="${BRANCH}-${SHORT_HEAD}-${suffix}"
+    done
+    printf '%s\n' "$PUSH_OUTPUT" >&2
+    printf 'Push to %s/%s was rejected; retrying as %s/%s.\n' "$PUSH_REMOTE" "$BRANCH" "$PUSH_REMOTE" "$PUBLISHED_BRANCH" >&2
+    "$GIT" push -u "$PUSH_REMOTE" "HEAD:refs/heads/$PUBLISHED_BRANCH" || exit 1
+    PR_HEAD="$PUBLISHED_BRANCH"
+  else
+    printf '%s\n' "$PUSH_OUTPUT" >&2
+    exit 1
+  fi
+fi
 ```
 
 Prepare a concise PR body in `$BODY_FILE`. Prefer this structure:
@@ -244,7 +272,7 @@ trigger_shader_slang_ci_if_needed() {
 PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
-  --head "$BRANCH" \
+  --head "$PR_HEAD" \
   --title "<title>" \
   --body-file "$BODY_FILE_ARG" \
   --assignee @me \
@@ -260,7 +288,8 @@ Keep `--assignee @me` in the command unless the user explicitly requests a
 different assignee.
 
 If the branch was pushed to a fork rather than the target repository, use
-`--head "<user>:<branch>"`. Determine the fork owner from the push remote:
+`--head "<user>:<branch>"` with the published branch name from `PR_HEAD`.
+Determine the fork owner from the push remote:
 
 ```bash
 PUSH_URL="$("$GIT" remote get-url --push "$PUSH_REMOTE" | clean_line)"
@@ -269,7 +298,7 @@ HEAD_OWNER="${HEAD_REPO%%/*}"
 PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
-  --head "$HEAD_OWNER:$BRANCH" \
+  --head "$HEAD_OWNER:$PR_HEAD" \
   --title "<title>" \
   --body-file "$BODY_FILE_ARG" \
   --assignee @me \
@@ -284,10 +313,11 @@ printf '%s\n' "$PR_URL"
 For Windows PowerShell:
 
 ```powershell
+$headBranch = $branch
 $prUrl = gh.exe pr create `
   --repo $repo `
   --base $base `
-  --head $branch `
+  --head $headBranch `
   --title "PR title" `
   --body-file .\pr-body.md `
   --assignee "@me" `
@@ -306,9 +336,9 @@ that is ready for review.
 
 ## After Creation
 
-Report the PR URL, the base branch, the head branch, whether a CodeRabbit review
-request was posted, whether `/ci all` was posted, and whether any validation was
-run. If PR creation fails
-because the branch was not pushed to a usable remote or the target repo differs
-from the local `origin`, explain the failure and ask before adding remotes or
-changing push destinations.
+Report the PR URL, the base branch, the published head branch, whether the push
+fell back to a new remote branch name, whether a CodeRabbit review request was
+posted, whether `/ci all` was posted, and whether any validation was run. If PR
+creation fails because the branch was not pushed to a usable remote or the target
+repo differs from the local `origin`, explain the failure and ask before adding
+remotes or changing push destinations.
