@@ -1,6 +1,6 @@
 ---
 name: slang-pr-resolve-comments
-description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, notify the user about draft/WIP/DNI review-blocking LLM messages, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until the PR is clean.
+description: Resolve GitHub PR review feedback and CI failures. Use when asked to monitor a PR, handle LLM review threads, report draft/WIP/DNI status and review-readiness notices without treating them as blockers, leave human review threads for human resolution, fix failing checks, rebase merge conflicts, and push updates until no agent-actionable work remains.
 argument-hint: "<PR URL or number> [--single-pass] [--wsl]"
 allowed-tools: Bash Read Write Edit Grep Glob ScheduleWakeup
 required-capabilities: shell git github-cli file-read file-edit search
@@ -114,7 +114,7 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
 
    This repo uses git submodules. Run `"$GIT" submodule update --init --recursive` after any update to the local branch — e.g. `"$GH" pr checkout`, `"$GIT" pull`, or `"$GIT" rebase` (and again after resolving merge conflicts — see below) — so submodule references stay in sync with the checked-out commit. A bare fetch only updates remote-tracking refs and does not require a submodule sync on its own.
 
-2. Inspect PR state, checks, mergeability, review-blocking notices, and review threads.
+2. Inspect PR state, checks, mergeability, review-readiness notices, and review threads.
 3. Fix actionable review feedback and CI failures.
 4. Commit PR modifications as new commits and push them to the PR branch.
 5. After pushing new commits, update the PR description if the new commits made it stale or inaccurate (see **PR Description Updates** below).
@@ -125,6 +125,7 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
    - Otherwise: schedule or request the next pass as described below, then return. The next pass should re-enter this skill with the same PR argument.
 
 Stop (do not reschedule) only if blocked by missing credentials, missing push permission, an ambiguous human decision, or local changes that cannot be safely preserved.
+Draft status, WIP/DNI/DNM-style title markers, and LLM skipped-review notices are not blockers by themselves.
 
 **Continuing the next iteration** — at the end of every pass where work remains, prefer a non-blocking follow-up.
 
@@ -150,23 +151,22 @@ For other agents, use the host's native equivalent if available. If no schedulin
 - When to check again — use 240 s by default (see **Choosing `<interval>`** above if the cache TTL differs).
 - The exact rerun prompt, for example `/slang-pr-resolve-comments <PR>` (substituting `<PR>` with the actual PR URL or number) or the equivalent invocation in the current agent. If the original run used `--single-pass`, include `--single-pass` in the rerun prompt.
 
-## Review-Blocking PR State
+## Review-Readiness Notices
 
-Before processing normal review feedback, check whether the PR is in a state where LLM reviewers may intentionally skip review:
+Before processing normal review feedback, check whether PR metadata may explain why LLM reviewers intentionally skipped or delayed review:
 
 ```bash
 "$GH" pr view "$PR" --json title,isDraft,url
 ```
 
-Treat the PR as review-blocked when it is a draft or when the title contains markers such as `WIP`, `DNI`, `DNM`, `do not review`, `do not merge`, or similar wording. Also inspect LLM comments for messages saying that review was skipped, paused, or unavailable because the PR is draft, WIP, DNI, or otherwise not ready for review.
+Do not treat draft status, title markers such as `WIP`, `DNI`, `DNM`, `do not review`, `do not merge`, or LLM skipped-review comments as blockers for this skill. They are context only: continue processing CI failures, merge conflicts, and any actionable review threads that already exist.
 
-If an LLM left a review-blocking message:
+If an LLM left a review-readiness notice:
 
-1. Notify the user with the PR URL, the LLM comment URL, and the exact blocking reason.
+1. Notify the user with the PR URL, the LLM comment URL, and the exact readiness reason.
 2. Do not change the draft state or title unless the user explicitly asks.
 3. Do not treat the message as code feedback, and do not mark the thread resolved on behalf of the user.
-4. Let the user resolve the situation by marking the PR ready for review, changing the title, or otherwise addressing the blocker.
-5. If the PR is review-blocked, report the blocker and proceed to the **Completion Criteria** section (which handles single-pass vs. continuous monitoring) to schedule or request the next pass and return.
+4. Continue with the normal workflow. Do not stop, reschedule, or withhold success solely because the PR remains draft, the title contains WIP/DNI/DNM-style wording, or an LLM left a skipped-review notice.
 
 ## Commit Policy
 
@@ -415,7 +415,6 @@ After every pass, evaluate whether to stop or reschedule:
 **Stop and report success** when all of these are true — do not schedule another pass:
 
 - `"$GH" pr checks "$PR"` shows all required checks passing.
-- The PR is not in a draft/WIP/DNI-style state that LLM reviewers reported as blocking review.
 - There are no unresolved, non-outdated LLM review threads.
 - `"$GH" pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus` does not report `DIRTY` (actual merge conflicts) or `UNKNOWN` (still calculating). A status of `BEHIND` (branch is behind base but no conflicts) is acceptable — GitHub auto-merge handles it.
 - All local commits needed for the fixes have been pushed to the PR branch.
@@ -425,3 +424,4 @@ After every pass, evaluate whether to stop or reschedule:
 **The following conditions are not grounds for rescheduling:**
 
 1. **Unresolved human review threads**: human-owned threads are outside the agent's control. Stop rescheduling and report "PR is ready — waiting for human reviewers to resolve N thread(s)."
+2. **Draft/WIP/DNI/DNM status and readiness notices**: report them as context, but do not keep polling or delay success solely because the PR is draft, the title contains readiness markers, or an LLM said it skipped review for that reason.
