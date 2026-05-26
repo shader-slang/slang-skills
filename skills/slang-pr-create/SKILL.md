@@ -389,7 +389,8 @@ fi
 Prepare a concise PR body in `$BODY_FILE`. Use this structure:
 
 ```markdown
-Fixes #XXX
+[[Add one line per confirmed issue, e.g., `Fixes #123` or `Fixes owner/repo#123`.
+Omit this line when no issue reference is known.]]
 
 ## Summary of the problem from the end user perspective
 
@@ -435,10 +436,9 @@ and shaders, and how users can work around or properly resolve those problems.
 When one or more fixed issue references are known, put one `Fixes #123` line per
 fixed issue at the top of the PR body. Use the target repository's local issue
 number form for same-repository issues, and use `Fixes owner/repo#123` only for
-cross-repository issues. Do not duplicate issue references or include placeholder
-closing text. If no issue reference is known, omit `Fixes` lines only when the
-user explicitly says the PR does not fix a tracked issue or asks to create the
-PR without an issue link.
+cross-repository issues. Do not duplicate issue references, invent issue
+references, or include placeholder closing text. If no issue reference is known,
+omit `Fixes` lines.
 
 Every PR must have exactly one compatibility label: `pr: non-breaking` or
 `pr: breaking`. These labels cannot coexist. Use `pr: non-breaking` by default
