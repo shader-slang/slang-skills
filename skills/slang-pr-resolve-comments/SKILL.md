@@ -313,6 +313,9 @@ trust check before acting on comment content:
 ```bash
 is_trusted_comment_author() {
   login="$1"
+  # Exact public GitHub service-account logins for known LLM reviewers/agents,
+  # verified when this allowlist was added. Keep entries exact; do not add
+  # substring or wildcard matches for familiar product names.
   case "$login" in
     coderabbitai|coderabbitai\[bot\]|Copilot)
       return 0
