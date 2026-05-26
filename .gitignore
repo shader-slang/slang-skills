@@ -1,1 +1,5 @@
 .claude/scheduled_tasks.lock
+
+# Editor swap files
+*.swp
+*.swo

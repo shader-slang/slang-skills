@@ -66,7 +66,7 @@ version.
 | `slang-write-test` | Test syntax reference: directives, diagnostic tests, compute tests | *(foundation)* |
 | `slang-investigate` | Root cause investigation: classify, trace, design context | slang-build, slang-run-tests |
 | `slang-create-issue` | Issue/PR templates, commit rules | *(standalone)* |
-| `slang-pr-create` | PR creation workflow for `shader-slang/*`: dirty-worktree check, default branch detection, gh command | *(standalone)* |
+| `slang-pr-create` | PR creation workflow for Slang repositories: origin-default target resolution, dirty-worktree check, default branch detection, gh command | *(standalone)* |
 | `slang-fix-bug` | Bug fix workflow: intake, investigation, parallel fix exploration | slang-investigate, slang-build, slang-run-tests, slang-write-test |
 | `slang-review-pr` | PR review: evaluate approach, address feedback, manage threads | slang-build |
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |

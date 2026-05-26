@@ -1,20 +1,21 @@
 ---
-name: slang-pr-create
-description: Create and publish a GitHub pull request for Slang work, defaulting to a draft PR against shader-slang/slang and its default branch unless the user specifies another repository. Automatically use whenever asked to open, create, publish, or prepare a PR targeting any shader-slang/* repository, even if the user does not explicitly name this skill. Handles WSL environments that require Windows-hosted tools unless --wsl is requested.
-argument-hint: "[--repo owner/repo-or-url] [--no-draft] [--wsl]"
 allowed-tools: Bash Read Write Edit Grep Glob
+argument-hint: '[--repo owner/repo-or-url-or-remote] [--no-draft] [--wsl]'
+description: Create and publish a GitHub pull request for Slang work, defaulting to a draft PR against the local origin remote and its default branch unless the user specifies another repository or remote. Use for Slang-related PR creation requests, including shader-slang/* targets even when the user does not explicitly name this skill. Handles WSL environments that require Windows-hosted tools unless --wsl is requested.
+name: slang-pr-create
 required-capabilities: shell git github-cli file-read
 ---
-
 # Slang PR Create
 
-Create a focused GitHub pull request from the current branch. Default to
-`shader-slang/slang`; if the user specifies a repo, use that repo instead.
-Use this skill for any request to create, open, publish, or prepare a PR
-targeting a `shader-slang/*` repository, even when the user does not explicitly
-invoke `/slang-pr-create`.
+Create a focused GitHub pull request from the current branch. Default to the
+repository configured by the local `origin` remote; if the user specifies a repo
+or remote, use that target instead.
+Use this skill for Slang-related requests to create, open, publish, or prepare
+a PR. It can target any GitHub repository or git remote, defaulting to local
+`origin`; requests targeting a `shader-slang/*` repository should use this skill
+even when the user does not explicitly invoke `/slang-pr-create`.
 
-**Usage**: `/slang-pr-create [--repo owner/repo-or-url] [--no-draft] [--wsl]`
+**Usage**: `/slang-pr-create [--repo owner/repo-or-url-or-remote] [--no-draft] [--wsl]`
 
 PRs are created as drafts by default. Use `--no-draft` only when the PR should
 be ready for review immediately. Created PRs are assigned to `@me` by default.
@@ -93,6 +94,11 @@ Write the PR body outside the tracked worktree, then pass a Windows path from
 
 ```bash
 BODY_FILE="$("$GIT" rev-parse --git-path slang-pr-body.md | clean_line)"
+if is_wsl && command -v wslpath >/dev/null 2>&1; then
+  case "$BODY_FILE" in
+    *\\*|[A-Za-z]:*) BODY_FILE="$(wslpath -u "$BODY_FILE")" ;;
+  esac
+fi
 BODY_FILE_ARG="$BODY_FILE"
 if is_wsl && [ "${GH%.exe}" != "$GH" ] && command -v wslpath >/dev/null 2>&1; then
   BODY_FILE_ARG="$(wslpath -w "$BODY_FILE")"
@@ -102,11 +108,81 @@ fi
 ## Resolve Inputs
 
 Use the repository from the user request when provided. Accept `--repo
-owner/repo`, `--repo https://github.com/owner/repo`, a bare positional
-`owner/repo`, or a GitHub URL. If omitted, use:
+owner/repo`, `--repo https://github.com/owner/repo`, `--repo <git-remote>`, a
+bare positional `owner/repo`, a GitHub URL, or a bare positional git remote name
+such as `origin` or `upstream`.
+
+If a bare token with no slash matches `git remote`, treat that remote's URL as
+the target repository and prefer that same remote as the push remote. If the bare
+token is `upstream` but no `upstream` git remote exists, infer
+`shader-slang/<repo-name>` from the local `origin` repository name, so forks of
+repositories such as `shader-slang/slangpy` target the matching upstream
+repository. If omitted, behave as if `origin` was provided. Do not default to a
+specific `shader-slang/*` repository when any explicit repository or remote
+argument was provided; fail instead if it cannot be resolved.
 
 ```bash
-REPO="shader-slang/slang"
+# Parse the remaining skill arguments after `--wsl` and `--no-draft` are removed.
+# shellcheck disable=SC2086
+set -- $ARGS
+TARGET_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      shift
+      if [ $# -eq 0 ] || [ -z "${1:-}" ] || [[ "${1:-}" == --* ]]; then
+        echo "Missing value for --repo"
+        exit 1
+      fi
+      TARGET_ARG="${1:-}"
+      ;;
+    --repo=*)
+      if [ -z "${1#--repo=}" ]; then
+        echo "Missing value for --repo"
+        exit 1
+      fi
+      TARGET_ARG="${1#--repo=}"
+      ;;
+    *)
+      if [ -z "$TARGET_ARG" ]; then
+        TARGET_ARG="$1"
+      fi
+      ;;
+  esac
+  shift
+done
+if [ -z "$TARGET_ARG" ]; then
+  TARGET_ARG="origin"
+fi
+
+TARGET_REMOTE=""
+if [[ "$TARGET_ARG" != */* && "$TARGET_ARG" != http://* && "$TARGET_ARG" != https://* && "$TARGET_ARG" != git@github.com:* ]]; then
+  if "$GIT" remote get-url "$TARGET_ARG" >/dev/null 2>&1; then
+    TARGET_REMOTE="$TARGET_ARG"
+    TARGET_URL="$("$GIT" remote get-url "$TARGET_REMOTE" | clean_line)"
+    REPO="$TARGET_URL"
+  elif [ "$TARGET_ARG" = "upstream" ]; then
+    ORIGIN_URL="$("$GIT" remote get-url origin 2>/dev/null | clean_line || true)"
+    if [ -z "$ORIGIN_URL" ]; then
+      echo "Could not infer shader-slang upstream target because the origin remote is missing"
+      exit 1
+    fi
+    ORIGIN_REPO_NAME="${ORIGIN_URL%/}"
+    ORIGIN_REPO_NAME="${ORIGIN_REPO_NAME##*/}"
+    ORIGIN_REPO_NAME="${ORIGIN_REPO_NAME%.git}"
+    if [ -z "$ORIGIN_REPO_NAME" ]; then
+      echo "Could not infer shader-slang upstream target from origin URL: $ORIGIN_URL"
+      exit 1
+    fi
+    REPO="shader-slang/$ORIGIN_REPO_NAME"
+  else
+    echo "Could not resolve requested or default PR target as a GitHub repo or git remote: $TARGET_ARG"
+    exit 1
+  fi
+else
+  REPO="$TARGET_ARG"
+fi
+REPO="$("$GH" repo view "$REPO" --json nameWithOwner --jq .nameWithOwner | clean_line)"
 ```
 
 Always query the target repository's default branch instead of assuming `master`
@@ -118,9 +194,9 @@ BASE="$("$GH" repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.n
 BRANCH="$("$GIT" branch --show-current | clean_line)"
 ```
 
-Try to determine the full issue references that the PR is intended to fix
-before creating the PR. Closing references must use `owner/repo#123`, not just
-`#123`.
+Try to determine the issue references that the PR is intended to fix before
+creating the PR. Closing references should use `Fixes #123` for same-repository
+issues and `Fixes owner/repo#123` for cross-repository issues.
 
 First ask GitHub whether the current branch is already linked to one or more
 issue development branches. `gh issue develop --list` works once an issue
@@ -174,8 +250,12 @@ ones, and omit closing lines entirely if no issue reference is known.
 
 PowerShell / `gh.exe` equivalent:
 
+This snippet assumes `$repo` has already been resolved and normalized using the
+same input-resolution rules described above. Do not use the placeholder value
+literally.
+
 ```powershell
-$repo = "shader-slang/slang"
+$repo = "<resolved-target-repo>"
 $repoNameWithOwner = gh.exe repo view $repo --json nameWithOwner --jq ".nameWithOwner"
 $base = gh.exe repo view $repo --json defaultBranchRef --jq ".defaultBranchRef.name"
 $branch = git branch --show-current
@@ -267,7 +347,11 @@ new branch. For authentication, permission, or missing-remote failures, stop
 instead of trying a new branch name.
 
 ```bash
-PUSH_REMOTE="$("$GIT" config --get "branch.$BRANCH.remote" | clean_line || true)"
+if [ -n "${TARGET_REMOTE:-}" ]; then
+  PUSH_REMOTE="$TARGET_REMOTE"
+else
+  PUSH_REMOTE="$("$GIT" config --get "branch.$BRANCH.remote" | clean_line || true)"
+fi
 if [ -z "$PUSH_REMOTE" ]; then
   while IFS= read -r remote; do
     [ -z "$remote" ] && continue
@@ -307,35 +391,113 @@ if ! "$GIT" push -u "$PUSH_REMOTE" "HEAD:refs/heads/$PUBLISHED_BRANCH" 2>"$PUSH_
 fi
 ```
 
-Prepare a concise PR body in `$BODY_FILE`. Prefer this structure:
+Prepare a concise PR body in `$BODY_FILE`. Use this structure, omitting any
+section that is not applicable to the PR. Replace placeholder guidance with real
+content for sections that remain; do not leave empty headings or `[[...]]`
+placeholder text in the final PR description.
 
 ```markdown
-## Summary
-- ...
+[[Add one line per confirmed issue, e.g., `Fixes #123` or `Fixes owner/repo#123`.
+Omit this line when no issue reference is known.]]
 
-## Test Plan
-- ...
+## Summary of the problem from the end user perspective
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+### Minimal repro shader; if applicable
+
+[[A few lines of Shader code snippet from the issue description or the new tests]]
+
+## Root cause
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+## Solution in this PR
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+### Notes to the reviewers; where to focus on
+
+[[Very concise and succinct. Easy to read and understand walkthrough]]
+
+## Related PRs in the past
+
+[[List of PRs in the past that were related to the issue and code lines]]
 ```
 
-Use the exact tests or checks that were actually run. If no validation was run,
-state that clearly in the Test Plan.
+Do not include validation logs or a `## Test Plan` section in the PR
+description.
 
-When one or more fixed issue references are known, append one
-`Fixes owner/repo#123` line per fixed issue, using the full repository
-reference from each issue. Do not duplicate issue references or include
-placeholder closing text. If no issue reference is known, omit `Fixes` lines
-and continue creating the PR.
+If the PR is intentionally backward-compatibility breaking, include this section
+in the PR body:
 
-For `shader-slang/slang`, label the PR as `pr: non-breaking` by default unless
-the change is intentionally breaking. For any other repo, only pass a label if
-the repository has the label or the user explicitly requested one.
+```markdown
+## Breaking change
+1. Existing systems and shaders may ...
+2. Work around or resolve this by ...
+```
+
+The `## Breaking change` section is required when the PR is intentionally
+backward-compatibility breaking or has the `pr: breaking` label. It must explain
+both the problems the PR may cause for existing systems and shaders, and how
+users can work around or properly resolve those problems.
+
+When one or more fixed issue references are known, put one `Fixes #123` line per
+fixed issue at the top of the PR body. Use the target repository's local issue
+number form for same-repository issues, and use `Fixes owner/repo#123` only for
+cross-repository issues. Do not duplicate issue references, invent issue
+references, or include placeholder closing text. If no issue reference is known,
+omit `Fixes` lines.
+
+Use at most one compatibility label: `pr: non-breaking` or `pr: breaking`. These
+labels cannot coexist. Use `pr: breaking` only when the change is clearly
+backward-compatibility breaking. Use `pr: non-breaking` only when the user says
+the PR is non-breaking or the non-breaking classification is otherwise clear.
+When the compatibility classification is unclear, do not guess and do not apply
+either label. Compatibility labels are optional metadata; if the target
+repository does not have the selected label, continue creating the PR without
+that label instead of creating labels or blocking PR creation.
 
 Create the PR:
 
 ```bash
 LABEL_ARGS=()
-if [ "$REPO" = "shader-slang/slang" ]; then
-  LABEL_ARGS=(--label "pr: non-breaking")
+BREAKING_CHANGE=false
+NON_BREAKING_CHANGE=false
+# Set BREAKING_CHANGE=true only when the user explicitly says the PR is breaking
+# or the change is intentionally backward-compatibility breaking.
+# Set NON_BREAKING_CHANGE=true only when the user says the PR is non-breaking or
+# the non-breaking classification is otherwise clear. Leave both false when
+# unclear.
+COMPAT_LABEL=""
+if [ "$BREAKING_CHANGE" = true ]; then
+  COMPAT_LABEL="pr: breaking"
+  BODY_FILE_READ="$BODY_FILE"
+  if is_wsl && command -v wslpath >/dev/null 2>&1; then
+    case "$BODY_FILE_READ" in
+      *\\*|[A-Za-z]:*) BODY_FILE_READ="$(wslpath -u "$BODY_FILE_READ")" ;;
+    esac
+  fi
+  BREAKING_HEADING_REGEX='^##[[:space:]]+Breaking change([[:space:]:]|$)'
+  if ! grep -Eq "$BREAKING_HEADING_REGEX" "$BODY_FILE_READ"; then
+    echo "Breaking PRs must include a '## Breaking change' section in the PR body."
+    exit 1
+  fi
+elif [ "$NON_BREAKING_CHANGE" = true ]; then
+  COMPAT_LABEL="pr: non-breaking"
+fi
+if [ -n "$COMPAT_LABEL" ]; then
+  LABEL_NAMES="$("$GH" label list \
+    --repo "$REPO" \
+    --limit 200 \
+    --json name \
+    --jq '.[].name' | clean_line)"
+  if printf '%s\n' "$LABEL_NAMES" | grep -Fxq "$COMPAT_LABEL"; then
+    LABEL_ARGS=(--label "$COMPAT_LABEL")
+  else
+    echo "Target repository is missing optional compatibility label: $COMPAT_LABEL"
+    echo "Creating the PR without a compatibility label."
+  fi
 fi
 DRAFT_ARGS=()
 if [ "$DRAFT" = true ]; then
@@ -407,17 +569,43 @@ For Windows PowerShell:
 
 ```powershell
 $headBranch = $branch
+$repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
+$bodyFile = (git.exe rev-parse --git-path slang-pr-body.md).Trim()
+$breakingChange = $false
+$nonBreakingChange = $false
+# Set $breakingChange = $true only when the user explicitly says the PR is breaking
+# or the change is intentionally backward-compatibility breaking.
+# Set $nonBreakingChange = $true only when the user says the PR is non-breaking
+# or the non-breaking classification is otherwise clear.
+$compatLabel = $null
+if ($breakingChange) {
+  $compatLabel = "pr: breaking"
+} elseif ($nonBreakingChange) {
+  $compatLabel = "pr: non-breaking"
+}
+$hasBreakingChangeSection = Select-String -LiteralPath $bodyFile -SimpleMatch "## Breaking change" -Quiet
+if ($breakingChange -and -not $hasBreakingChangeSection) {
+  throw "Breaking PRs must include a '## Breaking change' section in the PR body."
+}
+$labelArgs = @()
+if ($compatLabel) {
+  $labels = @(gh.exe label list --repo $repo --limit 200 --json name --jq ".[].name")
+  if ($labels -contains $compatLabel) {
+    $labelArgs = @("--label", $compatLabel)
+  } else {
+    Write-Warning "Target repository is missing optional compatibility label: $compatLabel"
+  }
+}
 $prUrl = gh.exe pr create `
   --repo $repo `
   --base $base `
   --head $headBranch `
   --title "PR title" `
-  --body-file .\pr-body.md `
+  --body-file $bodyFile `
   --assignee "@me" `
   --draft `
-  --label "pr: non-breaking"
+  @labelArgs
 gh.exe pr comment $prUrl --body "@coderabbitai review"
-$repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
 if ($repoNameWithOwner -like "shader-slang/*") {
   gh.exe pr comment $prUrl --body "/ci all"
 }
