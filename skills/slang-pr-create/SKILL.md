@@ -386,16 +386,38 @@ if ! "$GIT" push -u "$PUSH_REMOTE" "HEAD:refs/heads/$PUBLISHED_BRANCH" 2>"$PUSH_
 fi
 ```
 
-Prepare a concise PR body in `$BODY_FILE`. Prefer this structure:
+Prepare a concise PR body in `$BODY_FILE`. Use this structure:
 
 ```markdown
-## Summary
-- ...
+Fixes #XXX
+
+## Summary of the problem from the end user perspective
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+### Minimal repro shader; if applicable
+
+[[A few lines of Shader code snippet from the issue description or the new tests]]
+
+## Root cause
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+## Solution in this PR
+
+[[Very concise and succinct. Limit to one or two sentences.]]
+
+### Notes to the reviewers; where to focus on
+
+[[Very concise and succinct. Easy to read and understand walkthrough]]
+
+## Related PRs in the past
+
+[[List of PRs in the past that were related to the issue and code lines]]
 ```
 
 Do not include validation logs or a `## Test Plan` section in the PR
-description. Report the exact tests or checks that were actually run in the
-post-creation response instead.
+description.
 
 If the PR is intentionally backward-compatibility breaking, include this section
 in the PR body:
@@ -410,11 +432,13 @@ The `## Breaking change` section is required when the PR has the `pr: breaking`
 label. It must explain both the problems the PR may cause for existing systems
 and shaders, and how users can work around or properly resolve those problems.
 
-When one or more fixed issue references are known, append one
-`Fixes owner/repo#123` line per fixed issue, using the full repository
-reference from each issue. Do not duplicate issue references or include
-placeholder closing text. If no issue reference is known, omit `Fixes` lines
-and continue creating the PR.
+When one or more fixed issue references are known, put one `Fixes #123` line per
+fixed issue at the top of the PR body. Use the target repository's local issue
+number form for same-repository issues, and use `Fixes owner/repo#123` only for
+cross-repository issues. Do not duplicate issue references or include placeholder
+closing text. If no issue reference is known, omit `Fixes` lines only when the
+user explicitly says the PR does not fix a tracked issue or asks to create the
+PR without an issue link.
 
 Every PR must have exactly one compatibility label: `pr: non-breaking` or
 `pr: breaking`. These labels cannot coexist. Use `pr: non-breaking` by default
