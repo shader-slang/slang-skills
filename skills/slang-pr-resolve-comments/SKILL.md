@@ -305,10 +305,11 @@ threads:
    normally.
 3. If the thread is outdated, inspect whether the current PR branch or a commit
    from this skill addressed it.
-   - If addressed, reply with what changed and what validation ran, then resolve
-     the thread.
+   - If addressed, reply with what changed and what validation ran, resolve the
+     thread, and skip the remaining steps for this thread.
    - If not addressed and no longer relevant because the surrounding code
-     changed, reply with why it is obsolete, then resolve the thread.
+     changed, reply with why it is obsolete, resolve the thread, and skip the
+     remaining steps for this thread.
    - If still valid despite being outdated, address it before replying and
      resolving.
 4. Apply the fix, or determine that the suggestion is invalid with evidence.
