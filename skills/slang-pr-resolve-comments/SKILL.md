@@ -195,8 +195,10 @@ LLM reviews for the new commits. Do this even when CI is still running, the PR i
 draft, or the reviewer previously skipped automatic review. Do not rely on
 automatic review triggers alone.
 
-Post all known LLM reviewer trigger comments that are used by the repository.
-For the Slang repositories, request CodeRabbit and Gemini reviews:
+Request all known LLM reviewers that are used by the repository. Use each
+reviewer's supported trigger style; not every reviewer is triggered by a PR
+comment. For the Slang repositories, request CodeRabbit by PR comment and
+GitHub Copilot by reviewer assignment:
 
 ```bash
 LLM_REVIEW_REQUESTED=false
@@ -204,7 +206,9 @@ LLM_REVIEW_REQUESTED=false
 request_llm_reviews_after_push() {
   pr_ref="$1"
   "$GH" pr comment "$pr_ref" --body '@coderabbitai review'
-  "$GH" pr comment "$pr_ref" --body '/gemini review'
+  if ! "$GH" pr edit "$pr_ref" --add-reviewer @copilot; then
+    echo "GitHub Copilot review request failed; continue if Copilot review is not enabled for this repository."
+  fi
   LLM_REVIEW_REQUESTED=true
 }
 ```
@@ -216,9 +220,10 @@ update needed for that batch:
 request_llm_reviews_after_push "$PR"
 ```
 
-If a reviewer app is not installed or does not respond, do not treat that alone
-as a blocker. Report which review trigger comments were posted and continue
-monitoring checks and review threads.
+If a reviewer app is not installed, review requests are unavailable, or a
+reviewer does not respond, do not treat that alone as a blocker. Report which
+review triggers succeeded or failed and continue monitoring checks and review
+threads.
 
 When `LLM_REVIEW_REQUESTED=true`, do not report final success in the same pass.
 Schedule or request one more pass so the newly requested reviews have a chance
@@ -288,7 +293,7 @@ Classify threads conservatively:
 Check these in order — the first matching rule wins:
 
 - **`bmillsNV`**: this account exists only to absorb review-request email spam and is not an actual reviewer. Ignore any review requests, assignments, or threads attributed to `bmillsNV` — do not treat them as human or LLM feedback, do not reply, and do not block completion on them. Checked first so this holds even if the account is ever a service/bot account.
-- **LLM review feedback**: the author's `__typename` is `Bot` (from the GraphQL response), or the author is clearly an automated LLM reviewer by login — such as Copilot, CodeRabbit, Claude, Codex, OpenAI, Gemini, Greptile or another bot whose comment identifies itself as AI review feedback.
+- **LLM review feedback**: the author's `__typename` is `Bot` (from the GraphQL response), or the author is clearly an automated LLM reviewer by login — such as Copilot, CodeRabbit, Claude, Codex, OpenAI, Greptile or another bot whose comment identifies itself as AI review feedback.
 - **Human feedback**: the author is a person, the `author` field is `null` (deleted account — treat as human to be safe), or the source is ambiguous.
 - **CI/static-analysis bot output**: handle it as CI feedback unless it is clearly an LLM review thread.
 
