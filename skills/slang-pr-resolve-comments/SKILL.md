@@ -102,7 +102,12 @@ Wait for the user's choice before continuing.
 
 ## Main Loop
 
-Repeat this workflow periodically until the PR has no unresolved, non-outdated LLM-owned review feedback and all required checks pass. Between iterations, **do not use `sleep`** or block the live session. Use the current agent host's non-blocking follow-up facility when one exists; otherwise report the pending state and the exact prompt/command the user or orchestrator should rerun later, then return.
+Repeat this workflow periodically until the PR has no unresolved LLM-owned
+review feedback that is current, addressed, or obsolete, and all required checks
+pass. Between iterations, **do not use `sleep`** or block the live session. Use
+the current agent host's non-blocking follow-up facility when one exists;
+otherwise report the pending state and the exact prompt/command the user or
+orchestrator should rerun later, then return.
 
 1. Check out the PR branch:
 
@@ -118,7 +123,8 @@ Repeat this workflow periodically until the PR has no unresolved, non-outdated L
 3. Fix actionable review feedback and CI failures.
 4. Commit PR modifications as new commits and push them to the PR branch.
 5. After pushing new commits, update the PR description if the new commits made it stale or inaccurate (see **PR Description Updates** below).
-6. Reply to LLM review feedback and resolve only the LLM-owned threads that have been addressed.
+6. Reply to and resolve LLM-owned threads that have been addressed, including
+   threads that became outdated because a pushed commit addressed them.
 7. Leave human-owned threads unresolved for the human reviewer to resolve manually.
 8. At the end of each pass, check the Completion Criteria below:
    - If **all criteria are met**: report the PR is clean and **do not reschedule** — the loop is done.
@@ -248,17 +254,28 @@ Check these in order — the first matching rule wins:
 - **Human feedback**: the author is a person, the `author` field is `null` (deleted account — treat as human to be safe), or the source is ambiguous.
 - **CI/static-analysis bot output**: handle it as CI feedback unless it is clearly an LLM review thread.
 
-For each unresolved, non-outdated (`isResolved = false` and `isOutdated = false`) LLM thread:
+For each unresolved (`isResolved = false`) LLM thread, including outdated
+threads:
 
 1. Read the full thread and relevant code.
-2. Apply the fix, or determine that the suggestion is invalid with evidence.
-3. Run focused validation. For Slang compiler/test invocations, use the
+2. If the thread is non-outdated, treat it as current feedback and address it
+   normally.
+3. If the thread is outdated, inspect whether the current PR branch or a commit
+   from this skill addressed it.
+   - If addressed, reply with what changed and what validation ran, then resolve
+     the thread.
+   - If not addressed and no longer relevant because the surrounding code
+     changed, reply with why it is obsolete, then resolve the thread.
+   - If still valid despite being outdated, address it before replying and
+     resolving.
+4. Apply the fix, or determine that the suggestion is invalid with evidence.
+5. Run focused validation. For Slang compiler/test invocations, use the
    `slang-run-tests` binary selection rule: under WSL with a Windows-hosted
    build, require `slangc.exe` and `slang-test.exe` and do not fall back to
    WSL-native binaries.
-4. Push the fix if code changed.
-5. Reply on the thread with what changed, what validation ran, or why no code change was needed. **Always start the reply body with `[Agent] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
-6. Resolve the thread only after the reply is posted and the issue is actually addressed.
+6. Push the fix if code changed.
+7. Reply on the thread with what changed, what validation ran, or why no code change was needed. **Always start the reply body with `[Agent] `** so readers can distinguish agent-posted comments from comments left by the human account owner.
+8. Resolve the thread only after the reply is posted and the issue is actually addressed or obsolete.
 
 Reply to an LLM thread:
 
@@ -415,7 +432,9 @@ After every pass, evaluate whether to stop or reschedule:
 **Stop and report success** when all of these are true — do not schedule another pass:
 
 - `"$GH" pr checks "$PR"` shows all required checks passing.
-- There are no unresolved, non-outdated LLM review threads.
+- There are no unresolved LLM review threads that are current, addressed, or
+  obsolete due to the agent's changes. Do not leave an LLM thread unresolved
+  merely because it became outdated after a pushed fix.
 - `"$GH" pr view "$PR" --json mergeStateStatus --jq .mergeStateStatus` does not report `DIRTY` (actual merge conflicts) or `UNKNOWN` (still calculating). A status of `BEHIND` (branch is behind base but no conflicts) is acceptable — GitHub auto-merge handles it.
 - All local commits needed for the fixes have been pushed to the PR branch.
 
