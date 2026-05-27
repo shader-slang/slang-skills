@@ -1,7 +1,7 @@
 ---
 allowed-tools: Bash Read Write Edit Grep Glob
 argument-hint: '[--repo owner/repo-or-url-or-remote] [--no-draft] [--wsl]'
-description: Create and publish a GitHub pull request for Slang work, defaulting to a draft PR against the local origin remote and its default branch unless the user specifies another repository or remote. Use for Slang-related PR creation requests, including shader-slang/* targets even when the user does not explicitly name this skill. Handles WSL environments that require Windows-hosted tools unless --wsl is requested.
+description: Create and publish a GitHub pull request for Slang work, defaulting to the local origin remote and using draft PRs only for shader-slang/* targets unless the user specifies another repository, remote, or draft option. Use for Slang-related PR creation requests, including shader-slang/* targets even when the user does not explicitly name this skill. Handles WSL environments that require Windows-hosted tools unless --wsl is requested.
 name: slang-pr-create
 required-capabilities: shell git github-cli file-read
 ---
@@ -17,11 +17,14 @@ even when the user does not explicitly invoke `/slang-pr-create`.
 
 **Usage**: `/slang-pr-create [--repo owner/repo-or-url-or-remote] [--no-draft] [--wsl]`
 
-PRs are created as drafts by default. Use `--no-draft` only when the PR should
-be ready for review immediately. Created PRs are assigned to `@me` by default.
+PRs targeting `shader-slang/*` are created as drafts by default. PRs targeting
+other repositories are created ready for review. Use `--no-draft` only when a
+`shader-slang/*` PR should be ready for review immediately. Created PRs are
+assigned to `@me` by default.
+Only pass labels that are present in the target repository. If the target
+repository has a `CoPilot` label, add it when creating the PR.
 After creating a draft PR, request CodeRabbit review by commenting
-`@coderabbitai review`. If the target repository is under `shader-slang/`, also
-post `/ci all` to trigger CI.
+`@coderabbitai review`.
 
 `--wsl` means "use native WSL tools" when running inside WSL. Without it,
 require Windows-hosted `.exe` tools such as `gh.exe`. If they are missing, stop
@@ -192,6 +195,13 @@ or `main`:
 REPO_NAME_WITH_OWNER="$("$GH" repo view "$REPO" --json nameWithOwner --jq .nameWithOwner | clean_line)"
 BASE="$("$GH" repo view "$REPO" --json defaultBranchRef --jq .defaultBranchRef.name | clean_line)"
 BRANCH="$("$GIT" branch --show-current | clean_line)"
+case "$REPO_NAME_WITH_OWNER" in
+  shader-slang/*)
+    ;;
+  *)
+    DRAFT=false
+    ;;
+esac
 ```
 
 Try to determine the issue references that the PR is intended to fix before
@@ -457,11 +467,35 @@ When the compatibility classification is unclear, do not guess and do not apply
 either label. Compatibility labels are optional metadata; if the target
 repository does not have the selected label, continue creating the PR without
 that label instead of creating labels or blocking PR creation.
+Only pass labels that exist in the target repository. This applies to
+compatibility labels such as `pr: non-breaking` or `pr: breaking`, and to
+integration labels such as `CoPilot`.
 
 Create the PR:
 
 ```bash
 LABEL_ARGS=()
+LABEL_NAMES="$("$GH" label list \
+  --repo "$REPO" \
+  --limit 1000 \
+  --json name \
+  --jq '.[].name' 2>/dev/null | clean_line || true)"
+
+repo_has_label() {
+  label_name="$1"
+  printf '%s\n' "$LABEL_NAMES" | grep -Fxq "$label_name"
+}
+
+add_label_if_available() {
+  label_name="$1"
+  if repo_has_label "$label_name"; then
+    LABEL_ARGS+=(--label "$label_name")
+  else
+    printf 'Target repository is missing optional label: %s\n' "$label_name" >&2
+    printf 'Creating the PR without that label.\n' >&2
+  fi
+}
+
 BREAKING_CHANGE=false
 NON_BREAKING_CHANGE=false
 # Set BREAKING_CHANGE=true only when the user explicitly says the PR is breaking
@@ -487,18 +521,11 @@ elif [ "$NON_BREAKING_CHANGE" = true ]; then
   COMPAT_LABEL="pr: non-breaking"
 fi
 if [ -n "$COMPAT_LABEL" ]; then
-  LABEL_NAMES="$("$GH" label list \
-    --repo "$REPO" \
-    --limit 200 \
-    --json name \
-    --jq '.[].name' | clean_line)"
-  if printf '%s\n' "$LABEL_NAMES" | grep -Fxq "$COMPAT_LABEL"; then
-    LABEL_ARGS=(--label "$COMPAT_LABEL")
-  else
-    echo "Target repository is missing optional compatibility label: $COMPAT_LABEL"
-    echo "Creating the PR without a compatibility label."
-  fi
+  add_label_if_available "$COMPAT_LABEL"
 fi
+
+add_label_if_available "CoPilot"
+
 DRAFT_ARGS=()
 if [ "$DRAFT" = true ]; then
   DRAFT_ARGS=(--draft)
@@ -509,19 +536,6 @@ request_coderabbit_review_if_draft() {
   if [ "$DRAFT" = true ]; then
     "$GH" pr comment "$pr_ref" --body '@coderabbitai review'
   fi
-}
-
-trigger_shader_slang_ci_if_needed() {
-  pr_ref="$1"
-  repo_name_with_owner="$REPO"
-  repo_name_with_owner="${repo_name_with_owner#https://github.com/}"
-  repo_name_with_owner="${repo_name_with_owner#git@github.com:}"
-  repo_name_with_owner="${repo_name_with_owner%.git}"
-  case "$repo_name_with_owner" in
-    shader-slang/*)
-      "$GH" pr comment "$pr_ref" --body '/ci all'
-      ;;
-  esac
 }
 
 PR_URL="$("$GH" pr create \
@@ -535,7 +549,6 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
-trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
@@ -561,13 +574,13 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
-trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
 For Windows PowerShell:
 
 ```powershell
+$GH = "gh.exe"
 $headBranch = $branch
 $repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
 $bodyFile = (git.exe rev-parse --git-path slang-pr-body.md).Trim()
@@ -588,38 +601,53 @@ if ($breakingChange -and -not $hasBreakingChangeSection) {
   throw "Breaking PRs must include a '## Breaking change' section in the PR body."
 }
 $labelArgs = @()
-if ($compatLabel) {
-  $labels = @(gh.exe label list --repo $repo --limit 200 --json name --jq ".[].name")
-  if ($labels -contains $compatLabel) {
-    $labelArgs = @("--label", $compatLabel)
+$labelNames = @(& $GH label list `
+  --repo $repoNameWithOwner `
+  --limit 1000 `
+  --json name `
+  --jq ".[].name" 2>$null)
+function Add-LabelIfAvailable {
+  param([string]$LabelName)
+  if ($labelNames | Where-Object { $_ -ceq $LabelName }) {
+    $script:labelArgs += @("--label", $LabelName)
   } else {
-    Write-Warning "Target repository is missing optional compatibility label: $compatLabel"
+    Write-Warning "Target repository is missing optional label: $LabelName"
+    Write-Warning "Creating the PR without that label."
   }
 }
-$prUrl = gh.exe pr create `
-  --repo $repo `
-  --base $base `
-  --head $headBranch `
-  --title "PR title" `
-  --body-file $bodyFile `
-  --assignee "@me" `
-  --draft `
-  @labelArgs
-gh.exe pr comment $prUrl --body "@coderabbitai review"
+if ($compatLabel) {
+  Add-LabelIfAvailable $compatLabel
+}
+Add-LabelIfAvailable "CoPilot"
+$prCreateArgs = @(
+  "pr", "create",
+  "--repo", $repo,
+  "--base", $base,
+  "--head", $headBranch,
+  "--title", "PR title",
+  "--body-file", $bodyFile,
+  "--assignee", "@me"
+)
 if ($repoNameWithOwner -like "shader-slang/*") {
-  gh.exe pr comment $prUrl --body "/ci all"
+  $prCreateArgs += "--draft"
+}
+$prCreateArgs += $labelArgs
+$prUrl = & $GH @prCreateArgs
+if ($repoNameWithOwner -like "shader-slang/*") {
+  & $GH pr comment $prUrl --body "@coderabbitai review"
 }
 $prUrl
 ```
 
-Omit `--draft` only if the user passes `--no-draft` or explicitly requests a PR
-that is ready for review.
+Omit `--draft` for non-`shader-slang/*` targets. Also omit it if the user passes
+`--no-draft` or explicitly requests a `shader-slang/*` PR that is ready for
+review.
 
 ## After Creation
 
 Report the PR URL, the base branch, the published head branch, whether the push
-fell back to a new remote branch name, whether a CodeRabbit review request was
-posted, whether `/ci all` was posted, and whether any validation was run. If PR
-creation fails because the branch was not pushed to a usable remote or the target
-repo differs from the local `origin`, explain the failure and ask before adding
-remotes or changing push destinations.
+fell back to a new remote branch name, which labels were applied, whether a
+CodeRabbit review request was posted, and whether any validation was run. If PR
+creation fails because the branch was not pushed to a usable remote or the
+target repo differs from the local `origin`, explain the failure and ask before
+adding remotes or changing push destinations.
