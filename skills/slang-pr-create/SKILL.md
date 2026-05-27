@@ -24,8 +24,7 @@ assigned to `@me` by default.
 Only pass labels that are present in the target repository. If the target
 repository has a `CoPilot` label, add it when creating the PR.
 After creating a draft PR, request CodeRabbit review by commenting
-`@coderabbitai review`. If the target repository is under `shader-slang/`, also
-post `/ci all` to trigger CI.
+`@coderabbitai review`.
 
 `--wsl` means "use native WSL tools" when running inside WSL. Without it,
 require Windows-hosted `.exe` tools such as `gh.exe`. If they are missing, stop
@@ -539,19 +538,6 @@ request_coderabbit_review_if_draft() {
   fi
 }
 
-trigger_shader_slang_ci_if_needed() {
-  pr_ref="$1"
-  repo_name_with_owner="$REPO"
-  repo_name_with_owner="${repo_name_with_owner#https://github.com/}"
-  repo_name_with_owner="${repo_name_with_owner#git@github.com:}"
-  repo_name_with_owner="${repo_name_with_owner%.git}"
-  case "$repo_name_with_owner" in
-    shader-slang/*)
-      "$GH" pr comment "$pr_ref" --body '/ci all'
-      ;;
-  esac
-}
-
 PR_URL="$("$GH" pr create \
   --repo "$REPO" \
   --base "$BASE" \
@@ -563,7 +549,6 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
-trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
@@ -589,7 +574,6 @@ PR_URL="$("$GH" pr create \
   "${LABEL_ARGS[@]}")" || exit 1
 PR_URL="$(printf '%s\n' "$PR_URL" | clean_line)"
 request_coderabbit_review_if_draft "$PR_URL"
-trigger_shader_slang_ci_if_needed "$PR_URL"
 printf '%s\n' "$PR_URL"
 ```
 
@@ -651,7 +635,6 @@ $prCreateArgs += $labelArgs
 $prUrl = & $GH @prCreateArgs
 if ($repoNameWithOwner -like "shader-slang/*") {
   & $GH pr comment $prUrl --body "@coderabbitai review"
-  & $GH pr comment $prUrl --body "/ci all"
 }
 $prUrl
 ```
@@ -664,7 +647,7 @@ review.
 
 Report the PR URL, the base branch, the published head branch, whether the push
 fell back to a new remote branch name, which labels were applied, whether a
-CodeRabbit review request was posted, whether `/ci all` was posted, and whether
-any validation was run. If PR creation fails because the branch was not pushed
-to a usable remote or the target repo differs from the local `origin`, explain
-the failure and ask before adding remotes or changing push destinations.
+CodeRabbit review request was posted, and whether any validation was run. If PR
+creation fails because the branch was not pushed to a usable remote or the
+target repo differs from the local `origin`, explain the failure and ask before
+adding remotes or changing push destinations.
