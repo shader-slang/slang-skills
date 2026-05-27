@@ -1,6 +1,7 @@
 ---
 name: slang-write-test
 description: Quick reference for writing Slang compiler tests (.slang files with //TEST directives). Only invoke when explicitly called via /slang-write-test.
+license: Apache-2.0
 ---
 
 # Slang Test Development
@@ -20,11 +21,16 @@ Place tests under `tests/` directory, organized by category:
 
 See the `slang-run-tests` skill for platform-aware test running, skip detection, and SPIRV validation.
 See the `slang-build` skill for building `slang-test` on your platform.
+Under WSL, follow `slang-run-tests` binary selection: use `.exe` binaries for
+the default Windows-hosted build, and do not silently fall back to WSL-native
+binaries from a different build.
+Use the selected `$SLANG_TEST` and `$SLANGC` variables from `slang-run-tests`
+when invoking Slang tools.
 
 Quick reference (run from repo root):
 
 ```bash
-./build/<preset>/bin/slang-test tests/path/to/test.slang
+"$SLANG_TEST" tests/path/to/test.slang
 ```
 
 ## Choosing a Test Type
@@ -294,7 +300,7 @@ This makes the test strategy visible and lets others see what's covered vs gaps.
 
 6. **Run test** to verify:
    ```bash
-   ./build/RelWithDebInfo/bin/slang-test tests/your/test.slang
+   "$SLANG_TEST" tests/your/test.slang
    ```
 
 ## Pre-submission Checklist
@@ -321,7 +327,7 @@ Before committing any test file, verify:
    instead of creating a duplicate.
 
 5. **Feature support verified**: For functional tests, confirm the feature
-   compiles before writing the full test. Run a quick `slangc` check.
+   compiles before writing the full test. Run a quick `$SLANGC` check.
    Do not write tests for unsupported or unimplemented features.
 
 6. **Negative companion exists**: If the test exercises a constrained

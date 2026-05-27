@@ -1,6 +1,7 @@
 ---
 name: slang-create-issue
 description: Create clear, well-structured GitHub issues and pull requests for the Slang compiler repository. Only invoke when explicitly called via /slang-create-issue.
+license: Apache-2.0
 ---
 
 # Slang Issues and Pull Requests
@@ -166,8 +167,8 @@ Do not narrate the diff line by line -- reviewers read the code themselves.]
 ## Test Plan
 [How this was tested]
 - [ ] New test added: `tests/path/to/test.slang`
-- [ ] Existing tests pass: `slang-test -use-test-server -server-count 8`
-- [ ] SPIRV validation: `SLANG_RUN_SPIRV_VALIDATION=1 slangc -target spirv test.slang`
+- [ ] Existing tests pass: `"$SLANG_TEST" -use-test-server -server-count 8`
+- [ ] SPIRV validation: `SLANG_RUN_SPIRV_VALIDATION=1 "$SLANGC" -target spirv test.slang`
 ```
 
 ### GitHub Comment Rules
@@ -175,6 +176,17 @@ Do not narrate the diff line by line -- reviewers read the code themselves.]
 **Prefix all agent-written GitHub comments with `[Agent]`** — issue comments,
 PR comments, review replies, investigation summaries. This applies everywhere
 the agent posts to GitHub, not just PR reviews.
+
+### Git And GitHub Tool Rules
+
+When this skill requires `git` or `gh` commands under WSL, use Windows-native
+`git.exe`/`gh.exe` by default and stop if either is missing. Use native WSL
+`git`/`gh` only when the user explicitly requested a WSL-native run.
+
+When this skill requires local Slang compiler/test commands under WSL, use the
+selected binaries from `slang-run-tests`: `slangc.exe` and `slang-test.exe` for
+the default Windows-hosted build, or native WSL binaries only when explicitly
+requested. Stop if the selected binaries are missing.
 
 ### Commit Rules
 
@@ -191,7 +203,7 @@ These rules apply to ALL commits across all skills.
 3. **Include tests**: Add regression tests as `.slang` files under `tests/`
 4. **Keep PRs focused**: One issue per PR when possible
 5. **Include technical depth**: Root cause, design rationale, trade-offs. Do not narrate the diff -- reviewers read the code themselves
-6. **Suggest reviewers**: Use `git log --format='%an' -- <changed-files> | sort | uniq -c | sort -rn` to identify 2-5 reviewers based on recent authorship of the affected code. Include 1-2 sentences per reviewer explaining the rationale.
+6. **Suggest reviewers**: Use the selected git command, e.g. `"$GIT" log --format='%an' -- <changed-files> | sort | uniq -c | sort -rn`, to identify 2-5 reviewers based on recent authorship of the affected code. Include 1-2 sentences per reviewer explaining the rationale.
 7. **Keep PR description current**: Update the PR description whenever the scope or structure changes significantly. A stale description misleads reviewers.
 
 ### Test Quality Rules (for PRs adding tests)

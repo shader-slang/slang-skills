@@ -1,18 +1,69 @@
 ---
 name: slang-test-feature
 description: Orchestrator that researches a language feature, produces a test plan for user review, and fans out parallel agents that each deliver test branches with commits. Only invoke when explicitly called via /slang-test-feature.
+argument-hint: "<feature-name> [--dry-run | --live] [--max-agents N] [--reference-url URL] [--wsl]"
+license: Apache-2.0
 ---
 
 # Feature Test Flow
 
 **For**: End-to-end test coverage for a Slang language feature — from research through parallel test implementation to bug triage.
 
-**Usage**: `/slang-test-feature <feature-name> [--dry-run | --live] [--max-agents N] [--reference-url URL]`
+**Usage**: `/slang-test-feature <feature-name> [--dry-run | --live] [--max-agents N] [--reference-url URL] [--wsl]`
 
 - `--dry-run` (default): Local branches + local bug files, no PRs or GitHub issues filed
 - `--live`: Push branches, create PRs, file GitHub issues
 - `--max-agents N`: Maximum parallel agents (default 5)
 - `--reference-url URL`: Additional documentation URL to fetch
+- `--wsl`: Force native WSL `git`/`gh` in orchestrator and subagents. Without
+  it, WSL requires Windows-native `git.exe`/`gh.exe` and stops if either is
+  missing.
+
+## Tool Selection For GitHub Steps
+
+Before the orchestrator or any subagent runs a `git` or `gh` command, initialize
+selected tools:
+
+```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--wsl([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+  tool="$1"
+  if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+    if command -v "${tool}.exe" >/dev/null 2>&1; then
+      printf '%s.exe\n' "$tool"
+      return 0
+    fi
+    printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+    printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+    return 1
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf 'Missing native tool: %s\n' "$tool" >&2
+  return 1
+}
+
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+clean_line() { tr -d '\r'; }
+```
+
+Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands. Include this
+tool-selection block in every subagent prompt that can commit, push, create PRs,
+or file GitHub issues.
 
 ---
 
@@ -228,6 +279,8 @@ in each agent's prompt at the marked `{placeholder}` locations:
 - `slang-run-tests` → `{slang-run-tests content}` (test commands, skip detection)
 - `slang-create-issue` "Commit Rules" section → `{commit-rules}`
 
+Also include the Tool Selection For GitHub Steps block above in every prompt.
+
 Launch agents in parallel by sending multiple `Task` tool calls in a single message,
 each with `subagent_type="best-of-n-runner"`.
 
@@ -262,14 +315,17 @@ This is the Slang shading language compiler (C++). Additional conventions:
 ## Instructions
 
 ### Step 0: Build (if needed)
-Build slangc and slang-test using the build reference above.
+Build slangc and slang-test using the build reference above, then select
+`$SLANGC` and `$SLANG_TEST` using the test runner reference. Under WSL with a
+Windows-hosted build, these must be `slangc.exe` and `slang-test.exe`; stop if
+they are missing.
 
 ### Step 1: Write and validate tests
 For each test in the sub-plan:
   a. Create the .slang test file at the specified path
   b. Follow the test templates from the syntax reference
   c. Write natural comments explaining semantic behavior
-  d. Run the test: ./build/RelWithDebInfo/bin/slang-test tests/path/to/test.slang
+  d. Run the test: "$SLANG_TEST" tests/path/to/test.slang
   e. If it fails:
      - Wrong expected value → fix the test
      - Compiler bug → record bug in structured format (see below)
@@ -284,7 +340,7 @@ Before formatting or committing, verify EVERY test file:
   d. No duplicates: search existing tests for the same scenario
      (rg "keyword" tests/language-feature/<feature>/)
   e. Feature support: for functional tests, confirm the feature compiles
-     with a quick slangc invocation before writing the full test
+     with a quick "$SLANGC" invocation before writing the full test
   f. DIAGNOSTIC_TEST uses exhaustive mode unless there is a documented
      reason for non-exhaustive; never use non-exhaustive "just in case"
   g. Negative companion: if any functional test exercises a constrained
@@ -298,7 +354,7 @@ Run ./extras/formatting.sh on changed files.
 ### Step 4: Create branch & commit
 {commit-rules}
 Create a dedicated branch from master for this sub-plan:
-  git checkout -b <branch-name>
+  "$GIT" checkout -b <branch-name>
 Stage all new test files. Create a commit with message:
   "Add tests for <feature>: <dimension>"
 
@@ -313,8 +369,8 @@ One sub-plan = one branch = one PR. This keeps PRs focused and reviewable.
 - The orchestrator will collect results and can copy files to the main repo later
 
 **Live mode**:
-- Push branch with -u flag
-- Create PR using gh pr create with:
+- Push branch with `"$GIT" push -u origin HEAD`
+- Create PR using `"$GH" pr create` with:
   - Title: {title from sub-plan}
   - Label: pr: non-breaking
   - Assignee: @me
@@ -385,7 +441,7 @@ ICE | wrong-codegen | missing-diagnostic | validation-error
 
 **Command:**
 \`\`\`bash
-slangc -target [target] test.slang
+"$SLANGC" -target [target] test.slang
 \`\`\`
 
 ## Expected Behavior

@@ -1,13 +1,15 @@
 ---
 name: slang-run-tests
 description: Platform-aware test runner for the Slang compiler. Only invoke when explicitly called via /slang-run-tests or referenced by other skills.
+argument-hint: "[test-path] [--wsl]"
+license: Apache-2.0
 ---
 
 # Slang Run Tests
 
 **For**: Running Slang compiler tests with platform awareness.
 
-**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path]`
+**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path] [--wsl]`
 
 ---
 
@@ -15,18 +17,56 @@ description: Platform-aware test runner for the Slang compiler. Only invoke when
 
 **Important**: `slang-test` must run from the repository root directory.
 
+Select the compiler and test runner before executing tests:
+
+```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+fi
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+BIN_PATH="${BIN_PATH:-build/Debug/bin}"
+if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+  SLANG_TEST="$BIN_PATH/slang-test.exe"
+  SLANGC="$BIN_PATH/slangc.exe"
+  [ -f "$SLANG_TEST" ] || { echo "Missing Windows-hosted binary: $SLANG_TEST"; exit 1; }
+  [ -f "$SLANGC" ] || { echo "Missing Windows-hosted binary: $SLANGC"; exit 1; }
+else
+  SLANG_TEST="$BIN_PATH/slang-test"
+  SLANGC="$BIN_PATH/slangc"
+  [ -f "$SLANG_TEST" ] || { echo "Missing native binary: $SLANG_TEST"; exit 1; }
+  [ -f "$SLANGC" ] || { echo "Missing native binary: $SLANGC"; exit 1; }
+fi
+```
+
+Use `$SLANG_TEST` and `$SLANGC` for all subsequent test and compiler commands.
+
 ```bash
 # Run a specific test
-./build/<preset>/bin/slang-test tests/path/to/test.slang
+"$SLANG_TEST" tests/path/to/test.slang
 
 # Run all tests in a directory
-./build/<preset>/bin/slang-test tests/language-feature/generics/
+"$SLANG_TEST" tests/language-feature/generics/
 
 # Run full suite with parallel servers
-./build/<preset>/bin/slang-test -use-test-server -server-count 8
+"$SLANG_TEST" -use-test-server -server-count 8
 ```
 
 Where `<preset>` is `Debug`, `RelWithDebInfo`, or `Release` matching your build (see `slang-build` skill).
+
+### WSL Binary Selection
+
+When running under WSL with the default Windows-hosted build from `slang-build`,
+the selected binaries are `slang-test.exe` and `slangc.exe`. If either expected
+`.exe` binary is missing, stop and build the selected host configuration. Do not
+silently run a WSL-native `slang-test` or `slangc` from a different build. Use
+the non-`.exe` binaries only for native Linux/macOS builds or an explicit WSL
+Linux build.
 
 ---
 
@@ -67,7 +107,7 @@ When writing new tests for GPU-less environments, prefer `-cpu` or `INTERPRET` t
 For SPIRV-related work, enable validation:
 
 ```bash
-SLANG_RUN_SPIRV_VALIDATION=1 ./build/<preset>/bin/slangc -target spirv test.slang
+SLANG_RUN_SPIRV_VALIDATION=1 "$SLANGC" -target spirv test.slang
 ```
 
 Do NOT use the system's `spirv-val` tool — it may be outdated. Slang bundles its own.
@@ -75,13 +115,13 @@ Do NOT use the system's `spirv-val` tool — it may be outdated. Slang bundles i
 To see SPIRV output even when validation fails:
 
 ```bash
-./build/<preset>/bin/slangc -target spirv-asm -skip-spirv-validation test.slang
+"$SLANGC" -target spirv-asm -skip-spirv-validation test.slang
 ```
 
 To generate reference SPIRV via GLSL for comparison:
 
 ```bash
-./build/<preset>/bin/slangc -target spirv-asm -emit-spirv-via-glsl test.slang
+"$SLANGC" -target spirv-asm -emit-spirv-via-glsl test.slang
 ```
 
 ---
@@ -117,4 +157,4 @@ For test syntax details, see the `slang-write-test` skill.
 
 ### Binary not found
 - Build first: see `slang-build` skill
-- Verify preset matches: `ls build/<preset>/bin/slang-test`
+- Verify preset matches: `ls build/<preset>/bin/slang-test*`

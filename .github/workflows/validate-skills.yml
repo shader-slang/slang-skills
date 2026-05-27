@@ -1,0 +1,20 @@
+name: Validate Skills
+
+on:
+  pull_request:
+    branches: ["**"]
+  merge_group:
+
+jobs:
+  dry-run:
+    name: gh skills publish --dry-run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run dry-run publish check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh skills publish --dry-run

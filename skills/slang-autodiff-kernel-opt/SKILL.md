@@ -6,6 +6,7 @@ description: >-
   backward kernels, removing custom [BackwardDerivativeOf] functions, or
   reducing register pressure in differentiable GPU code, including tuning
   [ForceUnroll] versus [MaxIters] loop behavior per call site.
+license: Apache-2.0
 ---
 
 # Autodiff Kernel Optimization
@@ -47,9 +48,13 @@ Compile with/without `-DUSE_AUTODIFF` to compare.
 
 **CUDA example:**
 
+Under WSL with a Windows-hosted Slang build, invoke the matching `.exe` binary
+through `$SLANGC` (for example `slangc.exe`) and stop if it is unavailable. Do
+not silently run a WSL-native `slangc` from another build.
+
 ```bash
 # slangc generates a self-contained .cu (includes Slang CUDA prelude)
-slangc my_shader.slang -O3 -target cuda -o /tmp/out.cu
+"$SLANGC" my_shader.slang -O3 -target cuda -o /tmp/out.cu
 
 # nvcc compiles with register/spill reporting
 nvcc /tmp/out.cu -arch=sm_89 --use_fast_math \
@@ -78,7 +83,7 @@ Use `-report-checkpoint-intermediates` with any target to see what autodiff
 stores in the forward pass for use in the backward pass:
 
 ```bash
-slangc my_shader.slang -O3 -target cuda -report-checkpoint-intermediates -o /dev/null
+"$SLANGC" my_shader.slang -O3 -target cuda -report-checkpoint-intermediates -o /dev/null
 ```
 
 **Example.** Given this kernel:

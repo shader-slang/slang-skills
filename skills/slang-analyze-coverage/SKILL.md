@@ -1,6 +1,7 @@
 ---
 name: slang-analyze-coverage
 description: Test coverage analysis and gap-filling for Slang language features. Only invoke when explicitly called via /slang-analyze-coverage.
+license: Apache-2.0
 ---
 
 # Feature-Oriented Test Coverage
@@ -292,7 +293,7 @@ struct parameters" into one agent, and "generic function parameters" into anothe
 1. The specific tests to write (from the gap list with filenames and descriptions)
 2. The `slang-write-test` skill content for test syntax reference
 3. Feature context from Phase 1
-4. Build/test/format/commit instructions (same as `slang-test-feature` Phase 3)
+4. Build/test/format/commit instructions (same as `slang-test-feature` Phase 3), including its WSL tool-selection rule for any `git`, `gh`, `slangc`, or `slang-test` command
 
 **Collecting results**: After agents complete, the orchestrator reviews each branch's
 test results and cherry-picks passing tests into a single branch for the PR.
@@ -365,7 +366,7 @@ still needs work.
 5. **Testing unsupported features**: Attempting to write functional tests
    for compiler features that are not yet implemented (e.g., constructor
    type inference from arguments). Always verify the feature compiles
-   with a quick `slangc` invocation before writing the full test. If the
+   with a quick `$SLANGC` invocation before writing the full test. If the
    feature does not compile, file a bug/feature request instead of
    writing a test.
 6. **Misleading comments**: Comments referencing wrong interface names,

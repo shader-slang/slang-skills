@@ -1,8 +1,14 @@
 # slang-skills
 
-Claude Code skills for the [Slang](https://github.com/shader-slang/slang) shader compiler. Provides interactive installation of reusable skills to your `~/.claude/skills/` directory.
+Experimental skills for AI tools for the [Slang](https://github.com/shader-slang/slang) shader compiler. Provides interactive installation of reusable skills to your `~/.claude/skills/` directory.
 
 ## Quick Start
+
+**Install with gh skill:**
+
+```bash
+gh skill install https://github.com/shader-slang/slang-skills
+```
 
 **macOS / Linux / WSL / Git Bash:**
 
@@ -24,6 +30,35 @@ The interactive installer lets you select which skills to install using arrow ke
 
 ## Skills
 
+### Naming convention
+
+Skill names use lowercase kebab-case and Slang-specific skills start with
+`slang-`. When a skill mirrors a `gh` command, keep the `gh` command word order
+after the `slang-` prefix. For example, `gh pr create` maps to
+`slang-pr-create`, not `slang-create-pr`.
+
+### WSL tool selection
+
+When a skill runs command-line tools, it must detect whether the agent is
+running under WSL. Under WSL, prefer Windows-native tools with the `.exe` suffix
+for tools whose Windows and WSL versions are materially different.
+
+The critical tools are:
+- `git.exe`: a worktree created or touched by Git for Windows can be
+  incompatible with WSL `git`.
+- `cmake.exe`: WSL `cmake` does not recognize the Visual Studio presets, which
+  significantly limits Windows testing coverage.
+- `slangc.exe` and `slang-test.exe`: when using the Windows-hosted build, these
+  must match that build. Running WSL-native `slangc` or `slang-test` can test a
+  different compiler build and hide Windows-specific behavior.
+
+GitHub-oriented skills may also select `gh.exe` to avoid authentication-state
+mismatches. If a required Windows-native tool is not available, the skill must
+stop and report the missing tool instead of silently falling back to the WSL
+version.
+
+### Slang specific skills
+
 | Skill | Description | Dependencies |
 |-------|-------------|-------------|
 | `slang-build` | Platform-aware build: OS detection, CMake presets, submodules | *(foundation)* |
@@ -31,11 +66,20 @@ The interactive installer lets you select which skills to install using arrow ke
 | `slang-write-test` | Test syntax reference: directives, diagnostic tests, compute tests | *(foundation)* |
 | `slang-investigate` | Root cause investigation: classify, trace, design context | slang-build, slang-run-tests |
 | `slang-create-issue` | Issue/PR templates, commit rules | *(standalone)* |
+| `slang-pr-create` | PR creation workflow for Slang repositories: origin-default target resolution, dirty-worktree check, default branch detection, gh command | *(standalone)* |
 | `slang-fix-bug` | Bug fix workflow: intake, investigation, parallel fix exploration | slang-investigate, slang-build, slang-run-tests, slang-write-test |
 | `slang-review-pr` | PR review: evaluate approach, address feedback, manage threads | slang-build |
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
 | `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
+| `slang-pr-resolve-comments` | Resolve PR review feedback: LLM threads, CI failures, rebase conflicts | *(standalone)* |
+
+### General developer skills
+
+| Skill | Description | Dependencies |
+|-------|-------------|-------------|
+| `tmux-agent-manager` | Manage multiple Claude Code agent sessions in tmux: status reporting, message delivery, health monitoring, and spawning new agents from GitHub issues or free-form prompts. Works on Linux, macOS, WSL, and Windows (Git Bash / PowerShell). | *(standalone)* |
+| `zellij-agent-manager` | Sibling of `tmux-agent-manager` for Zellij users. Same `status` / `send` / `monitor` / `new` commands, swapping tmux primitives for Zellij's (`list-sessions`, `action list-panes`, `action dump-screen`, `action write-chars` + `send-keys`, `attach -b`). Linux and macOS only. | *(standalone)* |
 
 ## Installation Options
 

@@ -1,6 +1,8 @@
 ---
 name: slang-review-pr
 description: Review a Slang compiler PR for correctness, evaluate review feedback, implement fixes, and manage review threads. Only invoke when explicitly called via /slang-review-pr.
+argument-hint: "<PR URL or number> [--wsl]"
+license: Apache-2.0
 ---
 
 # Slang PR Review
@@ -11,11 +13,58 @@ fixes the root cause optimally, addressing review feedback, and managing review 
 **Core Principle**: A good fix addresses the root cause, not symptoms. Evaluate each PR for
 long-term correctness and each review comment for actionability before acting.
 
-**Usage**: `/slang-review-pr <pr-url-or-number>`
+**Usage**: `/slang-review-pr <pr-url-or-number> [--wsl]`
 
 Where `<pr-url-or-number>` is:
 - A PR URL (e.g., `https://github.com/shader-slang/slang/pull/10759`)
 - A PR number (e.g., `10759`)
+
+`--wsl` forces native WSL `git`/`gh` when running under WSL. Without it, WSL
+requires Windows-native `git.exe`/`gh.exe` and stops if either is missing.
+
+## Tool Selection
+
+Before running any `git` or `gh` command, initialize selected tools:
+
+```bash
+ARGS="${ARGUMENTS:-}"
+USE_WSL_TOOLS=false
+if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
+  USE_WSL_TOOLS=true
+  ARGS="$(printf '%s\n' "$ARGS" | sed -E 's/(^|[[:space:]])--wsl([[:space:]]|$)/ /; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+fi
+PR="$ARGS"
+
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+choose_tool() {
+  tool="$1"
+  if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+    if command -v "${tool}.exe" >/dev/null 2>&1; then
+      printf '%s.exe\n' "$tool"
+      return 0
+    fi
+    printf 'Missing Windows-hosted tool: %s.exe\n' "$tool" >&2
+    printf 'Install it on Windows or rerun with --wsl to use native WSL %s.\n' "$tool" >&2
+    return 1
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s\n' "$tool"
+    return 0
+  fi
+  printf 'Missing native tool: %s\n' "$tool" >&2
+  return 1
+}
+
+GIT="$(choose_tool git)" || exit 1
+GH="$(choose_tool gh)" || exit 1
+clean_line() { tr -d '\r'; }
+```
+
+Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands.
 
 ---
 
@@ -27,22 +76,27 @@ Collect all information about the PR, its linked issues, and review feedback in 
 
 ```bash
 # PR metadata, body, and reviews
-gh pr view <number> --repo shader-slang/slang \
+"$GH" pr view <number> --repo shader-slang/slang \
   --json title,body,state,headRefName,baseRefName,url,isCrossRepository,headRepository,headRepositoryOwner
 
 # Review comments (inline code comments)
-gh api repos/shader-slang/slang/pulls/<number>/comments
+"$GH" api repos/shader-slang/slang/pulls/<number>/comments
 
 # Reviews (top-level review bodies)
-gh api repos/shader-slang/slang/pulls/<number>/reviews
+"$GH" api repos/shader-slang/slang/pulls/<number>/reviews
 ```
 
 ### Step 2: Fetch Linked Issues
 
-Extract issue numbers from the PR body (e.g., `Fixes #10153`) and fetch them:
+Extract closing issue references from the PR body. Accept both full references
+such as `Fixes shader-slang/slang#10153` and bare references such as
+`Fixes #10153`. Resolve bare references to `shader-slang/slang`, preserve the
+repository from full references, and deduplicate by `owner/repo#number` before
+fetching issues. For each deduplicated reference, parse the `owner/repo` and
+`number` components from the same reference, then fetch that issue:
 
 ```bash
-gh issue view <number> --repo shader-slang/slang --json title,body,labels
+"$GH" issue view <number> --repo <owner/repo> --json title,body,labels
 ```
 
 ### Step 3: Fetch Review Thread Status
@@ -51,7 +105,7 @@ Paginate to avoid missing unresolved threads on larger PRs:
 
 ```bash
 # Fetch all review threads (paginate if hasNextPage is true)
-gh api graphql -f query='
+"$GH" api graphql -f query='
 {
   repository(owner: "shader-slang", name: "slang") {
     pullRequest(number: N) {
@@ -80,18 +134,18 @@ If `hasNextPage` is true, re-query with `after: "<endCursor>"` until all threads
 
 ```bash
 # Preferred: works for same-repo and fork-based PRs
-gh pr checkout <number>
+"$GH" pr checkout <number>
 
 # Manual fallback if you need explicit control:
 # Same-repo PR
-git fetch origin <headRefName>
-git checkout -B <headRefName> --track origin/<headRefName>
+"$GIT" fetch origin <headRefName>
+"$GIT" checkout -B <headRefName> --track origin/<headRefName>
 
 # Fork-based PR
-git remote get-url pr-author >/dev/null 2>&1 || \
-  git remote add pr-author https://github.com/<headRepositoryOwner.login>/<headRepository.name>.git
-git fetch pr-author <headRefName>
-git checkout -B <headRefName> --track pr-author/<headRefName>
+"$GIT" remote get-url pr-author >/dev/null 2>&1 || \
+  "$GIT" remote add pr-author https://github.com/<headRepositoryOwner.login>/<headRepository.name>.git
+"$GIT" fetch pr-author <headRefName>
+"$GIT" checkout -B <headRefName> --track pr-author/<headRefName>
 ```
 
 If you add the fork remote manually, add it only once. Reuse the existing remote
@@ -216,12 +270,17 @@ platform-aware build instructions and preset selection.
 
 ### Step 3: Test
 
+Use the `slang-run-tests` binary selection rule for `$SLANG_TEST` and
+`$SLANGC`. Under WSL with a Windows-hosted build, that means
+`slang-test.exe`/`slangc.exe`, and the agent must stop if those binaries are
+missing.
+
 ```bash
 # Run the specific test(s) affected by changes
-./build/RelWithDebInfo/bin/slang-test tests/path/to/test.slang
+"$SLANG_TEST" tests/path/to/test.slang
 
 # If modifying compiler source, also run related tests
-./build/RelWithDebInfo/bin/slang-test tests/path/to/related-tests/
+"$SLANG_TEST" tests/path/to/related-tests/
 ```
 
 ### Step 4: Format
@@ -236,26 +295,26 @@ One commit per logical fix. Follow commit rules from the `slang-create-issue` sk
 Commit message should reference the review feedback:
 
 ```bash
-git add <files>
-git commit -m "$(cat <<'EOF'
+"$GIT" add <files>
+"$GIT" commit -m "$(cat <<'EOF'
 Address review: <short description of what was fixed>
 
 <1-2 lines explaining what changed and why>
 EOF
 )"
 
-# If the branch already tracks the PR head remote, plain `git push` is enough
-git push
+# If the branch already tracks the PR head remote, plain `$GIT push` is enough
+"$GIT" push
 
 # If the branch has no upstream yet, set it explicitly
-git push -u <head-remote> HEAD:<headRefName>
+"$GIT" push -u <head-remote> HEAD:<headRefName>
 ```
 
 If push is rejected (remote has new commits), rebase first:
 
 ```bash
-git pull --rebase
-git push
+"$GIT" pull --rebase
+"$GIT" push
 ```
 
 ---
@@ -289,7 +348,7 @@ Show all draft replies in a table:
 Only post the replies the user approved:
 
 ```bash
-gh api repos/shader-slang/slang/pulls/<number>/comments/<comment-id>/replies \
+"$GH" api repos/shader-slang/slang/pulls/<number>/comments/<comment-id>/replies \
   -f body="<approved-reply>"
 ```
 
