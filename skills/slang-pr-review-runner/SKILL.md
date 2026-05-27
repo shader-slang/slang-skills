@@ -18,7 +18,7 @@ Bridges the `/slang-pr-review` workflow's *what* (review this PR) to the *how* (
 | `scripts/install.sh` | Preflight | Idempotent install of `claude` CLI and `slang/` checkout. Safe to re-run. |
 | `scripts/compose-and-run.sh` | Reviewer A | Top-level entry. Constructs prompt + flags + MCP config from the input mode and invokes `claude --print`. Writes a transcript directory under `transcripts/`. Returns `final-review.md`. |
 | `scripts/repro.sh` | (called by compose-and-run.sh) | The actual `claude` CLI invocation. Mirrors production byte-for-byte for read-only review. |
-| `scripts/devin-fetch.sh` | Reviewer B | Drives `agent-browser` to load `app.devin.ai/review/...`, polls for "Analysis complete", expands flags, extracts the AI analysis + flag list to `devin-flags.md`. Exits 2 on auth-wall, 3 on timeout — workflow treats both as best-effort skip. |
+| `scripts/devin-fetch.sh` | Reviewer B | Drives `agent-browser` to load `app.devin.ai/review/...`, polls for analysis completion, captures commit-status freshness, expands the Bugs and Flags panels, and extracts the AI analysis + bug list + flag list to `devin-flags.md`. Default timeout 30 minutes. Exits 2 on auth-wall, 3 on timeout — workflow treats both as best-effort skip. |
 | `scripts/summarize.py` | Summarize | Parses `stream.jsonl` and per-subagent `task_notification.output_file`s. Emits severity counts, per-subagent cost, drift signals. Counts GitHub-write tool attempts as a drift safety check (must be 0 — non-zero indicates the read-only allowlist leaked). |
 
 ## Modes
@@ -65,4 +65,4 @@ If production changes drive different *findings* (e.g. a new subagent, a REVIEW.
 - **gh auth is read-only.** `GH_TOKEN` only needs read access on the target repo for `gh pr diff`. The skill never posts back to GitHub — the read-only allowlist excludes `mcp__github__create_pull_request_review` / `add_issue_comment` / etc., and `summarize.py` flags any attempt as drift.
 - **Stale `.local/bin` after restart.** Container restarts may wipe `~/.local/bin`. `install.sh` is idempotent — first call after a restart re-installs claude CLI.
 - **Editing local REVIEW.md is for iteration only.** A/B-test changes to `/workspace/agent/slang/REVIEW.md` stay local; never push from the coworker. A real proposal goes via a separate PR to shader-slang/slang.
-- **Devin scrape is brittle.** `devin-fetch.sh` keeps selectors minimal (heading text + `Flags` button). DOM changes upstream will break it; the script fails gracefully and the workflow treats Reviewer B as best-effort.
+- **Devin scrape is brittle.** `devin-fetch.sh` keeps selectors minimal (heading text + Bugs/Flags buttons + commit-status popover via `aria-label`). The 2026 UI split the single "N Flags" toggle into separate Bugs and Flags buttons; the script clicks both. DOM changes upstream will break it; the script fails gracefully and the workflow treats Reviewer B as best-effort.
