@@ -77,8 +77,14 @@ SYSTEM_APPEND="$(cat "$SKILL_DIR/prompt-templates/system-prompt-append.txt")"
 
 # --- Tool allowlist --------------------------------------------------------
 
-# Read-only tool allowlist. NO GitHub-write tools — this skill never posts
-# back to GitHub. Output is final-review.md returned via send_file.
+# Allows the inner CLI to read the PR via gh, and (when the wrapping
+# workflow gates it on a webhook trigger) call gh api / gh api graphql to
+# minimize prior bot reviews and post the merged COMMENT-state review.
+# This mirrors what production's claude-code-action does — see
+# shader-slang/slang/.github/workflows/claude-pr-review.yml. The cleanup
+# and post are typically done by the wrapping workflow's helper scripts
+# (cleanup.sh, post-review.sh) rather than the inner CLI itself; the
+# allowlist below is permissive enough for either path.
 read -r -d '' ALLOWED <<'EOF' || true
 Read,View,Glob,GlobTool,Grep,GrepTool,Agent,BatchTool,
 Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),
@@ -87,6 +93,7 @@ Bash(cat *),Bash(head *),Bash(tail *),
 Bash(ls *),Bash(find *),Bash(wc *),
 Bash(gh pr diff*),Bash(gh pr view*),Bash(gh pr list*),Bash(gh pr checks*),
 Bash(gh api repos/*/pulls/*),Bash(gh api repos/*/issues/*),
+Bash(gh api graphql*),
 mcp__deepwiki__ask_question
 EOF
 MCP_CONFIG="$SKILL_DIR/prompt-templates/mcp.dryrun.json"

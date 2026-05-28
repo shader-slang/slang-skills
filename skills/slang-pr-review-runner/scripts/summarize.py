@@ -3,8 +3,8 @@
 
 Reads stream.jsonl, final-review.md, and the preserved subagent outputs.
 Emits severity counts, per-subagent cost attribution, total cost, and a
-drift signal: GitHub-write tool attempts must be 0 (the skill is
-read-only). Non-zero indicates the allowlist leaked.
+drift signal: any submitted review with state != COMMENT is drift.
+Reviews must always be event=COMMENT (mirrors production's policy).
 """
 from __future__ import annotations
 
@@ -98,22 +98,41 @@ def main() -> int:
                 continue
             name = b.get("name", "?")
             name_counter[name] += 1
-            if name in {
-                "mcp__github__create_pending_pull_request_review",
-                "mcp__github__add_comment_to_pending_review",
+            # Drift: any submitted review with state != COMMENT. Posts go
+            # via `gh api repos/.../pulls/N/reviews` (REST) or the MCP
+            # equivalent. The Bash tool_use carries the `command` arg
+            # which contains "-f event=APPROVE" / "REQUEST_CHANGES" /
+            # "CHANGES_REQUESTED" if the model picked the wrong state.
+            if name == "Bash":
+                cmd = (b.get("input") or {}).get("command", "")
+                if (
+                    "/reviews" in cmd
+                    and "-f event=" in cmd
+                    and "event=COMMENT" not in cmd
+                    and (
+                        "event=APPROVE" in cmd
+                        or "event=REQUEST_CHANGES" in cmd
+                        or "event=CHANGES_REQUESTED" in cmd
+                    )
+                ):
+                    write_attempts += 1
+            elif name in {
                 "mcp__github__submit_pending_pull_request_review",
                 "mcp__github__create_pull_request_review",
-                "mcp__github__add_issue_comment",
-                "mcp__github_inline_comment__create_inline_comment",
             }:
-                write_attempts += 1
+                # If the MCP variant ever resurfaces, treat any non-COMMENT
+                # event as drift. Conservative default: count the call;
+                # operators inspect stream.jsonl for the input.event field.
+                inp = b.get("input") or {}
+                if str(inp.get("event", "")).upper() not in {"COMMENT", ""}:
+                    write_attempts += 1
 
     print(f"Top tool calls:")
     for name, n in name_counter.most_common(12):
         print(f"  {n:4d}  {name}")
     print()
-    print(f"GitHub-write tool attempts: {write_attempts}")
-    print("  (must be 0 — the read-only allowlist excludes these tools; non-zero = drift)")
+    print(f"Non-COMMENT review submission attempts: {write_attempts}")
+    print("  (must be 0 — bot reviews are always event=COMMENT; non-zero = drift)")
     print()
 
     # Subagent attribution
