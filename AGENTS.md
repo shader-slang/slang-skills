@@ -41,3 +41,23 @@ Skills that use selected tools repeatedly should initialize variables such as
 `GIT`, `GH`, `CMAKE`, `SLANGC`, or `SLANG_TEST` once, then use those variables
 in every command example instead of raw `git`, `gh`, `cmake`, `slangc`, or
 `slang-test`.
+
+## Shell Compatibility
+
+Shell snippets must run under the version of bash that ships with Apple macOS,
+which is **bash 3.2** — do not rely on features added in bash 4 or later.
+macOS keeps bash at 3.2 for licensing reasons, so it is the lowest common
+denominator across the platforms these skills target.
+
+In practice, avoid bash 4+ constructs such as:
+
+- Associative arrays (`declare -A`).
+- `mapfile` / `readarray` (read into an array with a `while read` loop instead).
+- Case-conversion parameter expansion (`${var^^}`, `${var,,}`); use `tr` instead.
+- `&>>` append-redirection and `|&` (use `>>file 2>&1`); plain `&>` is fine in
+  3.2.
+- Negative array indices such as `${arr[-1]}`.
+
+Prefer POSIX-compatible constructs where practical so snippets also work under
+other shells. When a bash-4 feature is genuinely required, gate it behind a
+version check and provide a 3.2-compatible fallback.
