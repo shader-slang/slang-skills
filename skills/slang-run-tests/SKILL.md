@@ -137,21 +137,28 @@ Not all targets work on every platform. Before running tests, know what will act
 | `-metal` | yes | **no** | **no** |
 | `-wgsl` | yes | yes | yes |
 
-### Critical: Detect Skipped Tests
+### Critical: Read Every Number in the Summary
 
-**A skipped test is NOT a passed test.** On platforms that lack a backend (e.g., macOS + CUDA),
-`slang-test` silently skips the test and reports success. This can hide real failures.
-
-After running tests, always check the log for skip counts:
+After running tests, always check the summary line — and weigh **all** of its
+counts, not just one:
 
 ```bash
 grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
 # e.g. Total: 100, Passed: 60, Failed: 0, Skipped: 40
 ```
 
-**If the skip count is high relative to total**, verify that the tests you care about
-actually ran. For target-specific fixes (SPIRV, CUDA, D3D), skipped tests mean
-**you cannot validate locally** — leave it to CI.
+- **Failed** — the most immediate and important number. **It must be `0`.** Any
+  non-zero failed count means the change is broken; stop and investigate the
+  failures (`grep -iE 'fail(ed|ure)?' "$TEST_LOG"`) before doing anything else.
+- **Skipped** — **a skipped test is NOT a passed test.** On platforms that lack a
+  backend (e.g., macOS + CUDA), `slang-test` silently skips the test and still
+  reports overall success, which can hide real problems. If the skip count is
+  high relative to total, verify the tests you care about actually ran. For
+  target-specific fixes (SPIRV, CUDA, D3D), skipped tests mean **you cannot
+  validate locally** — leave it to CI.
+- **Passed / Total** — sanity-check that the totals make sense. If `Total` is far
+  smaller than expected, the wrong path may have run or the suite never started;
+  re-check the invocation and the tail of the log.
 
 When writing new tests for GPU-less environments, prefer `-cpu` or `INTERPRET` test types.
 
