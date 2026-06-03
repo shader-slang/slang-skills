@@ -113,6 +113,15 @@ TEST_LOG="$(mktemp -t slang-test.XXXXXX.log)"
 "$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT" $TEST_PATH &> "$TEST_LOG"
 
 echo "Full output saved to: $TEST_LOG"
+
+# Always report the summary, and if any test failed, list the failing tests.
+grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
+FAILED_COUNT="$(grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1 | sed -E 's/.*Failed:[[:space:]]*([0-9]+).*/\1/')"
+if [ "${FAILED_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+  echo "FAILED TESTS (${FAILED_COUNT}):"
+  # Lines mentioning a failure, minus the summary line ("Failed: N").
+  grep -i 'fail' "$TEST_LOG" | grep -vE 'Total:.*Passed:.*Failed:' | sort -u
+fi
 ```
 
 When invoked as `/slang-run-tests all` (or with no test path), `TEST_PATH` is
