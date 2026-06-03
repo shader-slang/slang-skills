@@ -1,7 +1,7 @@
 ---
 name: slang-run-tests
 description: Platform-aware test runner for the Slang compiler. Only invoke when explicitly called via /slang-run-tests or referenced by other skills.
-argument-hint: "[test-path] [--wsl]"
+argument-hint: "[test-path|all] [--wsl]"
 license: Apache-2.0
 ---
 
@@ -9,7 +9,10 @@ license: Apache-2.0
 
 **For**: Running Slang compiler tests with platform awareness.
 
-**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path] [--wsl]`
+**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path|all] [--wsl]`
+
+Pass a specific `test-path` to run a single test or directory, or `all` (or no
+path) to run the full suite.
 
 ---
 
@@ -24,6 +27,15 @@ ARGS="${ARGUMENTS:-}"
 USE_WSL_TOOLS=false
 if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
   USE_WSL_TOOLS=true
+fi
+
+# Resolve the positional test-path (everything that is not a flag). The
+# symbolic name "all" means the full suite; slang-test does not recognize
+# "all" itself, so it maps to an empty path (running slang-test with no
+# positional argument runs every test).
+TEST_PATH="$(printf '%s\n' "$ARGS" | tr ' ' '\n' | grep -v '^--' | grep -v '^$' | head -n1)"
+if [ "$TEST_PATH" = "all" ]; then
+  TEST_PATH=""
 fi
 
 is_wsl() {
@@ -63,9 +75,16 @@ Use `$SLANG_TEST` and `$SLANGC` for all subsequent test and compiler commands.
 # Run all tests in a directory
 "$SLANG_TEST" tests/language-feature/generics/
 
-# Run full suite with parallel servers (one per available core/thread)
-"$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT"
+# Run full suite with parallel servers (one per available core/thread).
+# TEST_PATH is empty for a full run (no positional argument), or set when a
+# specific test/directory was requested.
+"$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT" $TEST_PATH
 ```
+
+When invoked as `/slang-run-tests all` (or with no test path), `TEST_PATH` is
+empty and `slang-test` runs the full suite. `all` is a skill-level convenience;
+it is **not** an argument `slang-test` understands, so it is never passed
+through.
 
 Where `<preset>` is `Debug`, `RelWithDebInfo`, or `Release` matching your build (see `slang-build` skill).
 
