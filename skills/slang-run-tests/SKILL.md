@@ -1,7 +1,7 @@
 ---
 name: slang-run-tests
 description: Platform-aware test runner for the Slang compiler. Only invoke when explicitly called via /slang-run-tests or referenced by other skills.
-argument-hint: "[test-path|all] [--wsl]"
+argument-hint: "[test-path|all|new] [--wsl]"
 license: Apache-2.0
 ---
 
@@ -9,10 +9,11 @@ license: Apache-2.0
 
 **For**: Running Slang compiler tests with platform awareness.
 
-**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path|all] [--wsl]`
+**Usage**: Referenced by other skills. Can also be invoked directly: `/slang-run-tests [test-path|all|new] [--wsl]`
 
-Pass a specific `test-path` to run a single test or directory, or `all` (or no
-path) to run the full suite.
+Pass a specific `test-path` to run a single test or directory, `all` (or no
+path) to run the full suite, or `new` to run only the `.slang` tests added or
+modified relative to the default branch.
 
 ---
 
@@ -29,14 +30,37 @@ if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
   USE_WSL_TOOLS=true
 fi
 
-# Resolve the positional test-path (everything that is not a flag). The
-# symbolic name "all" means the full suite; slang-test does not recognize
-# "all" itself, so it maps to an empty path (running slang-test with no
-# positional argument runs every test).
+# Resolve the positional test-path (everything that is not a flag).
+# Two symbolic names are recognized by this skill (not by slang-test):
+#   all - the full suite (maps to an empty path; slang-test with no
+#         positional argument runs every test).
+#   new - only the .slang tests added or modified vs the default branch.
 TEST_PATH="$(printf '%s\n' "$ARGS" | tr ' ' '\n' | grep -v '^--' | grep -v '^$' | head -n1)"
-if [ "$TEST_PATH" = "all" ]; then
-  TEST_PATH=""
-fi
+case "$TEST_PATH" in
+  all)
+    TEST_PATH=""
+    ;;
+  new)
+    # Determine the default branch (origin/HEAD), falling back to main.
+    DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+    [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main
+    BASE="$(git merge-base "$DEFAULT_BRANCH" HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")"
+    # New/modified .slang tests = committed + unstaged tracked changes since
+    # BASE, plus untracked files in the working tree. slang-test treats each
+    # path as a test-name prefix, so multiple paths can be passed at once.
+    TEST_PATH="$(
+      { git diff --name-only --diff-filter=AMR "$BASE" -- tests/ 2>/dev/null
+        git ls-files --others --exclude-standard -- tests/ 2>/dev/null; } \
+        | grep -E '\.slang$' | sort -u | tr '\n' ' '
+    )"
+    if [ -z "$TEST_PATH" ]; then
+      echo "No new or modified .slang tests vs $DEFAULT_BRANCH; nothing to run."
+      exit 0
+    fi
+    echo "Running new/modified tests vs $DEFAULT_BRANCH:"
+    printf '  %s\n' $TEST_PATH
+    ;;
+esac
 
 is_wsl() {
   [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
@@ -92,9 +116,11 @@ echo "Full output saved to: $TEST_LOG"
 ```
 
 When invoked as `/slang-run-tests all` (or with no test path), `TEST_PATH` is
-empty and `slang-test` runs the full suite. `all` is a skill-level convenience;
-it is **not** an argument `slang-test` understands, so it is never passed
-through.
+empty and `slang-test` runs the full suite. When invoked as
+`/slang-run-tests new`, `TEST_PATH` is the set of `.slang` tests added or
+modified versus the default branch (it exits early if there are none). `all` and
+`new` are skill-level conveniences; they are **not** arguments `slang-test`
+understands, so they are never passed through literally.
 
 ### Inspecting the log without reading it whole
 
