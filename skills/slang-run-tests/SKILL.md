@@ -68,23 +68,48 @@ fi
 
 Use `$SLANG_TEST` and `$SLANGC` for all subsequent test and compiler commands.
 
+**Important — capture output to a file.** `slang-test` is very verbose (a full
+run can be tens of thousands of lines). Do **not** stream that output into the
+conversation. Always redirect both stdout and stderr to a log file with `&>`,
+then inspect the log with targeted `grep`/`tail` rather than reading it whole.
+
 ```bash
+# Choose a log location (mktemp keeps runs from clobbering each other).
+TEST_LOG="$(mktemp -t slang-test.XXXXXX.log)"
+
 # Run a specific test
-"$SLANG_TEST" tests/path/to/test.slang
+"$SLANG_TEST" tests/path/to/test.slang &> "$TEST_LOG"
 
 # Run all tests in a directory
-"$SLANG_TEST" tests/language-feature/generics/
+"$SLANG_TEST" tests/language-feature/generics/ &> "$TEST_LOG"
 
 # Run full suite with parallel servers (one per available core/thread).
 # TEST_PATH is empty for a full run (no positional argument), or set when a
 # specific test/directory was requested.
-"$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT" $TEST_PATH
+"$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT" $TEST_PATH &> "$TEST_LOG"
+
+echo "Full output saved to: $TEST_LOG"
 ```
 
 When invoked as `/slang-run-tests all` (or with no test path), `TEST_PATH` is
 empty and `slang-test` runs the full suite. `all` is a skill-level convenience;
 it is **not** an argument `slang-test` understands, so it is never passed
 through.
+
+### Inspecting the log without reading it whole
+
+Pull only what you need from `$TEST_LOG` instead of dumping the entire file:
+
+```bash
+# Summary line (Total / Passed / Failed / Skipped)
+grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
+
+# Just the failures
+grep -iE 'fail(ed|ure)?' "$TEST_LOG"
+
+# Last few lines if the run aborted
+tail -n 20 "$TEST_LOG"
+```
 
 Where `<preset>` is `Debug`, `RelWithDebInfo`, or `Release` matching your build (see `slang-build` skill).
 
@@ -117,10 +142,11 @@ Not all targets work on every platform. Before running tests, know what will act
 **A skipped test is NOT a passed test.** On platforms that lack a backend (e.g., macOS + CUDA),
 `slang-test` silently skips the test and reports success. This can hide real failures.
 
-After running tests, always check the output for skip counts:
+After running tests, always check the log for skip counts:
 
-```
-Total: 100, Passed: 60, Failed: 0, Skipped: 40
+```bash
+grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
+# e.g. Total: 100, Passed: 60, Failed: 0, Skipped: 40
 ```
 
 **If the skip count is high relative to total**, verify that the tests you care about
