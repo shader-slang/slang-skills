@@ -30,27 +30,41 @@ if printf '%s\n' "$ARGS" | grep -Eq '(^|[[:space:]])--wsl([[:space:]]|$)'; then
   USE_WSL_TOOLS=true
 fi
 
+is_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# On WSL targeting a Windows-hosted build, native WSL git and git.exe are not
+# interchangeable on a Windows checkout, so use git.exe to keep git operations
+# consistent with the build host (matches the slang-build skill). Use native
+# git otherwise.
+if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
+  GIT=git.exe
+else
+  GIT=git
+fi
+
 # Resolve the positional test-path (everything that is not a flag).
 # Two symbolic names are recognized by this skill (not by slang-test):
 #   all - the full suite (maps to an empty path; slang-test with no
 #         positional argument runs every test).
 #   new - only the .slang tests added or modified vs the default branch.
-TEST_PATH="$(printf '%s\n' "$ARGS" | tr ' ' '\n' | grep -v '^--' | grep -v '^$' | head -n1)"
+TEST_PATH="$(printf '%s\n' "$ARGS" | tr ' ' '\n' | grep -v '^-' | grep -v '^$' | head -n1)"
 case "$TEST_PATH" in
   all)
     TEST_PATH=""
     ;;
   new)
     # Determine the default branch (origin/HEAD), falling back to main.
-    DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+    DEFAULT_BRANCH="$("$GIT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
     [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=main
-    BASE="$(git merge-base "$DEFAULT_BRANCH" HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")"
+    BASE="$("$GIT" merge-base "$DEFAULT_BRANCH" HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")"
     # New/modified .slang tests = committed + unstaged tracked changes since
     # BASE, plus untracked files in the working tree. slang-test treats each
     # path as a test-name prefix, so multiple paths can be passed at once.
     TEST_PATH="$(
-      { git diff --name-only --diff-filter=AMR "$BASE" -- tests/ 2>/dev/null
-        git ls-files --others --exclude-standard -- tests/ 2>/dev/null; } \
+      { "$GIT" diff --name-only --diff-filter=AMR "$BASE" -- tests/ 2>/dev/null
+        "$GIT" ls-files --others --exclude-standard -- tests/ 2>/dev/null; } \
         | grep -E '\.slang$' | sort -u | tr '\n' ' '
     )"
     if [ -z "$TEST_PATH" ]; then
@@ -61,10 +75,6 @@ case "$TEST_PATH" in
     printf '  %s\n' $TEST_PATH
     ;;
 esac
-
-is_wsl() {
-  [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null
-}
 
 BIN_PATH="${BIN_PATH:-build/Debug/bin}"
 if is_wsl && [ "$USE_WSL_TOOLS" = false ]; then
@@ -98,8 +108,9 @@ conversation. Always redirect both stdout and stderr to a log file with `&>`,
 then inspect the log with targeted `grep`/`tail` rather than reading it whole.
 
 ```bash
-# Choose a log location (mktemp keeps runs from clobbering each other).
-TEST_LOG="$(mktemp -t slang-test.XXXXXX.log)"
+# Choose a log location. Use a full template path (portable across GNU and
+# BSD/macOS mktemp); `mktemp -t` with a suffix after the X's is not portable.
+TEST_LOG="$(mktemp "${TMPDIR:-/tmp}/slang-test.XXXXXX")"
 
 # Run a specific test
 "$SLANG_TEST" tests/path/to/test.slang &> "$TEST_LOG"
@@ -114,13 +125,14 @@ TEST_LOG="$(mktemp -t slang-test.XXXXXX.log)"
 
 echo "Full output saved to: $TEST_LOG"
 
-# Always report the summary, and if any test failed, list the failing tests.
-grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
-FAILED_COUNT="$(grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1 | sed -E 's/.*Failed:[[:space:]]*([0-9]+).*/\1/')"
-if [ "${FAILED_COUNT:-0}" -gt 0 ] 2>/dev/null; then
-  echo "FAILED TESTS (${FAILED_COUNT}):"
-  # Lines mentioning a failure, minus the summary line ("Failed: N").
-  grep -i 'fail' "$TEST_LOG" | grep -vE 'Total:.*Passed:.*Failed:' | sort -u
+# Report the summary, and if any test failed, list the failing tests.
+# slang-test prints "NN% of tests passed (P/T)" and, for each failure, a line
+# beginning with "FAILED test:" (passed/ignored/expected-fail tests use other
+# prefixes, so this matches real failures only).
+grep -E '% of tests passed' "$TEST_LOG" | tail -n1
+if grep -q '^FAILED test:' "$TEST_LOG"; then
+  echo "FAILED TESTS ($(grep -c '^FAILED test:' "$TEST_LOG")):"
+  grep '^FAILED test:' "$TEST_LOG"
 fi
 ```
 
@@ -136,11 +148,11 @@ understands, so they are never passed through literally.
 Pull only what you need from `$TEST_LOG` instead of dumping the entire file:
 
 ```bash
-# Summary line (Total / Passed / Failed / Skipped)
-grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
+# Summary line (percent passed, plus any ignored / expected-fail counts)
+grep -E '% of tests passed' "$TEST_LOG" | tail -n1
 
-# Just the failures
-grep -iE 'fail(ed|ure)?' "$TEST_LOG"
+# Just the failing tests
+grep '^FAILED test:' "$TEST_LOG"
 
 # Last few lines if the run aborted
 tail -n 20 "$TEST_LOG"
@@ -178,20 +190,21 @@ After running tests, always check the summary line — and weigh **all** of its
 counts, not just one:
 
 ```bash
-grep -E 'Total:.*Passed:.*Failed:' "$TEST_LOG" | tail -n1
-# e.g. Total: 100, Passed: 60, Failed: 0, Skipped: 40
+grep -E '% of tests passed' "$TEST_LOG" | tail -n1
+# e.g. 60% of tests passed (60/100), 40 tests ignored
 ```
 
-- **Failed** — the most immediate and important number. **It must be `0`.** Any
-  non-zero failed count means the change is broken; stop and investigate the
-  failures (`grep -iE 'fail(ed|ure)?' "$TEST_LOG"`) before doing anything else.
-- **Skipped** — **a skipped test is NOT a passed test.** On platforms that lack a
-  backend (e.g., macOS + CUDA), `slang-test` silently skips the test and still
-  reports overall success, which can hide real problems. If the skip count is
-  high relative to total, verify the tests you care about actually ran. For
-  target-specific fixes (SPIRV, CUDA, D3D), skipped tests mean **you cannot
-  validate locally** — leave it to CI.
-- **Passed / Total** — sanity-check that the totals make sense. If `Total` is far
+- **Failing tests** — the most immediate and important signal. The pass
+  percentage must be `100%` and there must be **no** `FAILED test:` lines. Any
+  failure means the change is broken; stop and investigate
+  (`grep '^FAILED test:' "$TEST_LOG"`) before doing anything else.
+- **Ignored (skipped)** — **an ignored test is NOT a passed test.** On platforms
+  that lack a backend (e.g., macOS + CUDA), `slang-test` silently ignores the
+  test and still reports overall success, which can hide real problems. If the
+  ignored count is high relative to the total, verify the tests you care about
+  actually ran. For target-specific fixes (SPIRV, CUDA, D3D), ignored tests mean
+  **you cannot validate locally** — leave it to CI.
+- **Passed / total** — sanity-check the `(P/T)` ratio. If the total is far
   smaller than expected, the wrong path may have run or the suite never started;
   re-check the invocation and the tail of the log.
 
