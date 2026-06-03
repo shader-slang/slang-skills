@@ -42,6 +42,16 @@ else
   [ -f "$SLANG_TEST" ] || { echo "Missing native binary: $SLANG_TEST"; exit 1; }
   [ -f "$SLANGC" ] || { echo "Missing native binary: $SLANGC"; exit 1; }
 fi
+
+# Detect the number of available cores/threads for parallel test servers.
+if command -v nproc >/dev/null 2>&1; then
+  SERVER_COUNT="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1 && sysctl -n hw.logicalcpu >/dev/null 2>&1; then
+  SERVER_COUNT="$(sysctl -n hw.logicalcpu)"
+else
+  SERVER_COUNT="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+fi
+[ "${SERVER_COUNT:-0}" -ge 1 ] 2>/dev/null || SERVER_COUNT=1
 ```
 
 Use `$SLANG_TEST` and `$SLANGC` for all subsequent test and compiler commands.
@@ -53,8 +63,8 @@ Use `$SLANG_TEST` and `$SLANGC` for all subsequent test and compiler commands.
 # Run all tests in a directory
 "$SLANG_TEST" tests/language-feature/generics/
 
-# Run full suite with parallel servers
-"$SLANG_TEST" -use-test-server -server-count 8
+# Run full suite with parallel servers (one per available core/thread)
+"$SLANG_TEST" -use-test-server -server-count "$SERVER_COUNT"
 ```
 
 Where `<preset>` is `Debug`, `RelWithDebInfo`, or `Release` matching your build (see `slang-build` skill).
