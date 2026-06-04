@@ -623,6 +623,34 @@ For Windows PowerShell:
 
 ```powershell
 $GH = "gh.exe"
+# Branch naming: preserve the current topic branch. Only when on the default
+# branch (or detached HEAD) create a new topic branch named from the latest
+# commit subject, then switch to it. Mirrors the Bash "Branch Naming" step.
+if ([string]::IsNullOrEmpty($branch) -or $branch -eq $base) {
+  $commitSubject = (git.exe log -1 --pretty=%s).Trim()
+  $newBranch = $commitSubject.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+', '' -replace '-+$', ''
+  if ($newBranch.Length -gt 50) {
+    $newBranch = $newBranch.Substring(0, 50) -replace '-+$', ''
+  }
+  if ([string]::IsNullOrEmpty($newBranch)) {
+    $shortHead = (git.exe rev-parse --short HEAD).Trim()
+    $newBranch = "slang-pr-$shortHead"
+  }
+
+  $candidate = $newBranch
+  $suffix = 1
+  while (git.exe show-ref --verify --quiet "refs/heads/$candidate") {
+    $suffix++
+    $candidate = "${newBranch}-${suffix}"
+  }
+  $newBranch = $candidate
+
+  git.exe switch -c $newBranch
+  if ($LASTEXITCODE -ne 0) { exit 1 }
+  $branch = $newBranch
+  [Console]::Error.WriteLine("Was on default branch $base; created topic branch $branch for the PR.")
+}
+
 $headBranch = $branch
 $repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
 $bodyFile = (git.exe rev-parse --git-path slang-pr-body.md).Trim()
