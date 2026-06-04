@@ -335,8 +335,50 @@ Check basic state:
 "$GH" repo view "$REPO" --json nameWithOwner,defaultBranchRef,url
 ```
 
-Do not create a PR from the default branch. If `BRANCH` is empty or equals
-`BASE`, stop and ask the user to create or switch to a topic branch.
+### Branch Naming
+
+Preserve the current branch whenever possible. Do **not** rename the current
+branch or move the commits onto a new branch when the current branch is already
+a topic branch (any branch whose name is not the target default branch). In that
+case keep `BRANCH` as-is and create the PR from it.
+
+Only create a new branch when the current branch is the default branch, i.e.
+`BRANCH` is empty (detached HEAD) or `BRANCH` equals `BASE`. Never open a PR
+whose head is the default branch. When this happens, choose a new branch name
+that reflects what the committed changes do (for example, derived from the
+primary commit subject), switch to it, and create the PR from that branch:
+
+```bash
+if [ -z "$BRANCH" ] || [ "$BRANCH" = "$BASE" ]; then
+  # On the default branch (or detached HEAD): create a topic branch that
+  # describes the change. Derive a slug from the latest commit subject and
+  # sanitize it into a valid branch name.
+  COMMIT_SUBJECT="$("$GIT" log -1 --pretty=%s | clean_line)"
+  NEW_BRANCH="$(printf '%s' "$COMMIT_SUBJECT" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-50 \
+    | sed -E 's/-+$//')"
+  [ -z "$NEW_BRANCH" ] && NEW_BRANCH="slang-pr-$("$GIT" rev-parse --short HEAD | clean_line)"
+
+  # Avoid clobbering an existing local branch of the same name.
+  CANDIDATE="$NEW_BRANCH"
+  suffix=1
+  while "$GIT" show-ref --verify --quiet "refs/heads/$CANDIDATE"; do
+    suffix=$((suffix + 1))
+    CANDIDATE="${NEW_BRANCH}-${suffix}"
+  done
+  NEW_BRANCH="$CANDIDATE"
+
+  "$GIT" switch -c "$NEW_BRANCH" || exit 1
+  BRANCH="$NEW_BRANCH"
+  printf 'Was on default branch %s; created topic branch %s for the PR.\n' "$BASE" "$BRANCH" >&2
+fi
+```
+
+Prefer a descriptive slug, but you may instead ask the user for a branch name
+when the change spans many commits or no single commit subject captures it.
+After this step `BRANCH` always names a topic branch distinct from `BASE`.
 
 Fetch the target default branch and verify the branch has commits for the PR:
 
@@ -581,6 +623,34 @@ For Windows PowerShell:
 
 ```powershell
 $GH = "gh.exe"
+# Branch naming: preserve the current topic branch. Only when on the default
+# branch (or detached HEAD) create a new topic branch named from the latest
+# commit subject, then switch to it. Mirrors the Bash "Branch Naming" step.
+if ([string]::IsNullOrEmpty($branch) -or $branch -eq $base) {
+  $commitSubject = (git.exe log -1 --pretty=%s).Trim()
+  $newBranch = $commitSubject.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+', '' -replace '-+$', ''
+  if ($newBranch.Length -gt 50) {
+    $newBranch = $newBranch.Substring(0, 50) -replace '-+$', ''
+  }
+  if ([string]::IsNullOrEmpty($newBranch)) {
+    $shortHead = (git.exe rev-parse --short HEAD).Trim()
+    $newBranch = "slang-pr-$shortHead"
+  }
+
+  $candidate = $newBranch
+  $suffix = 1
+  while (git.exe show-ref --verify --quiet "refs/heads/$candidate") {
+    $suffix++
+    $candidate = "${newBranch}-${suffix}"
+  }
+  $newBranch = $candidate
+
+  git.exe switch -c $newBranch
+  if ($LASTEXITCODE -ne 0) { exit 1 }
+  $branch = $newBranch
+  [Console]::Error.WriteLine("Was on default branch $base; created topic branch $branch for the PR.")
+}
+
 $headBranch = $branch
 $repoNameWithOwner = $repo -replace '^https://github\.com/', '' -replace '^git@github\.com:', '' -replace '\.git$', ''
 $bodyFile = (git.exe rev-parse --git-path slang-pr-body.md).Trim()
