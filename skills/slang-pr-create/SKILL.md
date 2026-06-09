@@ -452,33 +452,43 @@ placeholder text in the final PR description.
 [[Add one line per confirmed issue, e.g., `Fixes #123` or `Fixes owner/repo#123`.
 Omit this line when no issue reference is known.]]
 
-## Summary of the problem from the end user perspective
+## Motivation
 
-[[Very concise and succinct. Limit to one or two sentences.]]
+[[The problem, grounded in a concrete example or motivating test case. Write for
+a reviewer without the full context in their head.]]
 
-### Minimal repro shader; if applicable
+## Proposed solution
 
-[[A few lines of Shader code snippet from the issue description or the new tests]]
+[[The approach taken and why it is principled rather than a minimal-edit-distance
+workaround.]]
 
-## Root cause
+## Change summary
 
-[[Very concise and succinct. Limit to one or two sentences.]]
+[[The files/areas touched and what each one does. Wire claims to the source with
+function names and `file.cpp:line` references.]]
 
-## Solution in this PR
+## Concepts and vocabulary
 
-[[Very concise and succinct. Limit to one or two sentences.]]
+[[A short glossary that restates only the codebase-specific or subtle terms the
+process report relies on (e.g. witness, facet, the fixpoint solver, a non-obvious
+distinction the fix hinges on). Do not explain basic, well-known concepts such as
+interface or associated type — assume them. Omit this section if no such terms
+are needed.]]
 
-### Notes to the reviewers; where to focus on
+## Process report
 
-[[Very concise and succinct. Easy to read and understand walkthrough]]
-
-## Related PRs in the past
-
-[[List of PRs in the past that were related to the issue and code lines]]
+[[Explain every change with a logical reason. For a change addressing a cascading
+issue, describe the issue (with its motivating test case) and justify the fix with
+a code trace — the exact functions/insts involved — explaining why it is necessary
+and principled rather than a workaround. For any change that handles, guards, or
+special-cases a particular input shape, answer the input-shape check: is that shape
+itself correct and principled, or should its producer have been fixed instead? — so
+a reviewer can confirm the fix sits at the right layer.]]
 ```
 
-Do not include validation logs or a `## Test Plan` section in the PR
-description.
+Ground each abstract claim in a concrete example, and wire explanations to the
+source (function name and file, or `file.cpp:line`). Do not include validation
+logs or a `## Test Plan` section in the PR description.
 
 If the PR is intentionally backward-compatibility breaking, include this section
 in the PR body:
