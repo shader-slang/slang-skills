@@ -470,7 +470,7 @@ function names and `file.cpp:line` references.]]
 ## Concepts and vocabulary
 
 [[A short glossary that restates only the codebase-specific or subtle terms the
-process report relies on (e.g. witness, facet, the fixpoint solver, a non-obvious
+process report relies on (e.g., witness, facet, the fixpoint solver, a non-obvious
 distinction the fix hinges on). Do not explain basic, well-known concepts such as
 interface or associated type — assume them. Omit this section if no such terms
 are needed.]]
