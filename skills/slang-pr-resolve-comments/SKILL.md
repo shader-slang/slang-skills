@@ -356,9 +356,10 @@ minimizing them:
 - **`@coderabbitai review` trigger comments** — comments whose body is exactly
   `@coderabbitai review` (such as the ones posted by
   `request_llm_reviews_after_push`). Hide a trigger only after CodeRabbit has
-  acknowledged or acted on it (an acknowledgment or review posted after the
-  trigger); never hide a trigger that is still pending, or CodeRabbit's response
-  may be missed.
+  acknowledged or acted on it — verify there is a CodeRabbit acknowledgment
+  comment or review whose timestamp (`createdAt` / `submittedAt`) is strictly
+  newer than that specific trigger comment's `createdAt`; never hide a trigger
+  that is still pending, or CodeRabbit's response may be missed.
 - **CodeRabbit acknowledgments** — comments authored by `coderabbitai` /
   `coderabbitai[bot]` whose body contains `✅ Action performed` (or the
   `✅ Actions performed` variant).
