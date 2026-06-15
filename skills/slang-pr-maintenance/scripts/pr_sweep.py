@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Reconcile open PRs on a GitHub ProjectsV2 board toward their correct state.
 
-A single sweep (intended to run ~every 4h) drives every open PR one step
-toward its correct board Status, records that step as a visible timeline
-artifact, and emits a coalesced exception digest for human attention.
+A single sweep (intended to run ~every 30-60 min) drives every open PR one step
+toward its correct board Status and emits a throttled, assignee-grouped report
+of items needing human attention.
 
 The script is the deterministic half of the slang-pr-maintenance skill: it
 collects PR + board + CI + review state, computes exactly one transition per
 PR, and (under --apply) performs the idempotent GitHub-side writes. The agent
-only surfaces the emitted digest and resolves the few flagged judgment calls.
+only surfaces the emitted report.
 
 Portable: depends only on an authenticated `gh` (and, optionally, a local git
 checkout as a fast path). No nanoclaw / MCP / container assumptions. All org
@@ -58,9 +58,9 @@ except Exception:  # pragma: no cover - zoneinfo is stdlib on 3.9+
 # ---------------------------------------------------------------------------
 # Configuration — EDIT HERE.
 #
-# The only command-line argument is `--maintainer LOGIN` (the current Slang
-# Maintainer, who rotates every two weeks; no default on purpose). The single
-# other flag is `--apply`. Everything else is a constant below: change it here
+# The command-line flags are `--maintainer LOGIN` (the current Slang Maintainer,
+# who rotates every two weeks; no default on purpose), `--apply`, and
+# `--recipient-map PATH`. Everything else is a constant below: change it here
 # if the org/board/teams/thresholds ever move.
 # ---------------------------------------------------------------------------
 
@@ -120,7 +120,7 @@ DEFAULT_REPORT_INTERVAL_HOURS = 24.0  # the recipient-grouped report is surfaced
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
 DEFAULT_READY_COMMENT = True        # post the one-time "ready for review" comment
 
-# Where the computed plan and the digest/backoff state are written.
+# Where the computed plan and the per-PR stall / last-report state are written.
 PLAN_FILE = "./.pr-sweep-plan.json"
 STATE_FILE = "./.pr-sweep-state.json"
 
@@ -882,12 +882,6 @@ class Gh:
                 "gh is not authenticated (gh auth status failed). "
                 "Run `gh auth login` with repo + project scopes."
             )
-
-    def viewer_login(self) -> str:
-        try:
-            return self.run(["api", "user", "--jq", ".login"], check=False).strip()
-        except Exception:
-            return ""
 
 
 # ---------------------------------------------------------------------------
