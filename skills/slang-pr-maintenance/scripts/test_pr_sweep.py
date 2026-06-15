@@ -906,7 +906,7 @@ class TestRealReviewersAndEffective(unittest.TestCase):
         pr = make_pr(board_status="Todo", assignees=[], existing_reviewers=["bmillsNV", "dan"])
         d = sweep.Decision(pr=pr, set_status="Revising", set_assignee="bob",
                            request_reviewers=["erin"], remove_reviewers=["bmillsNV"])
-        sweep.effective_pr(pr, d)
+        sweep.apply_pending_to_pr(pr, d)
         self.assertEqual(pr.board_status, "Revising")
         self.assertEqual(pr.assignees, ["bob"])
         self.assertEqual(pr.existing_reviewers, ["dan", "erin"])  # bmills removed, erin added
@@ -917,7 +917,7 @@ class TestRealReviewersAndEffective(unittest.TestCase):
         pr = make_pr(number=20, source="Community", board_status="Todo", assignees=["bob"],
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED",
                      ci_state=sweep.CI_FAILED)
-        sweep.effective_pr(pr, sweep.Decision(pr=pr, set_status="Revising"))
+        sweep.apply_pending_to_pr(pr, sweep.Decision(pr=pr, set_status="Revising"))
         rec = sweep.build_report([pr], make_cfg(maintainer="maint"), {pr.key(): (50.0, 3)})
         self.assertIn("CI failing", rec["bob"][0].reason)
 

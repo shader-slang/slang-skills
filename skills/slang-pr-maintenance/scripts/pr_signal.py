@@ -5,20 +5,10 @@ Given a PR's changed files, rank candidate committers by how much "signal" they
 have on those files. Used to pick a PR's assignee (top owner) and extra reviewer
 (top dev-not-owner) — see pr_sweep.select_assignee_and_reviewers.
 
-Hybrid strategy (cheap pass + targeted refinement):
-
-  1. Per-file signal = max(additions, deletions) of the PR's change to that file
-     * file_multiplier(path); take the top-K files, normalized to weights.
-  2. CHEAP PASS: one batched GraphQL query fetches, per top file, the last N
-     default-branch commits within the horizon — each with its oid, author,
-     commit-TOTAL LOC, and the associated PR's APPROVED reviews. Attribute each
-     commit's total LOC to its author (bot/unmapped -> last approver; else drop)
-     and rank candidates. This is O(1) requests regardless of files/committers.
-  3. TIEBREAK (only when the top candidates are close): re-score just the top
-     `finalists` candidates using TRUE per-file LOC (commit-detail fetches,
-     deduped by commit SHA), and re-order them. Skipped entirely when the cheap
-     pass already has a clear winner. This pays the expensive per-file-LOC cost
-     only on the handful of commits tied to contenders that could be #1.
+The ranking weights the PR's top changed files, runs a cheap commit-TOTAL-LOC
+pass over their default-branch history (`_cheap_pass`), and only when the top
+candidates are close pays for a per-file-LOC tiebreak over the finalists
+(`_refine_finalists`); see `compute_committer_ranking`.
 
 The pure helpers (classification, multipliers, weighting, attribution, ranking,
 tiebreak bookkeeping) are unit-tested with no live `gh`.
@@ -284,39 +274,12 @@ def horizon_since(horizon_days: int, now: datetime | None = None) -> str:
     return (base - timedelta(days=horizon_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def compute_committer_ranking(
-    gh: Any, repo: str, pr_author: str, *,
-    loc_by_file: dict[str, float],
-    file_multipliers: list[tuple[str, float]], default_multiplier: float,
-    top_files: int, commits: int, horizon_days: int, bot_authors: list[str],
-    finalists: int = DEFAULT_SIGNAL_FINALISTS,
-    clear_margin: float = DEFAULT_SIGNAL_CLEAR_MARGIN,
-    since: str | None = None,
-    cache: SignalCache | None = None,
-) -> list[str]:
-    """Ranked candidate committer logins for the PR (highest signal first),
-    excluding the PR author and bots. Hybrid: cheap total-LOC GraphQL pass, then
-    a deduped per-file-LOC tiebreak over the top `finalists` when they are close.
-
-    `loc_by_file` is the PR's own changed-file LOC (path -> max(add, del)),
-    fetched in bulk by the caller. `cache` (run-scoped) dedups the PR-independent
-    source fetches (file history and commit per-file stats) across PRs; per-PR
-    weighting/attribution is always recomputed here. `since` should be passed once
-    per sweep for stable keys."""
-    if cache is None:
-        cache = SignalCache()
-    if since is None:
-        since = horizon_since(horizon_days)
-
-    weights = top_k_weights(per_file_signals(loc_by_file, file_multipliers, default_multiplier),
-                            top_files)
-    if not weights:
-        return []
-
-    history = fetch_file_histories(gh, repo, list(weights), since, commits, history_cache=cache.file_history)
-
-    # Cheap pass: attribute commit-TOTAL LOC; remember each (file, login)'s oids
-    # so the tiebreak can fetch only those commits' true per-file LOC.
+def _cheap_pass(history: dict[str, list[dict[str, Any]]], pr_author: str,
+                bot_authors: list[str],
+                ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, list[str]]]]:
+    """Attribute each file's commit-TOTAL LOC to a login, returning per-file
+    (login -> LOC) and (login -> [oid]). The oids let the tiebreak fetch true
+    per-file LOC for only the commits that matter."""
     cheap_loc: dict[str, dict[str, float]] = {}
     oids_by_file_login: dict[str, dict[str, list[str]]] = {}
     for path, commit_list in history.items():
@@ -333,16 +296,15 @@ def compute_committer_ranking(
         if per_login:
             cheap_loc[path] = per_login
             oids_by_file_login[path] = per_oids
+    return cheap_loc, oids_by_file_login
 
-    cheap_overall = overall_signal(weights, cheap_loc)
-    cheap_ranked = rank_logins(cheap_overall)
 
-    if not needs_tiebreak(cheap_overall, cheap_ranked, clear_margin):
-        return cheap_ranked  # clear winner (or <2 candidates): cheap pass suffices
-
-    # Tiebreak: re-score the top finalists with TRUE per-file LOC (deduped via
-    # the run-scoped commit cache, so shared commits are fetched once).
-    finalist_set = set(cheap_ranked[:finalists])
+def _refine_finalists(gh: Any, repo: str, weights: dict[str, float],
+                      oids_by_file_login: dict[str, dict[str, list[str]]],
+                      finalist_set: set[str], cache: SignalCache,
+                      ) -> dict[str, dict[str, float]]:
+    """Re-score the finalists with TRUE per-file LOC, deduped via the run-scoped
+    commit cache so shared commits are fetched once."""
     refined_loc: dict[str, dict[str, float]] = {}
     for path in weights:
         refined_per_login: dict[str, float] = {}
@@ -354,6 +316,46 @@ def compute_committer_ranking(
                 refined_per_login[login] = total
         if refined_per_login:
             refined_loc[path] = refined_per_login
+    return refined_loc
 
+
+def compute_committer_ranking(
+    gh: Any, repo: str, pr_author: str, *,
+    loc_by_file: dict[str, float],
+    file_multipliers: list[tuple[str, float]], default_multiplier: float,
+    top_files: int, commits: int, horizon_days: int, bot_authors: list[str],
+    finalists: int = DEFAULT_SIGNAL_FINALISTS,
+    clear_margin: float = DEFAULT_SIGNAL_CLEAR_MARGIN,
+    since: str | None = None,
+    cache: SignalCache | None = None,
+) -> list[str]:
+    """Ranked candidate committer logins for the PR (highest signal first),
+    excluding the PR author and bots: a cheap total-LOC pass, then a per-file-LOC
+    tiebreak over the top `finalists` only when they are close.
+
+    `loc_by_file` is the PR's own changed-file LOC (path -> max(add, del)). The
+    run-scoped `cache` dedups PR-independent source fetches across PRs; per-PR
+    weighting/attribution is always recomputed. Pass `since` once per sweep for
+    stable cache keys."""
+    if cache is None:
+        cache = SignalCache()
+    if since is None:
+        since = horizon_since(horizon_days)
+
+    weights = top_k_weights(per_file_signals(loc_by_file, file_multipliers, default_multiplier),
+                            top_files)
+    if not weights:
+        return []
+
+    history = fetch_file_histories(gh, repo, list(weights), since, commits, history_cache=cache.file_history)
+    cheap_loc, oids_by_file_login = _cheap_pass(history, pr_author, bot_authors)
+    cheap_overall = overall_signal(weights, cheap_loc)
+    cheap_ranked = rank_logins(cheap_overall)
+
+    if not needs_tiebreak(cheap_overall, cheap_ranked, clear_margin):
+        return cheap_ranked  # clear winner (or <2 candidates): cheap pass suffices
+
+    finalist_set = set(cheap_ranked[:finalists])
+    refined_loc = _refine_finalists(gh, repo, weights, oids_by_file_login, finalist_set, cache)
     refined_overall = overall_signal(weights, refined_loc)
     return merge_refined(cheap_ranked, finalists, refined_overall)

@@ -343,71 +343,101 @@ def _ensure_assignee(d: Decision, pr: PR) -> None:
         d.remove_reviewers = list(pr.reviewers_to_remove)
 
 
-def reconcile(pr: PR, cfg: Config) -> Decision:
-    """Compute the single board transition this PR warrants. Idempotent:
-    never proposes a write whose effect is already present. Earlier rules are
-    board-vs-reality corrections; later rules are the normal lifecycle."""
-    d = Decision(pr=pr)
+# --- Board-vs-reality corrections -------------------------------------------
+# Each returns a Decision when it applies to this PR (terminating reconcile,
+# even if the Decision is a no-op), or None to defer to the next correction /
+# the normal lifecycle. `_CORRECTIONS` is consulted in order.
 
-    # 0. Open PR not on the board -> add it so the flow picks it up next sweep.
+def _correct_off_board(pr: PR, cfg: Config) -> Decision | None:
     if pr.project_item_id is None:
-        d.add_to_project = True
-        return d
+        return Decision(pr=pr, add_to_project=True)
+    return None
 
-    # 1. Terminal: merged/closed -> Done (defensive; the sweep only lists open
-    #    PRs, so board automation normally handles this).
-    if pr.state in ("MERGED", "CLOSED"):
-        if pr.board_status != cfg.status_done:
-            d.set_status = cfg.status_done
-        return d
 
-    # 2. Human draft mis-placed in a human/terminal lane -> back to Revising.
-    #    (Drafts remain otherwise exempt: no assignment or maintainer follow-ups.)
-    if pr.is_draft and not pr.is_bot:
-        if pr.board_status in (cfg.status_todo, cfg.status_inprogress, cfg.status_done):
-            d.set_status = cfg.status_revising
-        return d
+def _correct_terminal_state(pr: PR, cfg: Config) -> Decision | None:
+    # Defensive: the sweep only lists open PRs, so board automation normally
+    # handles this already.
+    if pr.state not in ("MERGED", "CLOSED"):
+        return None
+    d = Decision(pr=pr)
+    if pr.board_status != cfg.status_done:
+        d.set_status = cfg.status_done
+    return d
 
-    # 3. Open PR sitting in Done: fine only if it is in the merge queue. If it
-    #    was bumped out (or the repo has no queue), bounce it back — to Revising
-    #    when changes were requested, else to Todo (ready for a human again).
-    if pr.board_status == cfg.status_done:
-        if pr.in_merge_queue:
-            return d
-        if pr.review_decision == "CHANGES_REQUESTED":
-            d.set_status = cfg.status_revising
-        else:
-            d.set_status = cfg.status_todo
-            _ensure_assignee(d, pr)
-        return d
 
-    # 4. Human PR in a ready-for-human lane but CI is failing -> back to Revising.
-    #    (Bot PRs are owner-shepherded and may sit in Todo while iterating, so
-    #    they are not bounced here — that would oscillate against promotion.)
-    if (not pr.is_bot and pr.board_status in (cfg.status_todo, cfg.status_inprogress)
-            and pr.ci_state == CI_FAILED):
+def _correct_misplaced_draft(pr: PR, cfg: Config) -> Decision | None:
+    # Drafts remain otherwise exempt: no assignment or maintainer follow-ups.
+    if not (pr.is_draft and not pr.is_bot):
+        return None
+    d = Decision(pr=pr)
+    if pr.board_status in (cfg.status_todo, cfg.status_inprogress, cfg.status_done):
         d.set_status = cfg.status_revising
-        return d
+    return d
 
-    # 5. In Progress with no assignee can't be legitimately "in progress":
-    #    demote to Todo and assign.
-    if pr.board_status == cfg.status_inprogress and not pr.assignees:
+
+def _correct_done_status(pr: PR, cfg: Config) -> Decision | None:
+    # An open PR in Done is fine only while in the merge queue; if it was bumped
+    # out (or the repo has no queue) bounce it back — Revising on changes
+    # requested, else Todo (ready for a human again).
+    if pr.board_status != cfg.status_done:
+        return None
+    d = Decision(pr=pr)
+    if pr.in_merge_queue:
+        return d
+    if pr.review_decision == "CHANGES_REQUESTED":
+        d.set_status = cfg.status_revising
+    else:
         d.set_status = cfg.status_todo
         _ensure_assignee(d, pr)
-        return d
+    return d
 
-    # 6. Assign the owner + request reviewers on ready, unassigned PRs early.
+
+def _correct_failing_ci(pr: PR, cfg: Config) -> Decision | None:
+    # Bot PRs are owner-shepherded and may sit in Todo while iterating, so they
+    # are not bounced here — that would oscillate against promotion.
+    if (not pr.is_bot and pr.board_status in (cfg.status_todo, cfg.status_inprogress)
+            and pr.ci_state == CI_FAILED):
+        return Decision(pr=pr, set_status=cfg.status_revising)
+    return None
+
+
+def _correct_orphan_in_progress(pr: PR, cfg: Config) -> Decision | None:
+    # In Progress with no assignee can't be legitimately "in progress".
+    if pr.board_status == cfg.status_inprogress and not pr.assignees:
+        d = Decision(pr=pr, set_status=cfg.status_todo)
+        _ensure_assignee(d, pr)
+        return d
+    return None
+
+
+_CORRECTIONS: list[Callable[[PR, Config], Decision | None]] = [
+    _correct_off_board,
+    _correct_terminal_state,
+    _correct_misplaced_draft,
+    _correct_done_status,
+    _correct_failing_ci,
+    _correct_orphan_in_progress,
+]
+
+
+def _normal_lifecycle(pr: PR, cfg: Config) -> Decision:
+    """The steady-state lifecycle once board-vs-reality corrections don't apply:
+    assign the owner, return on blocking feedback, otherwise promote on a passed
+    gate."""
+    d = Decision(pr=pr)
+
+    # Assign the owner + request reviewers on ready, unassigned human PRs early.
     if not pr.is_bot:
         _ensure_assignee(d, pr)
 
-    # 7. Blocking review feedback returns the PR to Revising.
+    # Blocking review feedback returns the PR to Revising.
     if pr.change_requested:
         if pr.board_status != cfg.status_revising:
             d.set_status = cfg.status_revising
         return d
 
-    # 8. Promotion: automated gate passed -> Todo (ready for a human). Bot PRs
-    #    (incl. drafts) land here so a human owner shepherds them to ready.
+    # Promotion: automated gate passed -> Todo (ready for a human). Bot PRs
+    # (incl. drafts) land here so a human owner shepherds them to ready.
     if promotion_gate_passed(pr, cfg):
         if pr.board_status not in (cfg.status_todo, cfg.status_inprogress, cfg.status_done):
             d.set_status = cfg.status_todo
@@ -419,13 +449,23 @@ def reconcile(pr: PR, cfg: Config) -> Decision:
         # iterating in Revising).
         if pr.is_bot:
             _ensure_assignee(d, pr)
-    else:
+    elif not pr.board_status:
         # Not ready yet: ensure it is at least Revising if it has no status.
-        if not pr.board_status:
-            d.set_status = cfg.status_revising
-        # In Progress is human-owned; never touched here.
+        # (In Progress is human-owned; never touched here.)
+        d.set_status = cfg.status_revising
 
     return d
+
+
+def reconcile(pr: PR, cfg: Config) -> Decision:
+    """Compute the single board transition this PR warrants. Idempotent: never
+    proposes a write whose effect is already present. Board-vs-reality
+    corrections take precedence over the normal lifecycle."""
+    for correction in _CORRECTIONS:
+        d = correction(pr, cfg)
+        if d is not None:
+            return d
+    return _normal_lifecycle(pr, cfg)
 
 
 # --- Predicate ladders (the "list of predicates", per source) ----------------
@@ -462,28 +502,32 @@ def _awaiting_review(pr: PR, cfg: Config) -> bool:
             and pr.review_decision != "APPROVED")
 
 
+# Ladder rung thresholds are weekday-hours since the PR last moved.
+DAY = 24.0
+WEEK = 7 * DAY
+
 # Community: external author, internal assignee provides oversight.
 COMMUNITY_LADDER: list[Predicate] = [
     Predicate("needs_ci_approval",
               lambda pr, cfg: pr.ci_state == CI_ACTION_REQUIRED,
               lambda pr, cfg, days: "needs CI approval",
-              (("assignee", 0.0), ("maintainer", 24.0))),
+              (("assignee", 0.0), ("maintainer", DAY))),
     Predicate("changes_requested",
               lambda pr, cfg: pr.change_requested,
               lambda pr, cfg, days: "changes requested — check if author is still active / needs help",
-              (("assignee", 168.0), ("maintainer", 336.0))),  # 1 week / 2 weeks
+              (("assignee", WEEK), ("maintainer", 2 * WEEK))),
     Predicate("awaiting_review",
               _awaiting_review,
               lambda pr, cfg, days: f"awaiting review from: {_reviewers_text(pr, cfg)}",
-              (("assignee", 24.0), ("maintainer", 48.0))),
+              (("assignee", DAY), ("maintainer", 2 * DAY))),
     Predicate("ci_failing",
               lambda pr, cfg: pr.ci_state == CI_FAILED,
               lambda pr, cfg, days: "CI failing — needs fixes",
-              (("assignee", 24.0), ("maintainer", 48.0))),
+              (("assignee", DAY), ("maintainer", 2 * DAY))),
     Predicate("idle",
               lambda pr, cfg: True,
               lambda pr, cfg, days: f"idle for {days} days",
-              (("assignee", 24.0), ("maintainer", 48.0))),
+              (("assignee", DAY), ("maintainer", 2 * DAY))),
 ]
 
 # Bot: bot-authored, owner shepherds; lower urgency, no fork CI gate.
@@ -491,15 +535,15 @@ BOT_LADDER: list[Predicate] = [
     Predicate("awaiting_review",
               _awaiting_review,
               lambda pr, cfg, days: f"awaiting review from: {_reviewers_text(pr, cfg)}",
-              (("assignee", 48.0), ("maintainer", 168.0))),
+              (("assignee", 2 * DAY), ("maintainer", WEEK))),
     Predicate("ci_failing",
               lambda pr, cfg: pr.ci_state == CI_FAILED,
               lambda pr, cfg, days: "CI failing — needs fixes",
-              (("assignee", 48.0), ("maintainer", 168.0))),
+              (("assignee", 2 * DAY), ("maintainer", WEEK))),
     Predicate("idle",
               lambda pr, cfg: True,
               lambda pr, cfg, days: f"idle for {days} days",
-              (("assignee", 48.0), ("maintainer", 168.0))),
+              (("assignee", 2 * DAY), ("maintainer", WEEK))),
 ]
 
 
@@ -545,11 +589,11 @@ def compute_stall(pr: PR, prior: dict[str, Any], now: datetime,
 
 # --- Recipient-grouped report -------------------------------------------------
 
-def effective_pr(pr: PR, decision: "Decision") -> None:
-    """Mutate `pr` in place to reflect the plan's pending actions, so the report
-    describes the post-plan world (e.g. a planned Todo->Revising bounce changes
-    which predicate fires; a planned assignee/reviewer set updates routing).
-    Movement counts the planned board transition, resetting the stall clock."""
+def apply_pending_to_pr(pr: PR, decision: "Decision") -> None:
+    """Fold the plan's pending actions into `pr` so the report reflects the
+    post-plan world (a planned Todo->Revising bounce changes which predicate
+    fires; a planned assignee/reviewer set updates routing). The planned board
+    transition counts as movement, resetting the stall clock."""
     if decision.set_status:
         pr.board_status = decision.set_status
     if decision.set_assignee:
@@ -661,11 +705,6 @@ def select_assignee_and_reviewers(
 ) -> tuple[str, list[str]]:
     """Decide the assignee + review-request set for a Community/Bot PR. Pure.
 
-    Assignee (first that applies):
-      1. an `owners`-pool member assigned to the PR's linked issue;
-      2. the highest-signal committer to the changed files who is in `owners`;
-      3. the maintainer (required fallback).
-
     Reviewers = the assignee, plus the single highest-signal committer who is a
     repo `collaborators` member but not `owners` (if any) — but only when the PR
     has no *real* reviewer already requested. A real reviewer excludes bots and
@@ -704,7 +743,6 @@ def select_assignee_and_reviewers(
         reviewers.append(extra[0])
     # GitHub rejects requesting review from the PR author.
     reviewers = [r for r in reviewers if r and r.lower() != author.lower()]
-    # De-duplicate, preserving order.
     seen: set[str] = set()
     deduped: list[str] = []
     for r in reviewers:
@@ -1333,6 +1371,60 @@ def collect_prs(gh: Gh, cfg: Config,
     return prs
 
 
+def _select_assignee_reviewers(pr: PR, cfg: Config, owners_members: set[str],
+                               bot_owners_members: set[str],
+                               repo_collaborators: Callable[[str], set[str]]) -> None:
+    """Fill pr.assignee_pick / review_requests / reviewers_to_remove for an
+    unassigned, non-exempt PR. PRs already in the merge queue or human drafts
+    are far enough along (or not-ready) that assigning adds only noise."""
+    if pr.assignees or pr.in_merge_queue or (pr.is_draft and not pr.is_bot):
+        return
+    ignored_lower = {r.lower() for r in cfg.ignored_reviewers}
+    pr.reviewers_to_remove = [
+        r for r in pr.existing_reviewers if r.lower() in ignored_lower]
+    if pr.source == cfg.source_internal:
+        # Internal: the author drives; no auto-requested reviewers.
+        pr.assignee_pick, pr.review_requests = pr.author, []
+        return
+    pool = bot_owners_members if pr.source == cfg.source_bot else owners_members
+    pr.assignee_pick, pr.review_requests = select_assignee_and_reviewers(
+        pr.issue_assignees, pr.committers_by_signal,
+        pool, repo_collaborators(pr.repo), pr.author, cfg.maintainer,
+        existing_reviewers=pr.existing_reviewers,
+        bot_authors=cfg.bot_authors,
+        ignored_reviewers=set(cfg.ignored_reviewers),
+    )
+
+
+def _plan_item(pr: PR, decision: Decision) -> dict[str, Any] | None:
+    """The self-contained, replayable action list for one PR, or None when
+    there is nothing to write."""
+    actions: dict[str, Any] = {}
+    if decision.add_to_project:
+        actions["add_to_project"] = True
+    if pr.source_unset and pr.project_item_id:
+        actions["set_source"] = pr.source
+    if decision.set_status:
+        actions["set_status"] = decision.set_status
+    if decision.set_assignee:
+        actions["set_assignee"] = decision.set_assignee
+        actions["request_reviewers"] = list(decision.request_reviewers)
+    if decision.remove_reviewers:
+        actions["remove_reviewers"] = list(decision.remove_reviewers)
+    if decision.comment_kind == "ready":
+        actions["comment_kind"] = "ready"
+    if not actions:
+        return None
+    return {
+        "pr": pr.key(),
+        "repo": pr.repo,
+        "number": pr.number,
+        "item_id": pr.project_item_id,
+        "node_id": pr.node_id,
+        **actions,
+    }
+
+
 def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     state = load_state(cfg.state_file)
     owners_members = list_team_members(gh, cfg.owners_team)
@@ -1365,27 +1457,9 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
 
         entry = pr_state_entry(state, pr.key())
 
-        # ---- choose assignee + reviewers (source-dependent) ----
-        # Skip PRs already in the merge queue: they are far enough along that
-        # assigning an owner/reviewer adds only noise.
-        ignored_lower = {r.lower() for r in cfg.ignored_reviewers}
-        if (not pr.assignees) and not pr.in_merge_queue and not (pr.is_draft and not pr.is_bot):
-            pr.reviewers_to_remove = [
-                r for r in pr.existing_reviewers if r.lower() in ignored_lower]
-            if pr.source == cfg.source_internal:
-                # Internal: the author drives; no auto-requested reviewers.
-                pr.assignee_pick, pr.review_requests = pr.author, []
-            else:
-                pool = bot_owners_members if pr.source == cfg.source_bot else owners_members
-                pr.assignee_pick, pr.review_requests = select_assignee_and_reviewers(
-                    pr.issue_assignees, pr.committers_by_signal,
-                    pool, repo_collaborators(pr.repo), pr.author, cfg.maintainer,
-                    existing_reviewers=pr.existing_reviewers,
-                    bot_authors=cfg.bot_authors,
-                    ignored_reviewers=set(cfg.ignored_reviewers),
-                )
+        _select_assignee_reviewers(
+            pr, cfg, owners_members, bot_owners_members, repo_collaborators)
 
-        # ---- decide ----
         decision = reconcile(pr, cfg)
         if not decision.is_noop() or pr.source_unset:
             stats["acted"] += 1
@@ -1404,35 +1478,14 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
             judgment_calls.append({"pr": pr.key(), "reason": decision.flag})
             confusion.append((pr, decision.flag))  # routed to the maintainer in the report
 
-        # ---- record the (replayable) plan item ----
-        actions: dict[str, Any] = {}
-        if decision.add_to_project:
-            actions["add_to_project"] = True
-        if pr.source_unset and pr.project_item_id:
-            actions["set_source"] = pr.source
-        if decision.set_status:
-            actions["set_status"] = decision.set_status
-        if decision.set_assignee:
-            actions["set_assignee"] = decision.set_assignee
-            actions["request_reviewers"] = list(decision.request_reviewers)
-        if decision.remove_reviewers:
-            actions["remove_reviewers"] = list(decision.remove_reviewers)
-        if decision.comment_kind == "ready":
-            actions["comment_kind"] = "ready"
-        if actions:
-            plan.append({
-                "pr": pr.key(),
-                "repo": pr.repo,
-                "number": pr.number,
-                "item_id": pr.project_item_id,
-                "node_id": pr.node_id,
-                **actions,
-            })
+        item = _plan_item(pr, decision)
+        if item is not None:
+            plan.append(item)
 
-        # ---- post-plan effective state -> stall clock + report ----
-        # Apply the plan's pending actions in-memory (transitions recorded above
-        # used the observed status), then track movement on the resulting state.
-        effective_pr(pr, decision)
+        # Apply the plan's pending actions in-memory (the transitions recorded
+        # above used the observed status), then track movement on the resulting
+        # state for the stall clock and report.
+        apply_pending_to_pr(pr, decision)
         if pr.source != cfg.source_internal and not (pr.is_draft and not pr.is_bot):
             new_stall, stall_wh, stall_days = compute_stall(
                 pr, entry.get("stall", {}), now, cfg.tzinfo())
