@@ -258,13 +258,11 @@ class Decision:
     remove_reviewers: list[str] = field(default_factory=list)  # unrequest (e.g. bmillsNV)
     add_to_project: bool = False
     comment_kind: str | None = None  # "ready" | None
-    flag: str | None = None
 
     def is_noop(self) -> bool:
         return not (
             self.set_status or self.set_assignee or self.request_reviewers
             or self.remove_reviewers or self.add_to_project or self.comment_kind
-            or self.flag
         )
 
 
@@ -1442,13 +1440,7 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     prs = collect_prs(gh, cfg, repo_collaborators)
 
     repo_stats: dict[str, dict[str, int]] = {}
-    transitions: list[dict[str, Any]] = []
-    assignments: list[dict[str, Any]] = []
-    sources_set: list[dict[str, Any]] = []
-    judgment_calls: list[dict[str, Any]] = []
-    added_to_board: list[dict[str, Any]] = []
     stall_by_key: dict[str, tuple[float, int]] = {}  # pr key -> (stall_wh, stall_days)
-    confusion: list[tuple[PR, str]] = []             # judgment calls -> maintainer report
     plan: list[dict[str, Any]] = []  # self-contained, replayable action list
 
     for pr in prs:
@@ -1463,28 +1455,13 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
         decision = reconcile(pr, cfg)
         if not decision.is_noop() or pr.source_unset:
             stats["acted"] += 1
-        if pr.source_unset:
-            sources_set.append({"pr": pr.key(), "source": pr.source})
-        if decision.add_to_project:
-            added_to_board.append({"pr": pr.key()})
-        if decision.set_status:
-            transitions.append({
-                "pr": pr.key(), "from": pr.board_status, "to": decision.set_status})
-        if decision.set_assignee:
-            assignments.append({
-                "pr": pr.key(), "assignee": decision.set_assignee,
-                "reviewers": decision.request_reviewers})
-        if decision.flag:
-            judgment_calls.append({"pr": pr.key(), "reason": decision.flag})
-            confusion.append((pr, decision.flag))  # routed to the maintainer in the report
 
         item = _plan_item(pr, decision)
         if item is not None:
             plan.append(item)
 
-        # Apply the plan's pending actions in-memory (the transitions recorded
-        # above used the observed status), then track movement on the resulting
-        # state for the stall clock and report.
+        # Fold the plan's pending actions into the PR in-memory, then track
+        # movement on the resulting state for the stall clock and report.
         apply_pending_to_pr(pr, decision)
         if pr.source != cfg.source_internal and not (pr.is_draft and not pr.is_bot):
             new_stall, stall_wh, stall_days = compute_stall(
@@ -1492,16 +1469,8 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
             entry["stall"] = new_stall
             stall_by_key[pr.key()] = (stall_wh, stall_days)
 
-    # ---- assignee-grouped report (built from the post-plan effective PRs) ----
+    # Assignee-grouped report, built from the post-plan effective PRs.
     recipients = build_report(prs, cfg, stall_by_key)
-    # Judgment calls sit under the assignee like everything else; they always
-    # carry the up-arrow since they are maintainer-level by definition (the
-    # arrow fires even on the maintainer's own items, as a transparency signal).
-    for cpr, flag in confusion:
-        assignee = effective_assignee(cpr, cfg)
-        recipients.setdefault(assignee, []).append(
-            ReportItem(cpr, f"needs maintainer judgment: {flag}", assignee,
-                       escalated=True))
     report = render_report(recipients, cfg)
 
     # Daily cadence: the report is surfaced at most once per interval. `report_due`
@@ -1516,11 +1485,6 @@ def run_sweep(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "repos": repo_stats,
-        "transitions": transitions,
-        "assignments": assignments,
-        "sources_set": sources_set,
-        "judgment_calls": judgment_calls,
-        "added_to_board": added_to_board,
         "report": report,
         "report_due": report_due,
         "plan": plan,
@@ -1607,12 +1571,14 @@ def _print_summary(summary: dict[str, Any], cfg: Config, applying: bool) -> None
     print(f"[{mode}] sweep @ {summary['generated_at']}")
     for repo, st in sorted(summary["repos"].items()):
         print(f"  {repo}: {st['open']} open, {st['acted']} actioned")
-    print(f"  transitions={len(summary['transitions'])} "
-          f"assignments={len(summary['assignments'])} "
-          f"sources_set={len(summary['sources_set'])} "
-          f"added_to_board={len(summary['added_to_board'])} "
-          f"judgment_calls={len(summary['judgment_calls'])}")
-    print(f"  plan ({len(summary['plan'])} items) written to {cfg.plan_file}")
+    plan = summary["plan"]
+    def _count(key: str) -> int:
+        return sum(1 for item in plan if item.get(key))
+    print(f"  transitions={_count('set_status')} "
+          f"assignments={_count('set_assignee')} "
+          f"sources_set={_count('set_source')} "
+          f"added_to_board={_count('add_to_project')}")
+    print(f"  plan ({len(plan)} items) written to {cfg.plan_file}")
     report = summary.get("report") or ""
     if report:
         due = " (due — surface today)" if summary.get("report_due") else " (not due yet)"

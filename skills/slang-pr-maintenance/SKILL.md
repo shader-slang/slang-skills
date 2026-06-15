@@ -11,8 +11,7 @@ allowed-tools: Bash Read Grep Glob
 
 Drives every open PR one step toward its correct board state and emits a
 once-daily, assignee-grouped report of items needing human attention. The
-script is the deterministic engine; the agent only surfaces the report and
-resolves a few flagged judgment calls.
+script is the deterministic engine; the agent only surfaces the report.
 
 > All GitHub work goes through `gh` (reads + writes). There is no dependency on
 > MCP, Discord, or a nanoclaw container — the script runs anywhere `gh` is
@@ -307,8 +306,6 @@ case-insensitively):
    (`--maintainer <login> --apply --recipient-map <path>`). On a backlog run,
    plan first (omit `--apply`), eyeball `./.pr-sweep-plan.json`, then apply.
 2. When exit code is `10`, surface the report to its recipients (method-agnostic).
-3. Resolve the small set of flagged judgment calls (reviewer ties, contradictory
-   states) from the `judgment_calls` list in the plan file.
 
 Everything else is the script's.
 
