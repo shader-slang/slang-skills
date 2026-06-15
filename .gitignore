@@ -3,3 +3,11 @@
 # Editor swap files
 *.swp
 *.swo
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# slang-pr-maintenance sweep outputs (cwd-relative plan/state)
+.pr-sweep-plan.json
+.pr-sweep-state.json
