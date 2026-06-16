@@ -73,7 +73,7 @@ version.
 | `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
 | `slang-pr-resolve-comments` | Resolve PR review feedback: LLM threads, CI failures, rebase conflicts | *(standalone)* |
-| `slang-pr-maintenance` | Scheduled PR-board reconciliation: classify/advance board Status, assign owners + reviewers, emit a throttled assignee-grouped escalation report (optional Discord mentions) via a gh-only Python sweep | *(standalone)* |
+| `slang-pr-maintenance` | Board-free, gh-only PR escalation report (default; no ProjectsV2 access) plus a separate ProjectsV2 state machine that classifies/advances board Status and assigns owners + reviewers | *(standalone)* |
 
 ### General developer skills
 
