@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Unit tests for the board-free report (pr_report.py).
+"""Unit tests for the escalation report (pr_report.py).
 
 No live `gh` calls — every test constructs plain data and checks the synthesis
-logic: the per-source stage derivation (derive_stage, which replaces the board
-Status the report used to read), the predicate ladders, the movement/stall
-clock, the assignee-grouped report routing/rendering, and the recipient map.
+logic: the per-source lifecycle-stage derivation (derive_stage), the predicate
+ladders, the movement/stall clock, the assignee-grouped report
+routing/rendering, and the recipient map.
 
 Run:  python3 scripts/test_pr_report.py
 """
@@ -23,9 +23,7 @@ from typing import final
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-import pr_common as common  # noqa: E402  (path inserted above)
-import pr_report as report  # noqa: E402
-import pr_signal as signal  # noqa: E402
+import pr_report as report  # noqa: E402  (path inserted above)
 
 
 def utc(y, m, d, hh=0, mm=0):
@@ -33,29 +31,29 @@ def utc(y, m, d, hh=0, mm=0):
 
 
 def make_cfg(**kw):
-    base = dict(repos=["shader-slang/slang"], project_id="P",
+    base = dict(repos=["shader-slang/slang"],
                 bot_authors=["nv-slang-bot", "slang-coworker-nanoclaw", "Copilot", "copilot-swe-agent"])
     base.update(kw)
-    return common.Config(**base)
+    return report.Config(**base)
 
 
 def make_pr(**kw):
-    # Community source by default (the bot-overseen human flow). The report is
-    # board-free, so the human-ready ("Todo") stage is derived from CI: a
-    # Community PR needs ci_state=CI_PASSED (and not draft) to derive Todo.
+    # Community source by default. The human-ready ("Todo") stage is derived
+    # from CI: a Community PR needs ci_state=CI_PASSED (and not draft) to derive
+    # Todo.
     defaults = dict(repo="shader-slang/slang", number=1, source="Community")
     defaults.update(kw)
-    return common.PR(**defaults)
+    return report.PR(**defaults)
 
 
 @final
 class TestDeriveStage(unittest.TestCase):
-    """derive_stage replaces the ProjectsV2 Status the report used to read."""
+    """derive_stage maps live signals to a lifecycle stage, per source."""
     def setUp(self):
         self.cfg = make_cfg()
 
     def test_merge_queue_is_done(self):
-        pr = make_pr(in_merge_queue=True, ci_state=common.CI_PASSED)
+        pr = make_pr(in_merge_queue=True, ci_state=report.CI_PASSED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Done")
 
     def test_terminal_state_is_done(self):
@@ -64,28 +62,28 @@ class TestDeriveStage(unittest.TestCase):
 
     # --- contributor fingerprint --------------------------------------------
     def test_contributor_ci_passed_is_todo(self):
-        pr = make_pr(source="Community", ci_state=common.CI_PASSED)
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Todo")
 
     def test_contributor_ci_pending_is_revising(self):
-        pr = make_pr(source="Community", ci_state=common.CI_PENDING)
+        pr = make_pr(source="Community", ci_state=report.CI_PENDING)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Revising")
 
     def test_contributor_ci_failed_is_revising(self):
-        pr = make_pr(source="Community", ci_state=common.CI_FAILED)
+        pr = make_pr(source="Community", ci_state=report.CI_FAILED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Revising")
 
     def test_contributor_draft_is_revising(self):
-        pr = make_pr(source="Community", is_draft=True, ci_state=common.CI_PASSED)
+        pr = make_pr(source="Community", is_draft=True, ci_state=report.CI_PASSED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Revising")
 
     def test_contributor_changes_requested_is_revising(self):
-        pr = make_pr(source="Community", change_requested=True, ci_state=common.CI_PASSED)
+        pr = make_pr(source="Community", change_requested=True, ci_state=report.CI_PASSED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Revising")
 
     # --- bot fingerprint ----------------------------------------------------
     def test_bot_promotes_regardless_of_ci_and_draft(self):
-        pr = make_pr(source="Bot", is_bot=True, is_draft=True, ci_state=common.CI_FAILED)
+        pr = make_pr(source="Bot", is_bot=True, is_draft=True, ci_state=report.CI_FAILED)
         self.assertEqual(report.derive_stage(pr, self.cfg), "Todo")  # no coverage gate
 
     def test_bot_coverage_gated_when_configured(self):
@@ -105,7 +103,7 @@ class TestPredicates(unittest.TestCase):
         return next((p for p in report.ladder_for(pr, self.cfg) if p.applies(pr, self.cfg)), None)
 
     def test_needs_ci_approval(self):
-        pr = make_pr(source="Community", ci_state=common.CI_ACTION_REQUIRED)
+        pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED)
         p = self._match(pr)
         self.assertEqual(p.key, "needs_ci_approval")
         self.assertEqual(p.render(pr, self.cfg, 0), "needs CI approval")
@@ -117,25 +115,25 @@ class TestPredicates(unittest.TestCase):
         self.assertIn("changes requested", p.render(pr, self.cfg, 0))
 
     def test_awaiting_review(self):
-        # Board-free: a Community PR reaches the human-ready stage via CI passed.
-        pr = make_pr(source="Community", ci_state=common.CI_PASSED,
+        # A Community PR reaches the human-ready stage via CI passed.
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED,
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED")
         p = self._match(pr)
         self.assertEqual(p.key, "awaiting_review")
         self.assertEqual(p.render(pr, self.cfg, 0), "awaiting review from: `dan`")
 
     def test_ci_failing(self):
-        pr = make_pr(source="Community", ci_state=common.CI_FAILED)
+        pr = make_pr(source="Community", ci_state=report.CI_FAILED)
         self.assertEqual(self._match(pr).key, "ci_failing")
 
     def test_idle_catchall_and_render(self):
-        pr = make_pr(source="Community", ci_state=common.CI_PENDING)
+        pr = make_pr(source="Community", ci_state=report.CI_PENDING)
         p = self._match(pr)
         self.assertEqual(p.key, "idle")
         self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 days")
 
     def test_first_match_precedence(self):
-        pr = make_pr(source="Community", ci_state=common.CI_ACTION_REQUIRED, change_requested=True)
+        pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED, change_requested=True)
         self.assertEqual(self._match(pr).key, "needs_ci_approval")  # earliest applicable wins
 
     def test_bot_ladder_omits_ci_approval_and_changes(self):
@@ -155,15 +153,15 @@ class TestComputeStall(unittest.TestCase):
         self.cfg = make_cfg()
 
     def test_first_sight_anchors_to_activity(self):
-        pr = make_pr(ci_state=common.CI_PASSED, head_sha="abc",
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
                      last_activity_at=utc(2026, 6, 9, 12))
         state, _wh, days = report.compute_stall(pr, self.cfg, {}, self.now, self.tz)
-        self.assertEqual(common.parse_iso(state["last_moved_at"]), utc(2026, 6, 9, 12))
+        self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 9, 12))
         self.assertEqual(days, 1)
 
     def test_unchanged_keeps_prior(self):
         # Derived stage Todo (CI passed); fingerprint matches prior -> no movement.
-        pr = make_pr(ci_state=common.CI_PASSED, head_sha="abc")
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
         prior = {"move_fingerprint": ["Todo", "abc", None],
                  "last_moved_at": utc(2026, 6, 8).isoformat()}
         state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
@@ -171,20 +169,20 @@ class TestComputeStall(unittest.TestCase):
 
     def test_movement_resets_to_now(self):
         # New head SHA -> fingerprint changes -> last_moved resets to now.
-        pr = make_pr(ci_state=common.CI_PASSED, head_sha="NEW")
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="NEW")
         prior = {"move_fingerprint": ["Todo", "abc", None],
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(common.parse_iso(state["last_moved_at"]), self.now)
+        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
         self.assertEqual(days, 0)
 
     def test_stage_change_counts_as_movement(self):
         # CI flips pending -> passed: derived stage Revising -> Todo is movement.
-        pr = make_pr(ci_state=common.CI_PASSED, head_sha="abc")
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
         prior = {"move_fingerprint": ["Revising", "abc", None],
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(common.parse_iso(state["last_moved_at"]), self.now)
+        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
         self.assertEqual(days, 0)
 
 
@@ -195,7 +193,7 @@ class TestBuildReport(unittest.TestCase):
 
     def _awaiting(self, **kw):
         # A Community PR that derives to Todo (CI passed) with a real reviewer.
-        base = dict(ci_state=common.CI_PASSED, existing_reviewers=["dan"],
+        base = dict(ci_state=report.CI_PASSED, existing_reviewers=["dan"],
                     review_decision="REVIEW_REQUIRED")
         base.update(kw)
         return make_pr(**base)
@@ -320,7 +318,7 @@ class TestUnassignedGroup(unittest.TestCase):
         self.cfg = make_cfg()
 
     def _awaiting(self, **kw):
-        base = dict(ci_state=common.CI_PASSED, existing_reviewers=["dan"],
+        base = dict(ci_state=report.CI_PASSED, existing_reviewers=["dan"],
                     review_decision="REVIEW_REQUIRED")
         base.update(kw)
         return make_pr(**base)
@@ -346,6 +344,34 @@ class TestUnassignedGroup(unittest.TestCase):
         self.assertIn("- **Unassigned**:", out)                 # literal header, not a mention
         self.assertNotIn("(unassigned)", out)                   # sentinel never leaks into text
         self.assertLess(out.index("**Unassigned**"), out.index("**`bob`**"))  # listed first
+
+
+@final
+class TestPruneState(unittest.TestCase):
+    def _state(self):
+        return {"prs": {
+            "shader-slang/slang#1": {"stall": {"a": 1}},   # still open this run
+            "shader-slang/slang#2": {"stall": {"b": 2}},   # closed -> should drop
+            "shader-slang/other#9": {"stall": {"c": 3}},   # repo not scanned -> keep
+        }}
+
+    def test_open_kept_closed_dropped(self):
+        state = self._state()
+        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
+        self.assertIn("shader-slang/slang#1", state["prs"])      # open -> kept
+        self.assertNotIn("shader-slang/slang#2", state["prs"])   # closed -> dropped
+
+    def test_unscanned_repo_kept(self):
+        # A subset run (only shader-slang/slang scanned) must not wipe clocks for
+        # repos it didn't look at.
+        state = self._state()
+        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
+        self.assertIn("shader-slang/other#9", state["prs"])
+
+    def test_empty_state_is_safe(self):
+        state = {"prs": {}}
+        report.prune_state(state, set(), {"shader-slang/slang"})
+        self.assertEqual(state["prs"], {})
 
 
 @final
@@ -405,23 +431,23 @@ class TestRealReviewersAndEffective(unittest.TestCase):
 
     def test_awaiting_review_needs_real_reviewer(self):
         # Only bmillsNV requested -> not "awaiting review"; falls through to idle.
-        pr = make_pr(source="Community", ci_state=common.CI_PASSED,
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED,
                      existing_reviewers=["bmillsNV"], review_decision="REVIEW_REQUIRED")
         match = next((p for p in report.ladder_for(pr, self.cfg) if p.applies(pr, self.cfg)), None)
         self.assertEqual(match.key, "idle")
 
     def test_failing_ci_shows_ci_failing_not_awaiting(self):
         # A Community PR with failing CI derives to Revising, so it shows
-        # "CI failing", not "awaiting review" (board-free, no plan fold needed).
+        # "CI failing", not "awaiting review" (derived directly from live state).
         pr = make_pr(number=20, source="Community", assignees=["bob"],
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED",
-                     ci_state=common.CI_FAILED)
+                     ci_state=report.CI_FAILED)
         rec = report.build_report([pr], make_cfg(), {pr.key(): (50.0, 3)})
         self.assertIn("CI failing", rec["bob"][0].reason)
 
     def test_copilot_is_recognized_as_bot(self):
-        self.assertTrue(signal.classify_is_bot("Copilot", self.cfg.bot_authors))
-        self.assertTrue(signal.classify_is_bot("copilot-swe-agent", self.cfg.bot_authors))
+        self.assertTrue(report.classify_is_bot("Copilot", self.cfg.bot_authors))
+        self.assertTrue(report.classify_is_bot("copilot-swe-agent", self.cfg.bot_authors))
 
     def test_effective_assignee_skips_bot(self):
         # [bmillsNV, Copilot] -> bmillsNV (first non-bot)

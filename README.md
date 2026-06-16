@@ -73,7 +73,7 @@ version.
 | `slang-test-feature` | End-to-end orchestrator: research, plan, parallel agents | slang-build, slang-run-tests, slang-write-test, slang-create-issue |
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
 | `slang-pr-resolve-comments` | Resolve PR review feedback: LLM threads, CI failures, rebase conflicts | *(standalone)* |
-| `slang-pr-maintenance` | Board-free, gh-only PR escalation report (default; no ProjectsV2 access) plus a separate ProjectsV2 state machine that classifies/advances board Status and assigns owners + reviewers | *(standalone)* |
+| `slang-pr-report` | Read-only, gh-only escalation report of open PRs needing human attention: per-source lifecycle-stage derivation, assignee-grouped (with an Unassigned group), optional Discord/Slack mentions | *(standalone)* |
 
 ### General developer skills
 

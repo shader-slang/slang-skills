@@ -8,6 +8,5 @@
 __pycache__/
 *.pyc
 
-# slang-pr-maintenance sweep outputs (cwd-relative plan/state)
-.pr-sweep-plan.json
-.pr-sweep-state.json
+# slang-pr-report state (cwd-relative)
+.pr-report-state.json
