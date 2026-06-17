@@ -38,6 +38,8 @@ git push --tags origin
 
 **Autonomous PR creation:** Create PRs without asking for confirmation. If tests pass and formatting is clean, open the PR immediately via `gh pr create`. Include: what changed, why, and test results in the PR body. Only stop and notify the user if CI fails after 2 rerun attempts.
 
+> **`gh pr create` vs REST — decided by the PR's _base_ repo.** Normal PRs (base = `shader-slang/slang`, including a head branch on the `slang-coworkers/slang` fork) → use `gh pr create`; it routes via GraphQL/App token, which has write on shader-slang. **Only a _cross-fork_ PR whose _base_ is a contributor's fork** (e.g. `zangold-nv/slang`) must use REST — `gh api -X POST repos/<owner>/slang/pulls -f head="slang-coworkers:<branch>" -f base="<their-branch>" …` — because `gh pr create` (GraphQL) gets the App token there and 403s; REST `/repos/*` gets the `nv-slang-bot` user PAT that can open it.
+
 During review, push follow-up commits (do not rebase after PR creation). Sync with upstream via merge:
 
 ```bash
