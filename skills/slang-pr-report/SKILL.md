@@ -80,15 +80,20 @@ contributor PR's CI going green and a bot PR's promotion each count as movement)
 Every PR is classified into a **source** — **`Internal` / `Community` / `Bot`** —
 from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
 `Internal` if the author can commit to the target repo (a write+ collaborator),
-else `Community`. Behavior differs by source:
+else `Community`. When the repo's collaborator set **can't be read** (the token
+lacks push access there), a non-bot PR is classified **`Unknown`** rather than
+silently assumed `Community` — we genuinely can't tell Internal from Community.
+Behavior differs by source:
 
-| Behavior | **Internal** | **Community** | **Bot** |
-|---|---|---|---|
-| Report predicate ladder | **none** (excluded) | `COMMUNITY_LADDER` (incl. `needs CI approval`, `changes requested`) | `BOT_LADDER` (no CI-approval/changes rungs) |
-| Drafts | excluded (author "not ready") | excluded (author "not ready") | **not excluded** (bot drafts still surface) |
+| Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
+|---|---|---|---|---|
+| Report predicate ladder | **none** (excluded) | `COMMUNITY_LADDER` (incl. `needs CI approval`, `changes requested`) | `BOT_LADDER` (no CI-approval/changes rungs) | `COMMUNITY_LADDER` (surfaced, flagged `❓`) |
+| Drafts | excluded (author "not ready") | excluded (author "not ready") | **not excluded** (bot drafts still surface) | excluded (treated like a contributor) |
 
 Internal PRs are self-managed by their author and are not surfaced. Community and
-Bot PRs are surfaced when stalled. A PR's reviewers in the "awaiting review"
+Bot PRs are surfaced when stalled. `Unknown` PRs are surfaced like Community but
+rendered with the `❓` icon, so a missing-access gap is visible rather than
+silently mislabeled. A PR's reviewers in the "awaiting review"
 reason are the currently-requested reviewers who can actually approve —
 auto-assigned non-approvers (`DEFAULT_IGNORED_REVIEWERS`) and bots are excluded.
 
@@ -112,9 +117,9 @@ Example:
 ```
 - The report is titled **"Slang PR Escalation Report"**.
 - **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. Escalations are marked identically in every group.
-- **Within each group**, items are ordered Community (`🌐`) before Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
+- **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
 - `⬆️` marks an item **escalated/overdue** past the second (escalate) rung.
-- `🌐` Community, `🤖` Bot. Internal PRs and human drafts are excluded. PR refs are clickable links.
+- `🌐` Community, `🤖` Bot, `❓` source unknown (the repo's collaborators couldn't be read, so Internal-vs-Community is undetermined). Internal PRs and human drafts are excluded. PR refs are clickable links.
 - **Mentions** (`--recipient-map`): a login present in the supplied map renders as a `<@id>` mention that pings on Discord (the format also fits Slack); every other login renders as inert `` `login` ``. **The invoker must pass `--recipient-map PATH`** to get pings. See the schema below.
 
 ### Per-source predicate ladders (the single source of truth)
@@ -176,7 +181,7 @@ it moves:
 | `DEFAULT_ORG` | `shader-slang` | org scanned when `DEFAULT_REPOS` is empty |
 | `DEFAULT_REPOS` | _(empty)_ | comma-separated `owner/name` subset; empty -> every non-archived repo in the org |
 | `DEFAULT_STATUS_*` | `Revising`/`Todo`/`Done` | internal lifecycle-stage labels (derived; see `derive_stage`) |
-| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot` | source-classification labels |
+| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the collaborator set can't be read) |
 | `DEFAULT_COVERAGE_CHECK` | _(empty)_ | optional CI check gating a bot PR's promotion to ready; while empty, bot PRs are treated as ready |
 | `DEFAULT_BOT_AUTHORS` | `nv-slang-bot,slang-coworker-nanoclaw,Copilot,copilot-swe-agent` | bot logins matched by name (GitHub's `is_bot`/`__typename` is also honored for authors). `Copilot` is the coding-agent's assignee/reviewer login — GitHub types it as a `User` there, so it must be name-matched; bot-only-assigned PRs route to the Unassigned group |
 | `DEFAULT_IGNORED_REVIEWERS` | `bmillsNV` | auto-assigned reviewers that can't approve; ignored when checking reviewer coverage |
@@ -189,13 +194,19 @@ emits the report and the agent decides where it goes.
 
 ## Prerequisites
 
-- `gh` authenticated (`gh auth status`); the script fails loudly if it is missing.
+- An authenticated `gh`: a usable token via `gh auth login`, `GH_TOKEN`, or a
+  token-injecting proxy (e.g. onecli). The script preflights by reading the
+  target org (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when a repo
+  subset is configured) rather than `gh auth status` — a direct yes/no on access
+  that works with wire-injected tokens and is token-type agnostic (user PAT or
+  GitHub App token). It fails loudly if that resource can't be read.
 - **repo read** for the PR/CI/review GraphQL query (classic `repo` scope covers
   private repos).
 - **repo push access** to list the write+ collaborator pool
   (`repos/{repo}/collaborators`) — used to classify a PR's source (Internal iff
-  the author can commit). On error the pool is empty (the PR classifies as
-  `Community`); the report still runs.
+  the author can commit). If that call fails for a repo (no push access), its
+  non-bot PRs classify as `Unknown` (`❓`) rather than `Community`; the report
+  still runs.
 - **No writes** are performed, and **no GitHub Projects scope** is required.
 - A local clone is NOT required (all access goes through `gh api`).
 

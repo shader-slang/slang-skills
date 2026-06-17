@@ -65,10 +65,12 @@ DEFAULT_COVERAGE_CHECK = ""
 DEFAULT_STATUS_REVISING = "Revising"
 DEFAULT_STATUS_TODO = "Todo"
 DEFAULT_STATUS_DONE = "Done"
-# PR source categories.
+# PR source categories. "Unknown" is used when the repo's collaborator set
+# couldn't be read, so we can't tell Internal from Community (see classify_source).
 DEFAULT_SOURCE_INTERNAL = "Internal"
 DEFAULT_SOURCE_COMMUNITY = "Community"
 DEFAULT_SOURCE_BOT = "Bot"
+DEFAULT_SOURCE_UNKNOWN = "Unknown"
 
 # Workday model for the stall clock (skips weekends).
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
@@ -103,6 +105,7 @@ class Config:
     source_internal: str = DEFAULT_SOURCE_INTERNAL
     source_community: str = DEFAULT_SOURCE_COMMUNITY
     source_bot: str = DEFAULT_SOURCE_BOT
+    source_unknown: str = DEFAULT_SOURCE_UNKNOWN
     bot_authors: list[str] = field(
         default_factory=lambda: _split_csv(DEFAULT_BOT_AUTHORS))
     ignored_reviewers: list[str] = field(
@@ -230,10 +233,15 @@ def source_for(is_bot: bool, can_commit: bool, cfg: Config) -> str:
     return cfg.source_internal if can_commit else cfg.source_community
 
 
-def classify_source(pr: PR, cfg: Config, collaborators: set[str]) -> str:
-    """Classify a PR's source. Pure: `collaborators` is the repo's write+ set
-    (Internal iff the author can commit to the repo)."""
-    return source_for(pr.is_bot, pr.author in collaborators, cfg)
+def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None) -> str:
+    """Classify a PR's source. Pure. `collaborators` is the repo's write+ set
+    (Internal iff the author can commit to the repo), or None when that set
+    couldn't be read — in which case a non-bot PR is `Unknown` (we can't tell
+    Internal from Community) rather than being silently assumed Community. A bot
+    PR is always `Bot` (bot detection doesn't need the collaborator set)."""
+    if collaborators is None and not pr.is_bot:
+        return cfg.source_unknown
+    return source_for(pr.is_bot, collaborators is not None and pr.author in collaborators, cfg)
 
 
 # --- State file (per-PR stall clocks) ----------------------------------------
@@ -322,6 +330,19 @@ class Gh:
             args += ["--jq", jq]
         return self.run(args, check=False)
 
+    def api_lines(self, path: str, jq: str, paginate: bool = True) -> list[str] | None:
+        """Run a `gh api` jq query and return its non-empty output lines, or
+        `None` if the call failed. Lets callers distinguish "no access" (None)
+        from "empty result" ([])."""
+        args = ["api", path]
+        if paginate:
+            args.append("--paginate")
+        args += ["--jq", jq]
+        proc = subprocess.run([self.exe] + args, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
     def graphql(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         args = ["api", "graphql", "-f", f"query={query}"]
         for k, v in (variables or {}).items():
@@ -329,13 +350,27 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
-    def preflight(self) -> None:
-        # Fail loudly if unauthenticated.
-        proc = subprocess.run([self.exe, "auth", "status"], capture_output=True, text=True)
+    def preflight(self, cfg: "Config") -> None:
+        # Fail loudly if we cannot access what we are about to report on. We probe
+        # a real resource (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when
+        # a repo subset is configured) rather than `gh auth status`. `gh auth
+        # status` only inspects gh's locally stored credentials, which breaks when
+        # the token is injected on the wire by a proxy (e.g. onecli) and gh has no
+        # credentials of its own — yet real API calls still succeed. Probing the
+        # actual target also gives a direct yes/no on access (and is token-type
+        # agnostic: it works for a user PAT or a GitHub App token, unlike
+        # `gh api user`, which 403s for App tokens).
+        if cfg.repos:
+            target, what = f"repos/{cfg.repos[0]}", f"repository {cfg.repos[0]!r}"
+        else:
+            target, what = f"orgs/{cfg.org}", f"org {cfg.org!r}"
+        proc = subprocess.run(
+            [self.exe, "api", target], capture_output=True, text=True)
         if proc.returncode != 0:
             raise SystemExit(
-                "gh is not authenticated (gh auth status failed). "
-                "Run `gh auth login` with the required scopes (see the skill's Prerequisites)."
+                f"gh cannot access {what} (`gh api {target}` failed). Check the "
+                f"token and that it can read {what} (gh auth, GH_TOKEN, or a "
+                f"token-injecting proxy such as onecli).\n{proc.stderr.strip()}"
             )
 
 
@@ -352,16 +387,17 @@ def list_org_repos(gh: Gh, org: str) -> list[str]:
     return [r["nameWithOwner"] for r in data if r.get("nameWithOwner")]
 
 
-def collect_repo_collaborators(gh: Gh, repo: str) -> set[str]:
-    """Logins with write+ access (push/maintain/admin) to `repo`. Used to
-    classify a PR's source (Internal iff the author can commit). Empty set on
-    access error (the endpoint needs push access on the repo)."""
-    raw = gh.api(
+def collect_repo_collaborators(gh: Gh, repo: str) -> set[str] | None:
+    """Logins with write+ access (push/maintain/admin) to `repo`, used to
+    classify a PR's source (Internal iff the author can commit). Returns `None`
+    when the call fails (the endpoint needs push access on the repo) so the
+    caller can mark the source `Unknown` rather than assume Community; an empty
+    set means the repo genuinely has no write+ collaborators."""
+    lines = gh.api_lines(
         f"repos/{repo}/collaborators",
-        jq=".[] | select(.permissions.push == true) | .login",
-        paginate=True,
+        ".[] | select(.permissions.push == true) | .login",
     )
-    return {line.strip() for line in (raw or "").splitlines() if line.strip()}
+    return set(lines) if lines is not None else None
 
 
 # One batched query returns, per open PR, everything the report needs: core
@@ -529,6 +565,7 @@ def parse_pr_node(node: dict[str, Any], repo: str, cfg: Config) -> PR:
 ESCALATED_ICON = "\u2b06\ufe0f"   # up arrow: escalated/overdue (past the second rung)
 COMMUNITY_ICON = "\U0001f310"     # globe
 BOT_ICON = "\U0001f916"           # robot
+UNKNOWN_ICON = "\u2753"           # red question mark: source couldn't be determined
 
 # Group key for PRs with no human assignee. Parentheses can't appear in a GitHub
 # login, so this never collides with a real assignee; rendered as "Unassigned".
@@ -662,12 +699,15 @@ BOT_LADDER: list[Predicate] = [
 
 
 def ladder_for(pr: PR, cfg: Config) -> list[Predicate]:
-    """The predicate ladder for a PR's source (empty -> not surfaced)."""
+    """The predicate ladder for a PR's source (empty -> not surfaced).
+    `Unknown` PRs (collaborator set unreadable, can't tell Internal from
+    Community) are surfaced via the community ladder and flagged with the
+    unknown icon, rather than being silently dropped or assumed Community."""
     if pr.source == cfg.source_bot:
         return BOT_LADDER
-    if pr.source == cfg.source_community:
+    if pr.source in (cfg.source_community, cfg.source_unknown):
         return COMMUNITY_LADDER
-    return []  # Internal / unknown: not surfaced (author self-manages)
+    return []  # Internal: not surfaced (author self-manages)
 
 
 def source_icon(pr: PR, cfg: Config) -> str:
@@ -675,6 +715,8 @@ def source_icon(pr: PR, cfg: Config) -> str:
         return BOT_ICON
     if pr.source == cfg.source_community:
         return COMMUNITY_ICON
+    if pr.source == cfg.source_unknown:
+        return UNKNOWN_ICON
     return ""
 
 
@@ -756,15 +798,17 @@ def _repo_short(repo: str) -> str:
 
 
 def _item_sort_key(it: ReportItem, cfg: Config) -> tuple[int, int]:
-    """Order within an assignee's group: Community PRs before Bot PRs, and within
-    each, escalated (up-arrow) before not-escalated. Stable on ties (preserves
-    input order)."""
+    """Order within an assignee's group: Community, then Unknown, then Bot; and
+    within each, escalated (up-arrow) before not-escalated. Stable on ties
+    (preserves input order)."""
     if it.pr.source == cfg.source_community:
         src = 0
-    elif it.pr.source == cfg.source_bot:
+    elif it.pr.source == cfg.source_unknown:
         src = 1
-    else:
+    elif it.pr.source == cfg.source_bot:
         src = 2
+    else:
+        src = 3
     return (src, 0 if it.escalated else 1)
 
 
@@ -777,7 +821,7 @@ def render_report(recipients: dict[str, list[ReportItem]], cfg: Config) -> str:
     named = sorted(r for r in recipients if r != UNASSIGNED)
     order = ([UNASSIGNED] if UNASSIGNED in recipients else []) + named
     legend = (f"_{BOT_ICON} agent PR · {COMMUNITY_ICON} community PR · "
-              f"{ESCALATED_ICON} escalated/overdue_")
+              f"{UNKNOWN_ICON} source unknown · {ESCALATED_ICON} escalated/overdue_")
     lines = ["## Slang PR Escalation Report", "", legend, ""]
     for recipient in order:
         header = "Unassigned" if recipient == UNASSIGNED else format_mention(recipient, cfg)
@@ -827,7 +871,7 @@ def load_recipient_map(path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def collect_prs_for_report(gh: Gh, cfg: Config,
-                           repo_collaborators: Callable[[str], set[str]]) -> list[PR]:
+                           repo_collaborators: Callable[[str], set[str] | None]) -> list[PR]:
     """All open PRs across cfg.repos, fully populated by the batched query, with
     Source classified live. The report does not predict owners, so no
     committer-signal ranking is run here."""
@@ -851,10 +895,11 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     state = load_state(cfg.state_file)
 
     # The write+ collaborator set is per-repo, memoized; used for live Source
-    # classification (Internal iff the author can commit to the repo).
-    collaborators_cache: dict[str, set[str]] = {}
+    # classification (Internal iff the author can commit to the repo). None means
+    # the set couldn't be read -> non-bot PRs there are classified Unknown.
+    collaborators_cache: dict[str, set[str] | None] = {}
 
-    def repo_collaborators(repo: str) -> set[str]:
+    def repo_collaborators(repo: str) -> set[str] | None:
         if repo not in collaborators_cache:
             collaborators_cache[repo] = collect_repo_collaborators(gh, repo)
         return collaborators_cache[repo]
@@ -931,11 +976,13 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
     gh = Gh(find_gh())
-    gh.preflight()
 
     cfg = Config()
     if args.recipient_map:
         cfg.recipient_map = load_recipient_map(args.recipient_map)
+
+    # Verify access to the target org (or a configured repo) before doing work.
+    gh.preflight(cfg)
 
     # Default scope: every non-archived repo in the org (DEFAULT_REPOS is empty).
     if not cfg.repos:
