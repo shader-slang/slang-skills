@@ -329,13 +329,27 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
-    def preflight(self) -> None:
-        # Fail loudly if unauthenticated.
-        proc = subprocess.run([self.exe, "auth", "status"], capture_output=True, text=True)
+    def preflight(self, cfg: "Config") -> None:
+        # Fail loudly if we cannot access what we are about to report on. We probe
+        # a real resource (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when
+        # a repo subset is configured) rather than `gh auth status`. `gh auth
+        # status` only inspects gh's locally stored credentials, which breaks when
+        # the token is injected on the wire by a proxy (e.g. onecli) and gh has no
+        # credentials of its own — yet real API calls still succeed. Probing the
+        # actual target also gives a direct yes/no on access (and is token-type
+        # agnostic: it works for a user PAT or a GitHub App token, unlike
+        # `gh api user`, which 403s for App tokens).
+        if cfg.repos:
+            target, what = f"repos/{cfg.repos[0]}", f"repository {cfg.repos[0]!r}"
+        else:
+            target, what = f"orgs/{cfg.org}", f"org {cfg.org!r}"
+        proc = subprocess.run(
+            [self.exe, "api", target], capture_output=True, text=True)
         if proc.returncode != 0:
             raise SystemExit(
-                "gh is not authenticated (gh auth status failed). "
-                "Run `gh auth login` with the required scopes (see the skill's Prerequisites)."
+                f"gh cannot access {what} (`gh api {target}` failed). Check the "
+                f"token and that it can read {what} (gh auth, GH_TOKEN, or a "
+                f"token-injecting proxy such as onecli).\n{proc.stderr.strip()}"
             )
 
 
@@ -931,11 +945,13 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
     gh = Gh(find_gh())
-    gh.preflight()
 
     cfg = Config()
     if args.recipient_map:
         cfg.recipient_map = load_recipient_map(args.recipient_map)
+
+    # Verify access to the target org (or a configured repo) before doing work.
+    gh.preflight(cfg)
 
     # Default scope: every non-archived repo in the org (DEFAULT_REPOS is empty).
     if not cfg.repos:

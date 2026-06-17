@@ -189,7 +189,12 @@ emits the report and the agent decides where it goes.
 
 ## Prerequisites
 
-- `gh` authenticated (`gh auth status`); the script fails loudly if it is missing.
+- An authenticated `gh`: a usable token via `gh auth login`, `GH_TOKEN`, or a
+  token-injecting proxy (e.g. onecli). The script preflights by reading the
+  target org (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when a repo
+  subset is configured) rather than `gh auth status` — a direct yes/no on access
+  that works with wire-injected tokens and is token-type agnostic (user PAT or
+  GitHub App token). It fails loudly if that resource can't be read.
 - **repo read** for the PR/CI/review GraphQL query (classic `repo` scope covers
   private repos).
 - **repo push access** to list the write+ collaborator pool
