@@ -375,6 +375,90 @@ class TestPruneState(unittest.TestCase):
 
 
 @final
+class TestSourceClassify(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg()
+
+    def test_source_for(self):
+        self.assertEqual(report.source_for(True, False, self.cfg), "Bot")
+        self.assertEqual(report.source_for(False, True, self.cfg), "Internal")
+        self.assertEqual(report.source_for(False, False, self.cfg), "Community")
+
+    def test_internal_when_author_can_commit(self):
+        pr = make_pr(author="dev", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
+
+    def test_community_when_author_cannot_commit(self):
+        pr = make_pr(author="ext", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Community")
+
+    def test_empty_collaborators_is_community_not_unknown(self):
+        # A successful-but-empty set (repo genuinely has no write+ collaborators)
+        # is NOT unknown -> non-bot author is Community.
+        pr = make_pr(author="ext", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, set()), "Community")
+
+    def test_none_collaborators_is_unknown_for_non_bot(self):
+        # None == collaborator set couldn't be read -> Unknown, not Community.
+        pr = make_pr(author="ext", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, None), "Unknown")
+
+    def test_none_collaborators_still_bot_for_bot(self):
+        # Bot detection doesn't need the collaborator set.
+        pr = make_pr(author="nv-slang-bot", is_bot=True)
+        self.assertEqual(report.classify_source(pr, self.cfg, None), "Bot")
+
+
+@final
+class TestUnknownSource(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg()
+
+    def test_icon_is_question_mark(self):
+        self.assertEqual(report.source_icon(make_pr(source="Unknown"), self.cfg),
+                         report.UNKNOWN_ICON)
+
+    def test_unknown_is_surfaced_via_community_ladder(self):
+        self.assertEqual(report.ladder_for(make_pr(source="Unknown"), self.cfg),
+                         report.COMMUNITY_LADDER)
+
+    def test_unknown_pr_appears_in_report_with_icon(self):
+        pr = make_pr(number=40, source="Unknown", assignees=["bob"],
+                     ci_state=report.CI_PASSED, existing_reviewers=["dan"],
+                     review_decision="REVIEW_REQUIRED")
+        rec = report.build_report([pr], self.cfg, {pr.key(): (30.0, 2)})
+        self.assertIn("bob", rec)
+        out = report.render_report(rec, self.cfg)
+        self.assertIn(report.UNKNOWN_ICON, out)               # flagged as unknown
+        self.assertIn(f"{report.UNKNOWN_ICON} source unknown", out)  # legend entry
+
+
+@final
+class TestCollectRepoCollaborators(unittest.TestCase):
+    @final
+    class _Gh:
+        def __init__(self, lines):
+            self._lines = lines  # list[str] | None
+
+        def api_lines(self, path, jq, paginate=True):
+            return self._lines
+
+    def test_failure_returns_none(self):
+        # api_lines returns None on a failed call -> collect returns None.
+        self.assertIsNone(
+            report.collect_repo_collaborators(self._Gh(None), "o/r"))
+
+    def test_success_returns_set(self):
+        self.assertEqual(
+            report.collect_repo_collaborators(self._Gh(["dev1", "dev2"]), "o/r"),
+            {"dev1", "dev2"})
+
+    def test_success_empty_is_empty_set_not_none(self):
+        self.assertEqual(
+            report.collect_repo_collaborators(self._Gh([]), "o/r"), set())
+
+
+@final
 class TestRecipientMap(unittest.TestCase):
     def test_format_mention_default_is_backticks(self):
         cfg = make_cfg()  # empty recipient_map
