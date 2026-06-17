@@ -24,6 +24,8 @@ allowed-tools: Bash(git:*), Bash(gh:*), Read, Grep, Glob
 
 **Autonomous PR creation:** Create PRs without asking for confirmation. If tests pass and changes are minimal, open the PR immediately via `gh pr create`. Include: what changed, why, and test results in the PR body. Only stop and notify the user if CI fails after 2 rerun attempts.
 
+> **`gh pr create` vs REST — decided by the PR's _base_ repo.** Normal PRs (base = `shader-slang/slangpy`, including a head branch on the `slang-coworkers/slangpy` fork) → use `gh pr create`; it routes via GraphQL/App token, which has write on shader-slang. **Only a _cross-fork_ PR whose _base_ is a contributor's fork** must use REST — `gh api -X POST repos/<owner>/slangpy/pulls -f head="slang-coworkers:<branch>" -f base="<their-branch>" …` — because `gh pr create` (GraphQL) gets the App token there and 403s; REST `/repos/*` gets the `nv-slang-bot` user PAT that can open it.
+
 During review, push follow-up commits (don't rebase after PR creation). Sync with upstream via merge, not rebase:
 
 ```bash
