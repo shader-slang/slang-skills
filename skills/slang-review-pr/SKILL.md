@@ -211,6 +211,10 @@ missed, or you may disagree with a reviewer. Do not skip Phase 3 even if you fee
 you covered the comments during Phase 2.
 
 Read the actual code changes and evaluate the solution against the linked issue.
+Record issues found here as Phase 2 findings before moving on to review-thread triage. In
+particular, structural walking, duplicated utilities, misleading helper names, opaque comments, and
+invented terminology are approach-review concerns: flag them while assessing whether the PR's
+solution is principled, not as a generic cleanup checklist at the end.
 
 ### Step 1: Read the Changed Files
 
@@ -568,30 +572,3 @@ When iterating:
 
 6. **Pushing without testing**: Always run the affected tests before pushing. A broken push
    triggers CI and wastes reviewer time.
-
-7. **Treating the crash site as the fix site**: Do not accept a patch just because it handles the
-   immediate assert or crash. Ask whether the IR/AST/witness/type input shape is valid and whether
-   a frontend, AST, witness, or lowering producer should be fixed instead.
-
-8. **Approving predicate-ladder workarounds**: Flag `if (A && B && C && D)` special paths that make
-   one test pass without proving the input pattern is valid and this layer owns it.
-
-9. **Leaving opaque explanations**: Flag comments and PR descriptions that mention an example,
-   trace, or representation shape without enough user code and step-by-step compiler flow for a
-   reader to understand the scenario.
-
-10. **Accepting structural walking as normal**: Flag recursive walks over operands, substitution
-    chains, lookup paths, witnesses, IR users, or AST parents when the code is only trying to
-    recognize or rule out one malformed case. Ask whether canonicalization, substitution, lookup,
-    witness formation, or lowering should produce the right shape earlier.
-
-11. **Approving duplicate or misleading utilities**: Flag new helpers that duplicate existing
-    utilities, have names broader or narrower than their behavior, or mention a specific domain such
-    as differentiability when the implementation is actually general.
-
-12. **Accepting unexplained large logic blocks**: Flag large bodies of new logic that do not explain
-    the invariant being maintained, the source of truth being used, or why the logic belongs at this
-    layer.
-
-13. **Letting invented terminology through**: Flag comments or PR text that introduce names for
-    concepts that are not defined locally and are not used elsewhere in the Slang codebase.
