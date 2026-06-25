@@ -10,8 +10,12 @@ license: Apache-2.0
 **For**: Diagnosing and fixing Slang compiler bugs -- from symptom to root cause to validated fix.
 
 **Core Principle**: Dig into the root cause. Never apply a band-aid fix without understanding
-why the bug exists and what invariants are violated. Present alternative fix strategies to the
-user before implementing.
+why the bug exists, what invariants are violated, and which producer should have created the
+correct representation. Present alternative fix strategies to the user before implementing.
+
+**Principled fix rule**: When you see an assert, crash, ICE, malformed IR, or impossible AST shape,
+start by questioning the input shape. Is the AST/IR/witness/type shape valid and intentional? If
+not, the fix is usually in the upstream producer, not at the crash site.
 
 **Usage**: `/slang-fix-bug <bug-source> [--parallel N] [--wsl]`
 
@@ -68,6 +72,39 @@ clean_line() { tr -d '\r'; }
 ```
 
 Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands.
+
+---
+
+## Principled Fix Methodology
+
+Treat the crash site as evidence, not automatically as the right fix location. A crash in an IR pass
+may be caused by ill-formed IR produced during `lower-to-ir`, but the root cause may still be
+farther upstream: type checking may have produced an invalid AST shape, a `DeclRef` with missing or
+incorrect substitution arguments, the wrong lookup path, an incorrect witness form, or invalid
+generic nesting. In some cases the problem may expose a flaw in the language design rather than a
+localized implementation bug; stop and ask for a design discussion when the representation itself is
+unclear.
+
+Always ask these questions before keeping new logic:
+
+1. Why is this new logic or helper needed? What exact problem is it solving?
+2. Why is a new special handling path being added? Is the input pattern valid, or should an upstream
+   producer be fixed so this pattern is never produced?
+3. If the fix mirrors a pre-existing workaround, is this the right moment to refactor and unify the
+   workarounds around a more principled representation?
+4. Which test fails without the change, and does that failure prove this layer owns the fix?
+5. What existing mechanism should already handle this case, such as `substitute`, `resolve`,
+   canonical builders, witness lookup, or generic specialization?
+
+Avoid fixes shaped like `if (A && B && C && D) then do this special thing` merely to make one test
+pass. Such predicate ladders are acceptable only when the input shape is valid, the layer owns that
+shape, and the PR explanation documents why.
+
+Use conversational explanations in code comments and PR reports. Prefer "Consider this example:"
+followed by the relevant user code. Then explain step by step what the compiler builds, which
+producer creates the AST/IR/value shape, what invariant the fix preserves, and which downstream
+consumer relies on it. Include enough source context that a reviewer can understand the scenario
+without reconstructing the surrounding program from memory.
 
 ---
 
@@ -129,6 +166,13 @@ with crash site, code path, violated invariant, design context, and potential fi
 
 See the `slang-investigate` skill for the full investigation methodology.
 
+The investigation must include an input-shape audit. For every assert, crash, or ICE, answer whether
+the input AST/IR/witness/type shape reaching the failing code is correct and principled. If the
+shape is not valid, trace the producer chain backward. For example, an IR pass might crash on a flat
+specialization where nested `IRGeneric` was expected; the right fix may be to correct a frontend
+`DeclRef` or witness-table entry so `lower-to-ir` emits the canonical nested specialization instead
+of patching the IR pass.
+
 ### Step 2: Share investigation (if GitHub issue exists)
 
 **STOP and ask the user** before posting. Show a preview of the comment.
@@ -168,7 +212,7 @@ Strategies are listed best-first. See `slang-investigate` skill for the full ran
 |----------|---------------|----------------------------|----------------------|
 | Missing validation | Add validation in IR pass | Reject at frontend (semantic) | Guard in emission |
 | Wrong codegen | Fix or add the IR pass that transforms | Add new IR pass with annotations | Fix emission logic |
-| ICE in pass | Transform input to handled form | Reject the input earlier (semantic/IR) | Handle missing case at crash site |
+| ICE in pass | Fix the producer so the pass receives canonical input | Reject invalid input earlier (semantic/IR) | Handle a genuinely valid missing case at the crash site |
 | Missing lowering | Extend existing lowering pass | Add new lowering pass | Emit diagnostic (unsupported) |
 
 ### Constructing the Agent Prompt
@@ -217,6 +261,18 @@ You are running in an isolated git worktree with your own branch.
 5. Format: ./extras/formatting.sh
 6. Commit: {commit-rules}. Message: "Fix [short description]". Do NOT push.
 
+## Principled Fix Requirements
+
+- If the failure is an assert, crash, ICE, or impossible shape, first audit whether the input AST,
+  IR, witness, type, `DeclRef`, substitution list, lookup path, or generic nesting is valid.
+- Trace malformed input to its producer. Do not patch a consumer with a narrow predicate ladder
+  unless the shape is valid and this layer owns it.
+- If the fix mirrors a workaround already in the codebase, consider whether the right fix is to
+  unify those workarounds behind a canonical representation.
+- In the report, use a conversational explanation with full source context. Start with "Consider
+  this example:", include the relevant user code, then explain the compiler steps and why the fix is
+  principled.
+
 ## Report
 
 STRATEGY: [Name]
@@ -228,6 +284,7 @@ REPRODUCER_FIXED: yes | no
 REGRESSION_TEST: pass | fail (test_file: [path])
 CHANGES: [files changed, functions modified, lines changed]
 CORRECTNESS: [root cause fix / symptom fix / partial fix]
+INPUT_SHAPE_AUDIT: [is the input shape valid? if not, which producer must change?]
 RISK: [low / medium / high — what could break]
 CONCERNS: [any remaining concerns]
 ```
@@ -255,7 +312,8 @@ Present:
 2. **Root cause**: The violated invariant and where it happens
 3. **Alternatives**: Each strategy with verdict, scope, and risk
 4. **Recommendation**: Which approach and why
-5. **Ask**: Which strategy should be implemented?
+5. **Design check**: Whether this is a localized implementation bug or needs language-design input
+6. **Ask**: Which strategy should be implemented?
 
 ---
 
@@ -286,6 +344,10 @@ produces empty commits or conflicts. Instead, extract the diff and apply it:
 3. Write regression test (see `slang-write-test` skill)
 4. Build and validate (see `slang-build` and `slang-run-tests` skills)
 
+Before committing, repeat the input-shape audit from Phase 2. If the implementation added a helper,
+fallback, or special path, document why it is needed, why this layer owns it, and why the producer
+cannot or should not create a simpler canonical representation.
+
 ### Format, Commit, and PR
 
 Follow commit rules from the `slang-create-issue` skill.
@@ -315,6 +377,8 @@ Create PR using the `slang-create-issue` skill PR format:
 - Assignee: `--assignee @me`
 - Link to issue: `Fixes #NNNN`
 - Include: root cause, approach, alternatives considered, test plan
+- Include the input-shape audit and a conversational, full-context explanation. Use concrete source
+  examples and step-by-step compiler flow rather than terse labels like "AST trace" or "IR trace".
 - Suggest reviewers based on `"$GIT" log --format='%an' -- <changed-files> | sort | uniq -c | sort -rn`
 
 ---
@@ -334,6 +398,13 @@ Create PR using the `slang-create-issue` skill PR format:
 2. **Overly broad changes**: Refactoring a subsystem when a targeted fix suffices.
 3. **Missing regression test**: Every fix must include a test.
 4. **Fix without validation**: Always rebuild and run the test suite.
+5. **Predicate-ladder workaround**: Adding `if (A && B && C && D)` to recognize one malformed input
+   pattern instead of fixing the producer of that pattern.
+6. **Mirroring old workarounds**: Copying an existing workaround without asking whether this is the
+   moment to replace all instances with a principled representation.
+7. **Consumer-side normalization**: Making an IR pass, lowering consumer, or backend repair a
+   malformed shape that should have been canonicalized by type checking, AST construction, witness
+   synthesis, or `lower-to-ir`.
 
 ---
 

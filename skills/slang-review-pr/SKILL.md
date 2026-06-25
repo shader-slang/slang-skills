@@ -11,7 +11,13 @@ license: Apache-2.0
 fixes the root cause optimally, addressing review feedback, and managing review threads.
 
 **Core Principle**: A good fix addresses the root cause, not symptoms. Evaluate each PR for
-long-term correctness and each review comment for actionability before acting.
+long-term correctness, whether it fixes the right producer of the input shape, and whether each
+review comment is actionable before acting.
+
+**Principled review rule**: If the PR handles an assert, crash, ICE, malformed IR, or impossible
+AST shape, question the input shape first. Is that AST/IR/witness/type shape valid and intentional?
+If not, the right fix is usually in the upstream producer, not in a narrow consumer-side special
+case.
 
 **Usage**: `/slang-review-pr <pr-url-or-number> [--wsl]`
 
@@ -65,6 +71,50 @@ clean_line() { tr -d '\r'; }
 ```
 
 Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands.
+
+---
+
+## Principled Review Methodology
+
+Treat the changed code as a representation-flow problem, not just a local diff. A crash in an IR
+pass may be caused by ill-formed IR produced during `lower-to-ir`, but the root cause may be
+farther upstream: type checking may have produced an invalid AST shape, a `DeclRef` with missing or
+incorrect substitution arguments, the wrong lookup path, an incorrect witness form, or invalid
+generic nesting. In some cases the bug may reveal a flaw in the language design rather than a local
+implementation bug; flag that explicitly instead of endorsing a local workaround.
+
+Ask these questions for every non-trivial helper, fallback, or special case in the PR:
+
+1. Why is this new logic or helper needed? What exact problem is it solving?
+2. Why is a new special handling path being added? Is the input pattern valid, or should an upstream
+   producer be fixed so this pattern is never produced?
+3. If the PR mirrors a pre-existing workaround, is this the right moment to refactor and unify those
+   workarounds around a more principled representation?
+4. Which test fails without the change, and does that failure prove this layer owns the fix?
+5. What existing mechanism should already handle this case, such as `substitute`, `resolve`,
+   canonical builders, witness lookup, or generic specialization?
+6. Is any code structurally walking operands, substitutions, lookup paths, witness chains, IR users,
+   or AST parents just to rule out a one-off special case? If so, ask why this is not a missing rule
+   in canonicalization, substitution, lookup, witness formation, or another established producer.
+7. Does a new utility duplicate an existing utility? Search nearby helpers and shared utility
+   headers before accepting a new abstraction.
+8. Is the utility name honest about the behavior? Flag names that are too broad, too narrow, or tied
+   to the motivating case rather than the actual semantics. For example, if a helper named
+   `isDifferentiableFunc...` checks a property that is not specific to differentiability, ask for a
+   more general name.
+
+Flag predicate-ladder fixes like `if (A && B && C && D) then do this special thing` unless the PR
+proves that the input shape is valid and this layer owns the behavior. Prefer comments and PR
+descriptions that explain the whole user-code scenario conversationally: "Consider this example:",
+the relevant source snippet, and a step-by-step explanation of what the compiler builds and why the
+fix preserves the invariant.
+
+Also flag any new or changed code comment that a reader might not understand without hidden context.
+A good comment includes enough user code, producer-to-consumer flow, and local invariant for a
+reviewer to understand why the code exists without reconstructing the entire investigation.
+If an explanation uses abstract, hand-wavy terms, or invents terminology that is not defined or used
+elsewhere in the codebase, request clearer wording grounded in existing Slang terms and the concrete
+example.
 
 ---
 
@@ -161,6 +211,10 @@ missed, or you may disagree with a reviewer. Do not skip Phase 3 even if you fee
 you covered the comments during Phase 2.
 
 Read the actual code changes and evaluate the solution against the linked issue.
+Record issues found here as Phase 2 findings before moving on to review-thread triage. In
+particular, structural walking, duplicated utilities, misleading helper names, opaque comments, and
+invented terminology are approach-review concerns: flag them while assessing whether the PR's
+solution is principled, not as a generic cleanup checklist at the end.
 
 ### Step 1: Read the Changed Files
 
@@ -179,6 +233,8 @@ Answer these questions:
    - A root cause fix prevents the problem from occurring
    - A symptom fix catches the problem after it occurs (e.g., adding a null check
      without asking why the null happened)
+   - For asserts, crashes, malformed IR, or impossible AST shapes, verify whether the input shape
+     itself is valid. If not, the fix should usually be in the producer of that shape.
 
 2. **Is it optimal?** Could the same result be achieved with less code, fewer edge cases,
    or in a more maintainable way?
@@ -191,6 +247,24 @@ Answer these questions:
 
 5. **Are there missing cases?** Does the fix handle all variants of the problem, or only
    the specific reproducer from the issue?
+
+6. **Is the representation principled?** Does the PR rely on a predicate ladder or one-off helper
+   to recognize a malformed pattern, or does it make the frontend, AST builder, witness synthesis,
+   `lower-to-ir`, or IR producer create the correct canonical representation?
+
+7. **Does this need design input?** If the PR cannot define what the canonical AST/IR/witness shape
+   should be, flag it as a language-design or representation-design question before accepting a
+   local fix.
+
+8. **Is structural walking justified?** Flag code that recursively walks operands, substitution
+   chains, lookup paths, witness chains, IR users, or AST parents to detect a special case. Ask why
+   the established canonicalization, substitution, lookup, witness, or lowering rule does not
+   produce the right shape before this code runs.
+
+9. **Are helpers duplicated or misnamed?** For every new utility, check whether an existing helper
+   already does the job. Also check whether the name matches the actual behavior: too-general names
+   hide constraints, and too-specific names such as `isDifferentiableFunc...` are misleading if the
+   body is not differentiability-specific.
 
 ### Step 3: Evaluate the Diagnostic Messages (if applicable)
 
@@ -209,6 +283,27 @@ Check that tests cover:
 - **All applicable backends**: Tests should have `//TEST` lines for all relevant
   targets, not just one. Target-independent features need at minimum `-cpu` and
   `-spirv`. Flag tests that only test a single backend when the fix applies broadly.
+
+### Step 5: Evaluate Comments and Explanations
+
+Flag every new or changed code comment, helper comment, and PR-description explanation that a reader
+might not have enough context to understand. Comments should not rely on shorthand labels such as
+"AST trace" or "IR trace" without explanation. Prefer conversational explanations:
+
+1. Start with "Consider this example:" and include the relevant user code.
+2. Explain what the compiler builds step by step, naming the producer functions or passes.
+3. State the invariant being preserved and which downstream consumer relies on it.
+4. Explain why the fix belongs at this layer rather than in an upstream producer or downstream
+   consumer.
+
+Also flag:
+
+- Large bodies of new logic with no explanation of the invariant or control-flow intent.
+- Explanations that are not self-contained, so the reader needs hidden context from the debugging
+  session to understand them.
+- Comments that talk in abstract or hand-wavy terms instead of grounding the explanation in user
+  code and named compiler concepts.
+- Invented terminology that is not defined locally and is not used elsewhere in the codebase.
 
 ---
 
@@ -231,6 +326,8 @@ List every unresolved thread: `#{number} — {file}:{line} — {one-line summary
 | **Valid + Actionable** | Points to a real bug, missing case, or incorrect behavior | Implement the fix |
 | **Valid + Out of Scope** | Correct observation but unrelated to this PR's purpose | Reply acknowledging, don't fix |
 | **Valid + Nice-to-Have** | Improves quality but not critical | Implement if easy, otherwise acknowledge |
+| **Needs Context** | Comment or PR explanation is technically useful but lacks enough source/context for readers | Expand the explanation |
+| **Unprincipled Helper** | New utility duplicates existing logic, has a misleading name, or structurally walks to patch one shape | Reuse, rename, or move the fix to the producer |
 | **Incorrect** | Based on wrong assumptions about the code | Reply explaining why |
 | **Trivial Nitpick** | Style, wording, minor formatting | Apply if trivial, otherwise acknowledge |
 
@@ -238,10 +335,12 @@ List every unresolved thread: `#{number} — {file}:{line} — {one-line summary
 
 Address feedback in this order:
 1. **Bugs / correctness issues** (e.g., missing ErrorType guard, cascading diagnostics)
-2. **Missing test coverage** (e.g., negative tests, edge cases)
-3. **Diagnostic message accuracy** (e.g., misleading error text)
-4. **Code clarity** (e.g., comments, variable names)
-5. **Out-of-scope suggestions** (reply only)
+2. **Unprincipled representation fixes** (e.g., consumer-side predicate ladders over malformed input)
+3. **Structural walking / helper issues** (e.g., duplicate utilities, misleading names, ad hoc graph walks)
+4. **Missing test coverage** (e.g., negative tests, edge cases)
+5. **Diagnostic message accuracy** (e.g., misleading error text)
+6. **Code clarity and context** (e.g., comments, variable names, insufficient full-context examples)
+7. **Out-of-scope suggestions** (reply only)
 
 ### Step 3: Present findings to user
 
@@ -267,6 +366,17 @@ platform-aware build instructions and preset selection.
 - Follow existing code patterns in the file
 - Add comments only for non-obvious logic
 - For new diagnostics: choose a code number adjacent to related diagnostics
+- When adding or revising explanatory comments, use full-context conversational examples. Include
+  the relevant user code, explain the producer-to-consumer flow step by step, and state why the fix
+  belongs at this layer.
+- Do not implement a narrow `if (A && B && C && D)` workaround just because it satisfies a review
+  thread. First confirm the input pattern is valid; otherwise fix the upstream producer or explain
+  why the issue needs design discussion.
+- Before adding a new utility, search for an existing helper that already expresses the invariant.
+  If you keep the new helper, name it for its actual behavior, not for the first motivating case.
+- If a fix requires structural walking, first try to replace it with a producer-side canonical form
+  or an existing canonicalization/substitution rule. Keep the walk only when the walked shape is
+  valid input and the comment explains why.
 
 ### Step 3: Test
 
@@ -383,6 +493,8 @@ Present a concise summary to the user:
 **Root cause fix?** Yes/No — [1 sentence explanation]
 **Optimal?** Yes/No — [1 sentence]
 **Long-term correct?** Yes/No — [1 sentence]
+**Input shape principled?** Yes/No — [is the handled AST/IR/witness/type shape valid, or should a producer change?]
+**Explanation context sufficient?** Yes/No — [whether comments/PR text include enough user-code context and step-by-step flow]
 
 ## Review Feedback
 
