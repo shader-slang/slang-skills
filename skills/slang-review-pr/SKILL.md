@@ -93,6 +93,15 @@ Ask these questions for every non-trivial helper, fallback, or special case in t
 4. Which test fails without the change, and does that failure prove this layer owns the fix?
 5. What existing mechanism should already handle this case, such as `substitute`, `resolve`,
    canonical builders, witness lookup, or generic specialization?
+6. Is any code structurally walking operands, substitutions, lookup paths, witness chains, IR users,
+   or AST parents just to rule out a one-off special case? If so, ask why this is not a missing rule
+   in canonicalization, substitution, lookup, witness formation, or another established producer.
+7. Does a new utility duplicate an existing utility? Search nearby helpers and shared utility
+   headers before accepting a new abstraction.
+8. Is the utility name honest about the behavior? Flag names that are too broad, too narrow, or tied
+   to the motivating case rather than the actual semantics. For example, if a helper named
+   `isDifferentiableFunc...` checks a property that is not specific to differentiability, ask for a
+   more general name.
 
 Flag predicate-ladder fixes like `if (A && B && C && D) then do this special thing` unless the PR
 proves that the input shape is valid and this layer owns the behavior. Prefer comments and PR
@@ -103,6 +112,9 @@ fix preserves the invariant.
 Also flag any new or changed code comment that a reader might not understand without hidden context.
 A good comment includes enough user code, producer-to-consumer flow, and local invariant for a
 reviewer to understand why the code exists without reconstructing the entire investigation.
+If an explanation uses abstract, hand-wavy terms, or invents terminology that is not defined or used
+elsewhere in the codebase, request clearer wording grounded in existing Slang terms and the concrete
+example.
 
 ---
 
@@ -240,6 +252,16 @@ Answer these questions:
    should be, flag it as a language-design or representation-design question before accepting a
    local fix.
 
+8. **Is structural walking justified?** Flag code that recursively walks operands, substitution
+   chains, lookup paths, witness chains, IR users, or AST parents to detect a special case. Ask why
+   the established canonicalization, substitution, lookup, witness, or lowering rule does not
+   produce the right shape before this code runs.
+
+9. **Are helpers duplicated or misnamed?** For every new utility, check whether an existing helper
+   already does the job. Also check whether the name matches the actual behavior: too-general names
+   hide constraints, and too-specific names such as `isDifferentiableFunc...` are misleading if the
+   body is not differentiability-specific.
+
 ### Step 3: Evaluate the Diagnostic Messages (if applicable)
 
 For diagnostic-related PRs:
@@ -270,6 +292,15 @@ might not have enough context to understand. Comments should not rely on shortha
 4. Explain why the fix belongs at this layer rather than in an upstream producer or downstream
    consumer.
 
+Also flag:
+
+- Large bodies of new logic with no explanation of the invariant or control-flow intent.
+- Explanations that are not self-contained, so the reader needs hidden context from the debugging
+  session to understand them.
+- Comments that talk in abstract or hand-wavy terms instead of grounding the explanation in user
+  code and named compiler concepts.
+- Invented terminology that is not defined locally and is not used elsewhere in the codebase.
+
 ---
 
 ## Phase 3: EVALUATE REVIEW FEEDBACK
@@ -292,6 +323,7 @@ List every unresolved thread: `#{number} — {file}:{line} — {one-line summary
 | **Valid + Out of Scope** | Correct observation but unrelated to this PR's purpose | Reply acknowledging, don't fix |
 | **Valid + Nice-to-Have** | Improves quality but not critical | Implement if easy, otherwise acknowledge |
 | **Needs Context** | Comment or PR explanation is technically useful but lacks enough source/context for readers | Expand the explanation |
+| **Unprincipled Helper** | New utility duplicates existing logic, has a misleading name, or structurally walks to patch one shape | Reuse, rename, or move the fix to the producer |
 | **Incorrect** | Based on wrong assumptions about the code | Reply explaining why |
 | **Trivial Nitpick** | Style, wording, minor formatting | Apply if trivial, otherwise acknowledge |
 
@@ -300,10 +332,11 @@ List every unresolved thread: `#{number} — {file}:{line} — {one-line summary
 Address feedback in this order:
 1. **Bugs / correctness issues** (e.g., missing ErrorType guard, cascading diagnostics)
 2. **Unprincipled representation fixes** (e.g., consumer-side predicate ladders over malformed input)
-3. **Missing test coverage** (e.g., negative tests, edge cases)
-4. **Diagnostic message accuracy** (e.g., misleading error text)
-5. **Code clarity and context** (e.g., comments, variable names, insufficient full-context examples)
-6. **Out-of-scope suggestions** (reply only)
+3. **Structural walking / helper issues** (e.g., duplicate utilities, misleading names, ad hoc graph walks)
+4. **Missing test coverage** (e.g., negative tests, edge cases)
+5. **Diagnostic message accuracy** (e.g., misleading error text)
+6. **Code clarity and context** (e.g., comments, variable names, insufficient full-context examples)
+7. **Out-of-scope suggestions** (reply only)
 
 ### Step 3: Present findings to user
 
@@ -335,6 +368,11 @@ platform-aware build instructions and preset selection.
 - Do not implement a narrow `if (A && B && C && D)` workaround just because it satisfies a review
   thread. First confirm the input pattern is valid; otherwise fix the upstream producer or explain
   why the issue needs design discussion.
+- Before adding a new utility, search for an existing helper that already expresses the invariant.
+  If you keep the new helper, name it for its actual behavior, not for the first motivating case.
+- If a fix requires structural walking, first try to replace it with a producer-side canonical form
+  or an existing canonicalization/substitution rule. Keep the walk only when the walked shape is
+  valid input and the comment explains why.
 
 ### Step 3: Test
 
@@ -541,3 +579,19 @@ When iterating:
 9. **Leaving opaque explanations**: Flag comments and PR descriptions that mention an example,
    trace, or representation shape without enough user code and step-by-step compiler flow for a
    reader to understand the scenario.
+
+10. **Accepting structural walking as normal**: Flag recursive walks over operands, substitution
+    chains, lookup paths, witnesses, IR users, or AST parents when the code is only trying to
+    recognize or rule out one malformed case. Ask whether canonicalization, substitution, lookup,
+    witness formation, or lowering should produce the right shape earlier.
+
+11. **Approving duplicate or misleading utilities**: Flag new helpers that duplicate existing
+    utilities, have names broader or narrower than their behavior, or mention a specific domain such
+    as differentiability when the implementation is actually general.
+
+12. **Accepting unexplained large logic blocks**: Flag large bodies of new logic that do not explain
+    the invariant being maintained, the source of truth being used, or why the logic belongs at this
+    layer.
+
+13. **Letting invented terminology through**: Flag comments or PR text that introduce names for
+    concepts that are not defined locally and are not used elsewhere in the Slang codebase.
