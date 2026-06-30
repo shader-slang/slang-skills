@@ -1,6 +1,20 @@
 Generate a daily report draft for the Slang project. The report should be concise but comprehensive.
 
-IMPORTANT: Today's date is provided in the system context. Use it to compute "24 hours ago" as an ISO 8601 timestamp (e.g., if today is 2026-02-17, then since = "2026-02-16T00:00:00Z"). Double-check the year is correct.
+## Arguments (optional — defaults match the classic daily sweep)
+
+- **time-range** — how far back to look. Default **`24h`**. Forms: `Nm` (minutes), `Nh` (hours), `Nd` (days) — e.g. `30m`, `48h`, `7d`.
+- **output** — where the report goes. Default **`file`**. One of `file` | `terminal` | `both`.
+
+Today's date is provided in the system context. Compute the window start `SINCE` (ISO 8601) by subtracting `time-range` from now — e.g. today `2026-02-17` with `time-range=24h` → `SINCE = "2026-02-16T00:00:00Z"`. Double-check the year is correct. Use `SINCE` everywhere a `since=` filter appears below.
+
+Discord has no server-side time filter, so scale the fetch `limit` to the range and **filter client-side** to messages with `timestamp >= SINCE`:
+
+| time-range | Discord `limit` |
+|------------|-----------------|
+| ≤ 60m      | 20 |
+| ≤ 24h      | 50 (default) |
+| ≤ 3d       | 100 |
+| > 3d       | 100 — note in the report that results may be incomplete (API max is 100/channel) |
 
 ---
 
@@ -10,16 +24,16 @@ You MUST query ALL of the following data sources. Make parallel calls where poss
 
 ### 1. GitHub (owner: "shader-slang", repo: "slang")
 
-**Issues — fetch ALL from last 24 hours:**
-- `github_list_issues` with state=OPEN, first=100, since=<24h ago ISO 8601>
+**Issues — fetch ALL from the time range:**
+- `github_list_issues` with state=OPEN, first=100, since=<SINCE>
   - If `hasNextPage` is true in the response, call again with `after=<endCursor>` and repeat until `hasNextPage` is false
-- `github_list_issues` with state=CLOSED, first=100, since=<24h ago ISO 8601>
+- `github_list_issues` with state=CLOSED, first=100, since=<SINCE>
   - Same pagination logic
 
 **Pull Requests — fetch recent activity:**
 - `github_list_pull_requests` with state=open, per_page=30, sort=updated, direction=desc
 - `github_list_pull_requests` with state=closed, per_page=30, sort=updated, direction=desc
-- Additionally, use `github_search_issues` with q="repo:shader-slang/slang is:pr updated:>=YYYY-MM-DD" to catch any PRs missed by the list (replace YYYY-MM-DD with yesterday's date)
+- Additionally, use `github_search_issues` with q="repo:shader-slang/slang is:pr updated:>=YYYY-MM-DD" to catch any PRs missed by the list (replace YYYY-MM-DD with `SINCE`'s date)
 
 **Discussions:**
 - `github_get_discussions` with owner=shader-slang, repo=slang, first=10
@@ -29,13 +43,13 @@ You MUST query ALL of the following data sources. Make parallel calls where poss
 - `gitlab_list_issues` with project_id="6417", state=opened, per_page=20, order_by=updated_at
 - `gitlab_list_merge_requests` with project_id="6417", state=opened, per_page=20, order_by=updated_at
 
-### 3. Discord (7 channels — fetch ALL in parallel)
+### 3. Discord (fetch ALL configured channels in parallel)
 
-Call `discord_read_messages` with limit=50 for each configured Discord channel.
+Call `discord_read_messages` with the range-scaled `limit` (see the table above) for each configured Discord channel, then filter client-side to messages with `timestamp >= SINCE`.
 
 ### 4. Slack
 
-- `slack_get_channel_history` with the configured Slack channel_id, limit=100, since=<24h ago ISO 8601>
+- `slack_get_channel_history` with the configured Slack channel_id, limit=100, since=<SINCE>
 
 ### 5. User ID Resolution
 
@@ -53,7 +67,7 @@ After collecting all data, gather all unique Slack user IDs found in messages.
    - 🔄 Time-sensitive updates/changes
    Include clear action items or owners when available
 
-### 2. GitHub Activity (last 24 hours):
+### 2. GitHub Activity (within the time range):
    - New issues opened: [number] with issue title and URL
    - Issues/PRs closed: [number] with title and URL
    - PRs requiring review: [number] with title and URL
@@ -100,7 +114,15 @@ After collecting all data, gather all unique Slack user IDs found in messages.
 
 Only use full names and usernames which are present in the input data. If both are found, prefer full names.
 
-Save the report as 'daily-report-YYYY-MM-DD.md'. If a report with that name already exists, overwrite it with the new version (append a `_updated` suffix only if you need to preserve both versions).
+## Output (honor the `output` argument; default `file`)
+
+- **`file`** (default): save the report as `daily-report-YYYY-MM-DD.md` (date = `SINCE`'s date). If a report with that name already exists, overwrite it with the new version (append a `_updated` suffix only if you need to preserve both versions). Print the saved path.
+- **`terminal`**: print the full report to the terminal only — do not write a file.
+- **`both`**: print the full report AND save it (same path as `file`).
+
+## Post to Slack (optional)
+
+After the report is ready, **ask the user** whether to post it to Slack (use `AskUserQuestion`; default to **not** posting). Only if the user confirms, post the report via `mcp__slang-mcp__slack_post_message` to the configured Slack channel — use the same channel configured for collection; do **not** hardcode a channel ID inline (see [gotchas.md](./gotchas.md) → Configuration).
 
 ---
 
@@ -111,8 +133,8 @@ Before saving the report, verify you queried:
 - [ ] GitHub PRs (open + closed)
 - [ ] GitHub Discussions
 - [ ] GitLab issues and merge requests (project 6417)
-- [ ] All 7 Discord channels
-- [ ] Slack channel history (with since filter)
+- [ ] All configured Discord channels (range-scaled limit, client-side `>= SINCE` filter)
+- [ ] Slack channel history (with `since=SINCE` filter)
 - [ ] All Slack user IDs resolved to names
 
 If any source failed or returned an error, note it in the report under "Data Collection Notes" at the bottom.
