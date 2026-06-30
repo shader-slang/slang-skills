@@ -74,6 +74,7 @@ version.
 | `slang-evaluate-session` | Post-session skill effectiveness review | *(standalone)* |
 | `slang-pr-resolve-comments` | Resolve PR review feedback: LLM threads, CI failures, rebase conflicts | *(standalone)* |
 | `slang-pr-report` | Read-only, gh-only escalation report of open PRs needing human attention: per-source lifecycle-stage derivation, assignee-grouped (with an Unassigned group), optional Discord/Slack mentions | *(standalone)* |
+| `slang-release` | Write-heavy release engineering: update SPIRV-Tools/Headers submodules and integrate GitHub releases into the internal GitLab forks (the slang + slang-rhi + slangpy OptiX triad). Confirms before destructive force-pushes. | *(standalone)* |
 
 ### General developer skills
 
