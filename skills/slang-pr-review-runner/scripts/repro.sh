@@ -92,6 +92,8 @@ SYSTEM_APPEND="$(cat "$SKILL_DIR/prompt-templates/system-prompt-append.txt")"
 # allowlist below is permissive enough for either path.
 read -r -d '' ALLOWED <<'EOF' || true
 Read,View,Glob,GlobTool,Grep,GrepTool,Agent,BatchTool,
+Skill,Write(tmp/**),Edit(tmp/**),
+Bash(sha256sum *),Bash(shasum *),
 Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git status*),
 Bash(grep *),Bash(grep -*),
 Bash(cat *),Bash(head *),Bash(tail *),
