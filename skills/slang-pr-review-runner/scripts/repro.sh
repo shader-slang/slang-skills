@@ -63,8 +63,13 @@ PR NUMBER: ${PROMPT_PR}
 
 IMPORTANT: The BASE branch (master) is checked out locally. You can read CLAUDE.md and any
 existing source files locally to understand repo structure and surrounding code context.
-However, the PR branch is NOT checked out — to see what the PR actually changes, you MUST
-use \`gh pr diff\` or GitHub MCP tools. Do NOT assume local files reflect the PR's changes.
+The PR branch is NOT checked out — you are GIVEN the PR diff, pre-staged by a trusted
+step: \`tmp/pr-diff.patch\` (full diff), \`tmp/pr-files.txt\` (changed paths), and
+\`tmp/context.json\` (repo, pr, base_sha, head_sha, diff_sha256). Verify them per
+REVIEW.md Step 1 and use them as-is; if any is missing or does not match this PR
+number, regenerate all three freshly per Step 1 before proceeding. Use gh/GitHub MCP
+tools only for metadata (comments, CI status), and do NOT assume local files reflect
+the PR's changes.
 
 NOTE: Any previous Claude reviews on this PR have been automatically minimized
 and their threads resolved. You are posting a fresh, self-contained review.
