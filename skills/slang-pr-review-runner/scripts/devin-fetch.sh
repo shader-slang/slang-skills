@@ -66,6 +66,14 @@ fi
 DONE_EXPR='(() => {
   const t = document.body.innerText;
   if (/PR analysis in progress/i.test(t)) return false;
+  // The "Devin.s AI analysis" heading and a "No bugs"/"No flags" summary can
+  // render while the panel is still streaming — it shows a "Generating…"/
+  // "Generating..." placeholder and echoes the PR description. That is NOT a
+  // finished verdict, so treat a still-streaming marker as NOT done and keep
+  // polling (worst case → timeout, a best-effort skip). Guards against the
+  // devin-fetch premature exit-0 incidents where a half-rendered page was
+  // folded into the review as "clean".
+  if (/Generating\s*(\.{2,}|…)/i.test(t)) return false;
   if (!/Devin.s AI analysis/i.test(t)) return false;
   return /\b\d+\s+Bugs?\b/.test(t) || /\b\d+\s+Flags?\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
 })()'
@@ -204,5 +212,26 @@ print(sections.get("bugs", "(none reported)")[:5000])
 print("\n## Flags\n")
 print(sections.get("flags", "(none reported)")[:5000])
 PY
+
+# Body-integrity guard: require a terminal status AND a non-trivial body before
+# declaring success. A reachable page can pass the DONE poll while the panel is
+# still streaming ("Generating…"/"Generating...") — the AI-Analysis section is
+# then just the PR description echoed back with Bugs/Flags "(none reported)",
+# which reads like a clean pass but is an *incomplete* analysis. Also guard
+# against a truly empty scrape. Either case → inconclusive (exit 3, best-effort
+# skip), never a silent exit-0 "clean" that folds a half-rendered page into the
+# review. DEVIN_MIN_BYTES overrides the 200-byte floor.
+if grep -qE 'Generating[[:space:]]*(\.{2,}|…)' "$OUT/devin-flags.md" 2>/dev/null; then
+  echo "inconclusive: Devin analysis still generating at scrape time" > "$OUT/devin-error.txt"
+  echo ">>> devin-fetch: still generating at scrape time — inconclusive (exit 3)" >&2
+  exit 3
+fi
+ANALYSIS_BYTES=$(wc -c < "$OUT/devin-flags.md" 2>/dev/null | tr -d ' ')
+: "${ANALYSIS_BYTES:=0}"
+if [ "$ANALYSIS_BYTES" -lt "${DEVIN_MIN_BYTES:-200}" ]; then
+  echo "inconclusive: Devin analysis body too short (${ANALYSIS_BYTES}B)" > "$OUT/devin-error.txt"
+  echo ">>> devin-fetch: body too short (${ANALYSIS_BYTES}B) — inconclusive (exit 3)" >&2
+  exit 3
+fi
 
 echo ">>> devin-fetch: ${OUT}/devin-flags.md ($(wc -l < "$OUT/devin-flags.md") lines)"
