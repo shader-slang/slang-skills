@@ -16,10 +16,10 @@
 #   4. Bump this file to the new (sha, ref, run id) triple
 #   5. Re-run validate.sh — must pass 5/5 byte-match
 #
-# v1.0.166 — mirrors shader-slang/slang PR #11993 (head 178b204d, folded
-# #11994 protocol changes) plus claude-code-action v1.0.166.
+# v1.0.168 — mirrors shader-slang/slang PR #11993 (head 178b204d, folded
+# #11994 protocol changes) plus claude-code-action v1.0.168 (v1.0.166->168: Claude Code CLI bumps only).
 # VALIDATION PENDING: validate.sh 5/5 requires a fresh production run log
 # captured AFTER slang#11993 merges. Until then this pin records intent.
-sha=f87768c6d25f92ae6efa7175e223ef77d4cbf97f
-ref=v1.0.166
+sha=ba0aafd4308cbba7165f9f2cdb0cfbed5a3c99ce
+ref=v1.0.168
 run=pending-first-post-11993-production-run
