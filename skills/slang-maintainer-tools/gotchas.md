@@ -31,6 +31,7 @@ Cross-cutting pitfalls that affect every `/slang-maintain` task. Read before you
 ## Configuration
 
 - **Channel IDs** for Discord and Slack are per-group, not hardcoded. Configure via the group's `CLAUDE.md` or `.env`. A recipe that references channel IDs inline is stale.
+- **Daily-report Slack delivery** posts a short parent message to the channel, then the full report as a thread reply (`slack_reply_to_thread`). Capture the parent message's `ts` from the `slack_post_message` response for `thread_ts`. Do not dump the full report as a top-level channel message.
 - **GitLab project ID** is installation-specific (e.g. `6417` for NVIDIA's nv-master). Parameterize, don't hardcode across installs.
 - **Default owner/repo** for GitHub tools defaults to `shader-slang/slang`. Override in `Args` when sweeping `slang-rhi` or `slangpy`.
 
