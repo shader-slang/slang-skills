@@ -195,6 +195,34 @@ if [ "$MODE" = "pr" ] && [ -f "$REPO_ROOT/tmp/pr-diff.patch" ]; then
   fi
 fi
 
+# Zero-subagent guard: a review with no Task/Agent dispatch means no reviewers
+# ran — the fake-clean incident where a run with zero subagents produced a
+# 96-byte "review" and exited 0. Count dispatches in the script's own
+# tool-uses.jsonl (deterministic one-JSON-object-per-line artifact).
+DISPATCHES=0
+[ -f "$RUN_DIR/tool-uses.jsonl" ] \
+  && DISPATCHES="$(grep -cE '"name": "(Task|Agent)"' "$RUN_DIR/tool-uses.jsonl" || true)"
+if [ "${DISPATCHES:-0}" -eq 0 ]; then
+  echo "!!! REVIEW-GUARD FAIL: zero Task/Agent subagent dispatches — no reviewers ran" >&2
+  GUARD_RC=1
+fi
+
+# Minimum-output guard: a truncated or empty final review is not a real review.
+FINAL_SIZE=0
+[ -f "$RUN_DIR/final-review.md" ] \
+  && FINAL_SIZE="$(wc -c < "$RUN_DIR/final-review.md" | tr -d ' ')"
+if [ "${FINAL_SIZE:-0}" -lt 500 ]; then
+  echo "!!! REVIEW-GUARD FAIL: final review is ${FINAL_SIZE} bytes (<500) — no substantive review produced" >&2
+  GUARD_RC=1
+fi
+
+# Infra-error guard: a surfaced transient error must not masquerade as a review.
+if [ -f "$RUN_DIR/final-review.md" ] \
+  && grep -qiE 'API Error|socket|rate.?limit' "$RUN_DIR/final-review.md"; then
+  echo "!!! REVIEW-GUARD FAIL: final review looks like an infrastructure error, not a review" >&2
+  GUARD_RC=1
+fi
+
 if [ "$GUARD_RC" -ne 0 ]; then
   exit "$GUARD_RC"
 fi
