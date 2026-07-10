@@ -5,8 +5,9 @@
 # Usage:
 #   devin-fetch.sh --url <devin-review-url> --out <run-dir> [--poll-seconds 45] [--max-minutes 30]
 #
-# Returns 0 on success, 2 on auth-wall, 3 on timeout, 1 on any other error.
-# The workflow treats failure as best-effort — Reviewer A still runs.
+# Returns 0 on success, 2 on auth-wall, 3 on timeout, 4 on browser-launch-failure
+# (transient infra — stale Chrome profile lock; retry later), 1 on any other error.
+# The workflow treats failure (2/3/4) as best-effort — Reviewer A still runs.
 
 set -euo pipefail
 
@@ -42,7 +43,38 @@ if [[ "$URL" =~ ^https?://github\.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
   echo ">>> devin-fetch: rewrote GitHub URL → ${URL}"
 fi
 
-agent-browser open "$URL"
+# Launch the page — with a one-shot retry on transient Chrome-launch failure.
+# Chrome launches fine in this container WITHOUT a dbus session bus; the old
+# "no DevToolsActivePort / no dbus = deterministic environment failure" reading
+# was wrong. The real failure is TRANSIENT: a stale Chrome profile under
+# /tmp/agent-browser-* left holding SingletonLock or a half-written
+# DevToolsActivePort by a prior crash, or a cold-launch race. agent-browser
+# relaunches Chrome cleanly on the next `open` once the stale profile is cleared,
+# so on failure we close the daemon, clear the profile dirs, and retry ONCE. A
+# failure that survives the retry is infra-transient (retry later) — NOT
+# auth-wall, NOT timeout, NOT deterministic — and exits 4. The `if err=$(...)`
+# idiom keeps `set -e` from killing us on a nonzero `open`.
+LAUNCH_FAIL_RE='failed to launch chrome|chrome launch task failed|without writing DevToolsActivePort|SingletonLock'
+open_page() {
+  local url="$1" err rc
+  if err="$(agent-browser open "$url" 2>&1 >/dev/null)"; then rc=0; else rc=$?; fi
+  if [ "$rc" -ne 0 ] || printf '%s' "$err" | grep -qiE "$LAUNCH_FAIL_RE"; then
+    echo ">>> devin-fetch: Chrome launch failed (transient) — clearing stale profile, retrying once" >&2
+    printf '%s\n' "$err" >&2
+    agent-browser close --all >/dev/null 2>&1 || true
+    rm -rf /tmp/agent-browser-chrome-* /tmp/agent-browser-profile-* 2>/dev/null || true
+    sleep 2
+    if err="$(agent-browser open "$url" 2>&1 >/dev/null)"; then rc=0; else rc=$?; fi
+    if [ "$rc" -ne 0 ] || printf '%s' "$err" | grep -qiE "$LAUNCH_FAIL_RE"; then
+      { echo "browser-launch-failure: Chrome failed to launch after profile reset + retry."
+        echo "TRANSIENT infra condition (retry later) — NOT a deterministic environment failure, NOT auth-wall, NOT timeout."
+        printf '%s\n' "$err"; } > "$OUT/devin-error.txt"
+      echo ">>> devin-fetch: browser launch failed after retry — exit 4 (transient, retry later)" >&2
+      exit 4
+    fi
+  fi
+}
+open_page "$URL"
 sleep 5
 
 # Detect auth wall before polling. Use a tight regex that targets phrases unique
@@ -65,30 +97,46 @@ fi
 # were a single "N Flags" toggle.
 DONE_EXPR='(() => {
   const t = document.body.innerText;
-  if (/PR analysis in progress/i.test(t)) return false;
-  // The "Devin.s AI analysis" heading and a "No bugs"/"No flags" summary can
-  // render while the panel is still streaming — it shows a "Generating…"/
-  // "Generating..." placeholder and echoes the PR description. That is NOT a
-  // finished verdict, so treat a still-streaming marker as NOT done and keep
-  // polling (worst case → timeout, a best-effort skip). Guards against the
-  // devin-fetch premature exit-0 incidents where a half-rendered page was
-  // folded into the review as "clean".
+  // Still-streaming guard (DO NOT REGRESS): a half-rendered panel shows a
+  // "Generating…"/"Generating..." placeholder and echoes the PR description
+  // back. That is NOT a finished verdict — never treat it as done. Guards the
+  // premature exit-0 incidents where a half-rendered page was folded in as
+  // "clean".
   if (/Generating\s*(\.{2,}|…)/i.test(t)) return false;
-  if (!/Devin.s AI analysis/i.test(t)) return false;
-  return /\b\d+\s+Bugs?\b/.test(t) || /\b\d+\s+Flags?\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
+  // Positive done-signals: the AI-analysis heading AND a bugs/flags/checks
+  // summary both present.
+  const heading = /Devin.s AI analysis/i.test(t);
+  const summary = /\b\d+\s+Bugs?\b/.test(t) || /\b\d+\s+Flags?\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
+  const done = heading && summary;
+  // "PR analysis in progress" can LINGER transiently on a page that is otherwise
+  // fully rendered (observed live: it flickers back after content is complete).
+  // Only let it veto when the positive done-signals are ABSENT — a transient
+  // in-progress substring must not block a clearly-complete page (which caused
+  // false 30-min timeouts → Reviewer-B skipped). While Devin is genuinely
+  // re-analysing a new head, `done` is false and this correctly keeps polling.
+  if (/PR analysis in progress/i.test(t) && !done) return false;
+  return done;
 })()'
 
+# Poll until DONE holds across TWO consecutive checks. A single positive poll can
+# catch a page mid-transition (in-progress flickers, panel still settling); a
+# second confirming poll one interval later ensures the done state is stable
+# before we scrape. Costs ~one extra POLL interval on success — acceptable.
 deadline=$(( $(date +%s) + MAX_MIN*60 ))
+stable=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
   if agent-browser eval "$DONE_EXPR" 2>/dev/null | grep -qi true; then
-    break
+    stable=$((stable + 1))
+    [ "$stable" -ge 2 ] && break
+  else
+    stable=0
   fi
   sleep "$POLL"
 done
 
-# Confirm complete (else timeout)
-if ! agent-browser eval "$DONE_EXPR" 2>/dev/null | grep -qi true; then
-  echo "timeout: Devin did not complete within ${MAX_MIN}m" > "$OUT/devin-error.txt"
+# Confirm a stable done state (else timeout)
+if [ "$stable" -lt 2 ]; then
+  echo "timeout: Devin did not reach a stable done state within ${MAX_MIN}m" > "$OUT/devin-error.txt"
   exit 3
 fi
 
@@ -118,19 +166,54 @@ agent-browser eval '(() => {
 agent-browser press Escape >/dev/null 2>&1 || true
 sleep 1
 
-# Expand both the Bugs and Flags panels. The 2026 UI splits these into
-# two adjacent buttons ("N Bugs", "N Flags") instead of a single combined
-# toggle. Click every matching button so neither panel is missed; also
-# accept the legacy combined "<N> Flags / 1 Flag / No flags" form for
-# back-compat with older Devin instances.
+# Expand the Bugs, Flags, and Informational panels. The 2026 UI splits Bugs and
+# Flags into two adjacent summary buttons ("N Bugs", "N Flags") instead of a
+# single combined toggle; it also has a THIRD finding category, "Informational",
+# whose findings render ONLY as button DOM nodes (not in document.body.innerText)
+# until clicked — clicking one surfaces its detail into innerText. Click every
+# summary toggle AND every Informational finding button so no panel is missed;
+# also accept the legacy combined "<N> Flags / 1 Flag / No flags" form.
+# SAFETY: never click a "Post to GitHub" (it posts a finding to the PR!) or
+# "Copy" button — those are siblings of each finding row.
 agent-browser eval '(() => {
-  const targets = Array.from(document.querySelectorAll("button")).filter(
-    (b) => /^(\d+\s+(Bugs?|Flags?)|No (bugs|flags))$/i.test((b.textContent || "").trim())
-  );
-  targets.forEach((b) => b.click());
-  return targets.length;
+  const btns = Array.from(document.querySelectorAll("button"));
+  let n = 0;
+  // Bugs/Flags summary toggles (2026 split + legacy combined form).
+  btns.filter((b) => /^(\d+\s+(Bugs?|Flags?)|No (bugs|flags))$/i.test((b.textContent || "").trim()))
+      .forEach((b) => { b.click(); n++; });
+  // Informational finding rows — expand to pull their detail into innerText.
+  btns.filter((b) => {
+    const t = (b.textContent || "").trim();
+    if (/^(Post to GitHub|Copy)$/i.test(t)) return false;
+    return /Informational/i.test(t);
+  }).forEach((b) => { b.click(); n++; });
+  return n;
 })()' >/dev/null 2>&1 || true
 sleep 2
+
+# Harvest the Informational findings straight from their button DOM nodes. Even
+# after expansion their titles/details are not reliably separable in the page's
+# innerText, so read the button textContent directly (same JSON-decode as the
+# page text below). Excludes the "Post to GitHub"/"Copy" siblings and short
+# labels. Feeds the extractor's Informational section; absence → empty file.
+agent-browser eval '(() => {
+  const seen = new Set(); const out = [];
+  Array.from(document.querySelectorAll("button")).forEach((b) => {
+    const t = (b.textContent || "").trim();
+    if (/Informational/i.test(t) && !/^(Post to GitHub|Copy)$/i.test(t) && t.length > 20 && !seen.has(t)) {
+      seen.add(t);
+      // The row text runs together as "<title>Informational<file:line> • Read".
+      // Split on the "Informational" badge to a readable "<title> — <file:line>",
+      // dropping the trailing " • Read"/" • Copy" affordance labels. Fall back to
+      // the raw text if the shape does not match.
+      const m = t.match(/^(.*?)Informational(.*?)(?:\s*[•·]\s*(?:Read|Copy).*)?$/i);
+      out.push(m ? (m[1].trim() + " — " + m[2].trim()).replace(/\s+—\s+$/, "") : t);
+    }
+  });
+  return out.join("\n\n---\n\n");
+})()' 2>/dev/null \
+  | python3 -c "import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw) if raw.startswith('\"') else raw)" \
+  > "$OUT/devin-informational.txt" || true
 
 # Extract narrative + flags. agent-browser eval emits a JSON-encoded string
 # (the body text wrapped in quotes with literal \n escapes), so decode it back
@@ -147,7 +230,7 @@ agent-browser screenshot "$OUT/devin-screenshot.png" 2>/dev/null || true
 # Flags toggle — the 2026 UI has separate "N Bugs" and "N Flags" lines, so
 # we walk both. The split is heuristic (Devin doesn't render machine-readable
 # section markers); it falls back to the full page text if the headers move.
-python3 - "$OUT/devin-page.txt" "$OUT/devin-commit-status.txt" > "$OUT/devin-flags.md" <<'PY'
+python3 - "$OUT/devin-page.txt" "$OUT/devin-commit-status.txt" "$OUT/devin-informational.txt" > "$OUT/devin-flags.md" <<'PY'
 import re, sys
 from pathlib import Path
 
@@ -157,6 +240,15 @@ if len(sys.argv) > 2:
     p = Path(sys.argv[2])
     if p.exists():
         status = p.read_text().strip().strip('"')
+
+# Informational findings (2026 UI 3rd category) harvested from the button DOM
+# nodes — see the harvest step above. Not in the innerText header-split, so it
+# arrives via its own file rather than the HEADER_RE walk.
+informational = ""
+if len(sys.argv) > 3:
+    pi = Path(sys.argv[3])
+    if pi.exists():
+        informational = pi.read_text().strip().strip('"')
 
 # Section split. Headers we care about (in order they appear on the page):
 #   "Devin's AI analysis"   - prose narrative
@@ -211,6 +303,8 @@ print("\n## Bugs\n")
 print(sections.get("bugs", "(none reported)")[:5000])
 print("\n## Flags\n")
 print(sections.get("flags", "(none reported)")[:5000])
+print("\n## Informational\n")
+print((informational or "(none reported)")[:5000])
 PY
 
 # Body-integrity guard: require a terminal status AND a non-trivial body before
