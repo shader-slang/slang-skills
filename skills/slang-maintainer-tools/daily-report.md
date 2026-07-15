@@ -122,7 +122,12 @@ Only use full names and usernames which are present in the input data. If both a
 
 ## Post to Slack (optional)
 
-After the report is ready, **ask the user** whether to post it to Slack (use `AskUserQuestion`; default to **not** posting). Only if the user confirms, post the report via `mcp__slang-mcp__slack_post_message` to the configured Slack channel — use the same channel configured for collection; do **not** hardcode a channel ID inline (see [gotchas.md](./gotchas.md) → Configuration).
+After the report is ready, **ask the user** whether to post it to Slack (use `AskUserQuestion`; default to **not** posting). Only if the user confirms, post in **two steps** so the channel stays scannable and the full report lives in a thread:
+
+1. **Channel parent (short)** — `mcp__slang-mcp__slack_post_message` to the configured Slack channel (same channel used for collection; do **not** hardcode a channel ID inline — see [gotchas.md](./gotchas.md) → Configuration). Keep this to 1–3 lines, e.g. report date, time range, and a one-line highlight from **Urgent Matters** (or "nothing urgent" if empty). Example shape: `📋 Slang daily report — YYYY-MM-DD (last 24h) — 🚨 1 urgent item (see thread)`.
+2. **Thread reply (full report)** — `mcp__slang-mcp__slack_reply_to_thread` with the same `channel_id`, `thread_ts` set to the parent message's `ts` from step 1, and `text` set to the full report body.
+
+If step 1 succeeds but step 2 fails, tell the user the parent was posted and retry or paste the report manually into that thread. If the report exceeds Slack's message limit, split it across multiple thread replies in order (same `thread_ts`).
 
 ---
 
