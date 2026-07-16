@@ -127,7 +127,16 @@ After the report is ready, **ask the user** whether to post it to Slack (use `As
 1. **Channel parent (short)** — `mcp__slang-mcp__slack_post_message` to the configured Slack channel (same channel used for collection; do **not** hardcode a channel ID inline — see [gotchas.md](./gotchas.md) → Configuration). Keep this to 1–3 lines, e.g. report date, time range, and a one-line highlight from **Urgent Matters** (or "nothing urgent" if empty). Example shape: `📋 Slang daily report — YYYY-MM-DD (last 24h) — 🚨 1 urgent item (see thread)`.
 2. **Thread reply (full report)** — `mcp__slang-mcp__slack_reply_to_thread` with the same `channel_id`, `thread_ts` set to the parent message's `ts` from step 1, and `text` set to the full report body.
 
-If step 1 succeeds but step 2 fails, tell the user the parent was posted and retry or paste the report manually into that thread. If the report exceeds Slack's message limit, split it across multiple thread replies in order (same `thread_ts`).
+### Slack posting failure recovery (READ BEFORE RE-POSTING — this has gone wrong before)
+
+- **A non-error response means success.** If the response has `"ok": true` (and no error), the message landed. Treat it as done. Warnings like `missing_charset` are harmless.
+- **Do not infer truncation from the tool response.** The `slack_reply_to_thread` / `slack_post_message` response echoes a `text` and `blocks` payload that may *look* partial (for example, starting mid-report) even when the full message posted correctly to Slack. A partial-looking response is **not** enough reason to post again.
+- **If anything appears to have failed, inspect the actual Slack thread before posting again.** Use `slack_get_channel_history`, thread replies, or the available Slack read tool to determine exactly what landed in the parent thread. Do this before any retry, continuation, or corrective post.
+- **Only post what is missing.** If inspection shows the report landed fully, stop. If it landed partially, compute the exact remaining suffix/subset and post only that non-overlapping remainder. If nothing landed, retry the full body once.
+- **Never blind-retry or post overlapping chunks.** A second post without first checking the real thread state can duplicate content and make the report hard to read.
+- **Intentional splitting is a deliberate up-front decision.** Only split if you know in advance the body exceeds Slack's message limit. If splitting, decide the exact ordered parts (`part 1/N` … `part N/N`) with no overlapping content before posting, then post each part exactly once.
+
+If step 1 succeeds but step 2 returns an actual error, tell the user the parent was posted, inspect the thread to see what landed, and then either post only the missing remainder or ask them to paste the report manually into that thread.
 
 ---
 
