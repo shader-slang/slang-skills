@@ -377,6 +377,30 @@ class TestBuildReport(unittest.TestCase):
         self.assertIn(f"{report.BOT_ICON} agent PR", out)
         self.assertIn(f"{report.COMMUNITY_ICON} community PR", out)
         self.assertIn(f"{report.ESCALATED_ICON} escalated/overdue", out)
+        self.assertIn(f"{report.SHARED_ICON} shared", out)
+
+    def test_single_assignee_not_shared(self):
+        pr = self._awaiting(number=96, source="Community", assignees=["bob"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertFalse(rec["bob"][0].shared)
+        out = report.render_report(rec, self.cfg)
+        item_lines = [ln for ln in out.splitlines() if "slang#96" in ln]
+        self.assertEqual(len(item_lines), 1)
+        self.assertNotIn(report.SHARED_ICON, item_lines[0])  # marker only in the legend
+
+    def test_shared_marker_on_multi_assignee(self):
+        pr = self._awaiting(number=95, source="Community", assignees=["bob", "carol"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertTrue(rec["bob"][0].shared)
+        self.assertTrue(rec["carol"][0].shared)
+        out = report.render_report(rec, self.cfg)
+        # The shared icon appears on the item lines under both assignees, tagged
+        # at the end of the line (after the link and reason).
+        item_lines = [ln for ln in out.splitlines() if "slang#95" in ln]
+        self.assertEqual(len(item_lines), 2)
+        for ln in item_lines:
+            self.assertTrue(ln.rstrip().endswith(report.SHARED_ICON))
+            self.assertLess(ln.index("slang#95"), ln.index(report.SHARED_ICON))
 
     def test_report_title(self):
         pr = self._awaiting(number=99, source="Community", assignees=["bob"])

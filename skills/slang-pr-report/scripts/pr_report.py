@@ -605,6 +605,7 @@ ESCALATED_ICON = "\u2b06\ufe0f"   # up arrow: escalated/overdue (past the second
 COMMUNITY_ICON = "\U0001f310"     # globe
 BOT_ICON = "\U0001f916"           # robot
 UNKNOWN_ICON = "\u2753"           # red question mark: source couldn't be determined
+SHARED_ICON = "\U0001f465"        # busts: shared across multiple human assignees
 
 # Group key for PRs with no human assignee. Parentheses can't appear in a GitHub
 # login, so this never collides with a real assignee; rendered as "Unassigned".
@@ -627,6 +628,7 @@ class ReportItem:
     reason: str
     assignee: str
     escalated: bool = False   # reached the escalate rung (overdue past the second threshold)
+    shared: bool = False      # listed under more than one human assignee (shared ownership)
 
 
 # ---------------------------------------------------------------------------
@@ -822,9 +824,10 @@ def build_report(prs: list[PR], cfg: Config,
         escalated = escalate_after is not None and stall_wh >= escalate_after
         reason = pred.render(pr, cfg, stall_days)
         owners = human_assignees(pr.assignees, cfg) or [UNASSIGNED]
+        shared = len(owners) > 1  # same PR surfaced to several human assignees
         for owner in owners:
             recipients.setdefault(owner, []).append(
-                ReportItem(pr, reason, owner, escalated))
+                ReportItem(pr, reason, owner, escalated, shared))
     return recipients
 
 
@@ -850,13 +853,15 @@ def _item_sort_key(it: ReportItem, cfg: Config) -> tuple[int, int]:
 def render_report(recipients: dict[str, list[ReportItem]], cfg: Config) -> str:
     """Render the assignee-grouped report. The Unassigned group is listed first,
     then named assignees sorted; an `escalated` item keeps its place and gains
-    the overdue up-arrow."""
+    the overdue up-arrow, and a `shared` item (listed under more than one human
+    assignee) gains the shared-ownership marker at the end of the line."""
     if not recipients:
         return ""
     named = sorted(r for r in recipients if r != UNASSIGNED)
     order = ([UNASSIGNED] if UNASSIGNED in recipients else []) + named
     legend = (f"_{BOT_ICON} agent PR · {COMMUNITY_ICON} community PR · "
-              f"{UNKNOWN_ICON} source unknown · {ESCALATED_ICON} escalated/overdue_")
+              f"{UNKNOWN_ICON} source unknown · {ESCALATED_ICON} escalated/overdue · "
+              f"{SHARED_ICON} shared (multiple assignees)_")
     lines = ["## Slang PR Escalation Report", "", legend, ""]
     for recipient in order:
         header = "Unassigned" if recipient == UNASSIGNED else format_mention(recipient, cfg)
@@ -865,7 +870,10 @@ def render_report(recipients: dict[str, list[ReportItem]], cfg: Config) -> str:
             prefix = (ESCALATED_ICON + " ") if it.escalated else ""
             icon = source_icon(it.pr, cfg)
             link = f"[{_repo_short(it.pr.repo)}#{it.pr.number}]({it.pr.url})"
-            lines.append(f"  - {prefix}{icon} {link} — {it.reason}")
+            # Shared-ownership marker is tagged at the end of the line (after the
+            # reason), never as a prefix.
+            suffix = f" {SHARED_ICON}" if it.shared else ""
+            lines.append(f"  - {prefix}{icon} {link} — {it.reason}{suffix}")
     return "\n".join(lines).strip()
 
 

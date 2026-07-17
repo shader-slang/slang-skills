@@ -121,12 +121,15 @@ overdue **in place** with the `⬆️` marker. Example:
   - ⬆️ 🌐 [slang#334](…/pull/334) — needs CI approval
   - 🤖 [slang#9001](…/pull/9001) — awaiting review from: <@222>
 - **`alice`**:
-  - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help
+  - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help 👥
+- **`bob`**:
+  - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help 👥
 ```
 - The report is titled **"Slang PR Escalation Report"**.
 - **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. A PR with several human assignees is repeated under each. Escalations are marked identically in every group.
 - **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
 - `⬆️` marks an item **escalated/overdue** past the second (escalate) rung.
+- `👥` (tagged at the **end** of the line, after the reason) marks an item **shared** — surfaced under more than one human assignee (it appears in each of their sections), so a viewer knows they are not the sole owner.
 - `🌐` Community, `🤖` Bot, `❓` source unknown (the repo's collaborators couldn't be read, so Internal-vs-Community is undetermined). Internal PRs and human drafts are excluded. PR refs are clickable links.
 - **Mentions** (`--recipient-map`): a login present in the supplied map renders as a `<@id>` mention that pings on Discord (the format also fits Slack); every other login renders as inert `` `login` ``. **The invoker must pass `--recipient-map PATH`** to get pings. See the schema below.
 
