@@ -74,6 +74,12 @@ Each PR's stage is derived from CI / reviews / draft / merge-queue signals (the
 
 The stage gates the "awaiting review" reason and anchors the stall clock (a
 contributor PR's CI going green and a bot PR's promotion each count as movement).
+A comment by a human assignee other than the PR author also counts as movement,
+so a maintainer engaging (e.g. pinging the author) resets the clock rather than
+leaving the PR to keep resurfacing. This is intentionally an unordered
+set-membership test (GitHub assignees are co-equal with no stable "primary"),
+and the author is excluded even when they are also assigned, so an author
+comment never resets the clock.
 
 ## PR sources and per-source behavior
 
@@ -125,7 +131,8 @@ Example:
 ### Per-source predicate ladders (the single source of truth)
 Each PR's **reason** is the first matching predicate in its source's ladder; its
 **stall** (working-hours since it last *moved* — derived stage change / new
-commit / new review) selects the rung: it surfaces under its assignee/Unassigned
+commit / new review / a new comment by a non-author human assignee) selects the
+rung: it surfaces under its assignee/Unassigned
 group once `stall >= assignee_after`, and is marked overdue in place (`⬆️`) once
 `stall >= escalate_after`. Defined in `COMMUNITY_LADDER` / `BOT_LADDER` in
 [scripts/pr_report.py](scripts/pr_report.py):
@@ -143,8 +150,8 @@ requested.
 
 The script only **emits** the report (stdout + exit code `10` when due). This
 skill does NOT prescribe delivery — the agent uses whatever channel is available
-at runtime. Always keep the bot-transparency disclaimer the script appends. To
-make the report **notify** people (e.g. on Discord), pass `--recipient-map PATH`.
+at runtime. To make the report **notify** people (e.g. on Discord), pass
+`--recipient-map PATH`.
 
 ### Recipient map (`--recipient-map`)
 

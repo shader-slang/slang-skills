@@ -162,7 +162,7 @@ class TestComputeStall(unittest.TestCase):
     def test_unchanged_keeps_prior(self):
         # Derived stage Todo (CI passed); fingerprint matches prior -> no movement.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Todo", "abc", None],
+        prior = {"move_fingerprint": ["Todo", "abc", None, None],
                  "last_moved_at": utc(2026, 6, 8).isoformat()}
         state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
@@ -170,7 +170,7 @@ class TestComputeStall(unittest.TestCase):
     def test_movement_resets_to_now(self):
         # New head SHA -> fingerprint changes -> last_moved resets to now.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="NEW")
-        prior = {"move_fingerprint": ["Todo", "abc", None],
+        prior = {"move_fingerprint": ["Todo", "abc", None, None],
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
@@ -179,11 +179,101 @@ class TestComputeStall(unittest.TestCase):
     def test_stage_change_counts_as_movement(self):
         # CI flips pending -> passed: derived stage Revising -> Todo is movement.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Revising", "abc", None],
+        prior = {"move_fingerprint": ["Revising", "abc", None, None],
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
         self.assertEqual(days, 0)
+
+    def test_assignee_comment_counts_as_movement(self):
+        # A fresh comment by an assignee changes the fingerprint's comment slot
+        # -> last_moved resets to now (report stops nagging the assignee).
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
+                     last_assignee_comment_at=utc(2026, 6, 10, 9))
+        prior = {"move_fingerprint": ["Todo", "abc", None, None],
+                 "last_moved_at": utc(2026, 6, 1).isoformat()}
+        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
+        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
+        self.assertEqual(days, 0)
+
+    def test_same_assignee_comment_is_not_movement(self):
+        # An unchanged latest-assignee-comment timestamp keeps the prior clock.
+        commented = utc(2026, 6, 5, 9)
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
+                     last_assignee_comment_at=commented)
+        prior = {"move_fingerprint": ["Todo", "abc", None, commented.isoformat()],
+                 "last_moved_at": utc(2026, 6, 5, 9).isoformat()}
+        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
+        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
+
+
+@final
+class TestLatestAssigneeComment(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg()
+
+    def _comment(self, login, when):
+        return {"author": {"login": login}, "createdAt": when.isoformat()}
+
+    def test_none_when_no_assignees(self):
+        comments = [self._comment("bob", utc(2026, 6, 5))]
+        self.assertIsNone(report.latest_assignee_comment_at(comments, [], "alice", self.cfg))
+
+    def test_picks_latest_by_an_assignee(self):
+        comments = [self._comment("bob", utc(2026, 6, 3)),
+                    self._comment("bob", utc(2026, 6, 7))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 7))
+
+    def test_ignores_non_assignee_comments(self):
+        # carol is not assigned, so her comment does not count.
+        comments = [self._comment("carol", utc(2026, 6, 9)),
+                    self._comment("bob", utc(2026, 6, 4))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 4))
+
+    def test_any_non_author_assignee_counts_regardless_of_order(self):
+        # Both bob and carol are assignees (neither is the author) -> the latest
+        # of the two wins, independent of assignee list order.
+        comments = [self._comment("bob", utc(2026, 6, 3)),
+                    self._comment("carol", utc(2026, 6, 9))]
+        self.assertEqual(
+            report.latest_assignee_comment_at(comments, ["bob", "carol"], "alice", self.cfg),
+            utc(2026, 6, 9))
+        self.assertEqual(
+            report.latest_assignee_comment_at(comments, ["carol", "bob"], "alice", self.cfg),
+            utc(2026, 6, 9))
+
+    def test_excludes_author_even_when_assigned(self):
+        # The PR author (alice) is also an assignee; her comment must NOT count,
+        # but the other assignee's (bob) does.
+        comments = [self._comment("alice", utc(2026, 6, 9)),
+                    self._comment("bob", utc(2026, 6, 3))]
+        got = report.latest_assignee_comment_at(comments, ["alice", "bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 3))
+
+    def test_none_when_only_author_assigned(self):
+        # Author is the sole assignee -> no non-author assignee -> None.
+        comments = [self._comment("alice", utc(2026, 6, 9))]
+        self.assertIsNone(
+            report.latest_assignee_comment_at(comments, ["alice"], "alice", self.cfg))
+
+    def test_ignores_bot_assignee(self):
+        comments = [self._comment("bob", utc(2026, 6, 5)),
+                    self._comment("nv-slang-bot", utc(2026, 6, 8))]
+        got = report.latest_assignee_comment_at(
+            comments, ["nv-slang-bot", "bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 5))
+
+    def test_case_insensitive_login_match(self):
+        comments = [self._comment("Bob", utc(2026, 6, 6))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 6))
+
+    def test_none_when_assignee_never_commented(self):
+        comments = [self._comment("carol", utc(2026, 6, 9))]
+        self.assertIsNone(
+            report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg))
 
 
 @final
