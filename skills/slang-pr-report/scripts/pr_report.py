@@ -763,6 +763,20 @@ def source_icon(pr: PR, cfg: Config) -> str:
 
 # --- Movement / stall clock ---------------------------------------------------
 
+def move_fingerprint(pr: PR, cfg: Config) -> dict[str, Any]:
+    """The named movement signals for a PR. A change in any of these means the
+    PR *moved* (resets the stall clock). Keyed by signal name (not a positional
+    list) so the set of signals can evolve without invalidating stored
+    fingerprints — see compute_stall."""
+    return {
+        "stage": derive_stage(pr, cfg),
+        "head_sha": pr.head_sha,
+        "last_review_at": pr.last_review_at.isoformat() if pr.last_review_at else None,
+        "last_assignee_comment_at": (pr.last_assignee_comment_at.isoformat()
+                                     if pr.last_assignee_comment_at else None),
+    }
+
+
 def compute_stall(pr: PR, cfg: Config, prior: dict[str, Any], now: datetime,
                   tz: tzinfo) -> tuple[dict[str, Any], float, int]:
     """Track when a PR last *moved* (derived stage / head SHA / last review /
@@ -774,17 +788,24 @@ def compute_stall(pr: PR, cfg: Config, prior: dict[str, Any], now: datetime,
     bot PR's promotion each register as movement, per source. A comment by a
     human assignee other than the author also counts as movement — a maintainer
     engaging (e.g. pinging the author) resets the clock so the report does not
-    keep nagging them."""
-    fp = [derive_stage(pr, cfg), pr.head_sha,
-          pr.last_review_at.isoformat() if pr.last_review_at else None,
-          pr.last_assignee_comment_at.isoformat() if pr.last_assignee_comment_at else None]
+    keep nagging them.
+
+    Movement is decided per named signal so the fingerprint schema can evolve
+    safely: only a signal that *also existed* in the stored fingerprint and now
+    differs counts as movement. A newly-added signal key does not (so adding a
+    signal never mass-resets the whole backlog to `now`). A legacy positional
+    (list) fingerprint from an older build is treated like first sight and
+    re-anchored to the PR's last activity, never to `now`."""
+    fp = move_fingerprint(pr, cfg)
     prior_fp = prior.get("move_fingerprint")
-    if prior_fp is None:
+    if prior_fp is None or not isinstance(prior_fp, dict):
+        # First sight, or a pre-dict (list) fingerprint from an older schema:
+        # anchor to the PR's real last activity rather than treating a schema
+        # change as movement (which would reset the entire backlog to `now`).
         last_moved = pr.last_activity_at or now
-    elif prior_fp != fp:
-        last_moved = now
     else:
-        last_moved = parse_iso(prior.get("last_moved_at")) or now
+        moved = any(prior_fp.get(k) != v for k, v in fp.items() if k in prior_fp)
+        last_moved = now if moved else (parse_iso(prior.get("last_moved_at")) or now)
     state = {"move_fingerprint": fp, "last_moved_at": last_moved.isoformat()}
     stall_wh = working_hours_between(last_moved, now, tz)
     stall_days = max(0, (now - last_moved).days)

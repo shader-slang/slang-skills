@@ -159,10 +159,17 @@ class TestComputeStall(unittest.TestCase):
         self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 9, 12))
         self.assertEqual(days, 1)
 
+    def _fp(self, stage="Todo", head_sha="abc", last_review_at=None,
+            last_assignee_comment_at=None):
+        # Build a dict fingerprint matching move_fingerprint()'s shape.
+        return {"stage": stage, "head_sha": head_sha,
+                "last_review_at": last_review_at,
+                "last_assignee_comment_at": last_assignee_comment_at}
+
     def test_unchanged_keeps_prior(self):
         # Derived stage Todo (CI passed); fingerprint matches prior -> no movement.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Todo", "abc", None, None],
+        prior = {"move_fingerprint": self._fp(),
                  "last_moved_at": utc(2026, 6, 8).isoformat()}
         state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
@@ -170,7 +177,7 @@ class TestComputeStall(unittest.TestCase):
     def test_movement_resets_to_now(self):
         # New head SHA -> fingerprint changes -> last_moved resets to now.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="NEW")
-        prior = {"move_fingerprint": ["Todo", "abc", None, None],
+        prior = {"move_fingerprint": self._fp(head_sha="abc"),
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
@@ -179,7 +186,7 @@ class TestComputeStall(unittest.TestCase):
     def test_stage_change_counts_as_movement(self):
         # CI flips pending -> passed: derived stage Revising -> Todo is movement.
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Revising", "abc", None, None],
+        prior = {"move_fingerprint": self._fp(stage="Revising"),
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
@@ -190,7 +197,7 @@ class TestComputeStall(unittest.TestCase):
         # -> last_moved resets to now (report stops nagging the assignee).
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
                      last_assignee_comment_at=utc(2026, 6, 10, 9))
-        prior = {"move_fingerprint": ["Todo", "abc", None, None],
+        prior = {"move_fingerprint": self._fp(),
                  "last_moved_at": utc(2026, 6, 1).isoformat()}
         state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
@@ -201,10 +208,35 @@ class TestComputeStall(unittest.TestCase):
         commented = utc(2026, 6, 5, 9)
         pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
                      last_assignee_comment_at=commented)
-        prior = {"move_fingerprint": ["Todo", "abc", None, commented.isoformat()],
+        prior = {"move_fingerprint": self._fp(last_assignee_comment_at=commented.isoformat()),
                  "last_moved_at": utc(2026, 6, 5, 9).isoformat()}
         state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
         self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
+
+    def test_added_signal_key_does_not_reset(self):
+        # A stored fingerprint missing a key (older schema) must NOT be treated
+        # as movement just because a new signal appeared -> keep the prior clock.
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
+                     last_assignee_comment_at=utc(2026, 6, 10, 9))
+        prior = {"move_fingerprint": {"stage": "Todo", "head_sha": "abc",
+                                      "last_review_at": None},  # no comment key
+                 "last_moved_at": utc(2026, 6, 1).isoformat()}
+        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
+        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])  # not reset to now
+
+    def test_legacy_list_fingerprint_reanchors_to_activity(self):
+        # A pre-dict (list) fingerprint from an older build must re-anchor to the
+        # PR's last activity, NOT reset to now (the mass-reset regression).
+        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
+                     last_activity_at=utc(2026, 6, 3, 12))
+        prior = {"move_fingerprint": ["Todo", "abc", None],  # legacy list
+                 "last_moved_at": utc(2026, 6, 1).isoformat()}
+        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
+        self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 3, 12))
+        self.assertNotEqual(report.parse_iso(state["last_moved_at"]), self.now)
+        self.assertEqual(days, 7)
+        # And the persisted fingerprint is upgraded to the dict shape.
+        self.assertIsInstance(state["move_fingerprint"], dict)
 
 
 @final
