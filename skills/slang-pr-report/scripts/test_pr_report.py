@@ -106,13 +106,15 @@ class TestPredicates(unittest.TestCase):
         pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED)
         p = self._match(pr)
         self.assertEqual(p.key, "needs_ci_approval")
-        self.assertEqual(p.render(pr, self.cfg, 0), "needs CI approval")
+        self.assertEqual(p.render(pr, self.cfg, 0), "idle for 0 days — needs CI approval")
 
     def test_changes_requested(self):
         pr = make_pr(source="Community", change_requested=True)
         p = self._match(pr)
         self.assertEqual(p.key, "changes_requested")
-        self.assertIn("changes requested", p.render(pr, self.cfg, 0))
+        self.assertEqual(
+            p.render(pr, self.cfg, 8),
+            "idle for 8 days — changes requested, check if author is still active / needs help")
 
     def test_awaiting_review(self):
         # A Community PR reaches the human-ready stage via CI passed.
@@ -120,11 +122,13 @@ class TestPredicates(unittest.TestCase):
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED")
         p = self._match(pr)
         self.assertEqual(p.key, "awaiting_review")
-        self.assertEqual(p.render(pr, self.cfg, 0), "awaiting review from: `dan`")
+        self.assertEqual(p.render(pr, self.cfg, 5), "idle for 5 days — awaiting review from: `dan`")
 
     def test_ci_failing(self):
         pr = make_pr(source="Community", ci_state=report.CI_FAILED)
-        self.assertEqual(self._match(pr).key, "ci_failing")
+        p = self._match(pr)
+        self.assertEqual(p.key, "ci_failing")
+        self.assertEqual(p.render(pr, self.cfg, 2), "idle for 2 days — CI failing, needs fixes")
 
     def test_idle_catchall_and_render(self):
         pr = make_pr(source="Community", ci_state=report.CI_PENDING)

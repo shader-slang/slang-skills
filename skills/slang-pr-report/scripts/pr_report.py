@@ -690,6 +690,14 @@ def _awaiting_review(pr: PR, cfg: Config) -> bool:
             and pr.review_decision != "APPROVED")
 
 
+def _aged(days: int, tail: str = "") -> str:
+    """Give every reason the same leading age phrase so the day count lands in
+    the same place across all messages (easier to scan): `idle for N days` for
+    the bare catch-all, `idle for N days — <specific reason>` otherwise."""
+    lead = f"idle for {days} days"
+    return f"{lead} — {tail}" if tail else lead
+
+
 # Ladder rung thresholds are weekday-hours since the PR last moved.
 DAY = 24.0
 WEEK = 7 * DAY
@@ -702,23 +710,23 @@ WEEK = 7 * DAY
 COMMUNITY_LADDER: list[Predicate] = [
     Predicate("needs_ci_approval",
               lambda pr, cfg: pr.ci_state == CI_ACTION_REQUIRED,
-              lambda pr, cfg, days: "needs CI approval",
+              lambda pr, cfg, days: _aged(days, "needs CI approval"),
               (("assignee", 0.0), ("escalate", DAY))),
     Predicate("changes_requested",
               lambda pr, cfg: pr.change_requested,
-              lambda pr, cfg, days: "changes requested — check if author is still active / needs help",
+              lambda pr, cfg, days: _aged(days, "changes requested, check if author is still active / needs help"),
               (("assignee", WEEK), ("escalate", 2 * WEEK))),
     Predicate("awaiting_review",
               _awaiting_review,
-              lambda pr, cfg, days: f"awaiting review from: {_reviewers_text(pr, cfg)}",
+              lambda pr, cfg, days: _aged(days, f"awaiting review from: {_reviewers_text(pr, cfg)}"),
               (("assignee", DAY), ("escalate", 2 * DAY))),
     Predicate("ci_failing",
               lambda pr, cfg: pr.ci_state == CI_FAILED,
-              lambda pr, cfg, days: "CI failing — needs fixes",
+              lambda pr, cfg, days: _aged(days, "CI failing, needs fixes"),
               (("assignee", DAY), ("escalate", 2 * DAY))),
     Predicate("idle",
               lambda pr, cfg: True,
-              lambda pr, cfg, days: f"idle for {days} days",
+              lambda pr, cfg, days: _aged(days),
               (("assignee", DAY), ("escalate", 2 * DAY))),
 ]
 
@@ -726,15 +734,15 @@ COMMUNITY_LADDER: list[Predicate] = [
 BOT_LADDER: list[Predicate] = [
     Predicate("awaiting_review",
               _awaiting_review,
-              lambda pr, cfg, days: f"awaiting review from: {_reviewers_text(pr, cfg)}",
+              lambda pr, cfg, days: _aged(days, f"awaiting review from: {_reviewers_text(pr, cfg)}"),
               (("assignee", 2 * DAY), ("escalate", WEEK))),
     Predicate("ci_failing",
               lambda pr, cfg: pr.ci_state == CI_FAILED,
-              lambda pr, cfg, days: "CI failing — needs fixes",
+              lambda pr, cfg, days: _aged(days, "CI failing, needs fixes"),
               (("assignee", 2 * DAY), ("escalate", WEEK))),
     Predicate("idle",
               lambda pr, cfg: True,
-              lambda pr, cfg, days: f"idle for {days} days",
+              lambda pr, cfg, days: _aged(days),
               (("assignee", 2 * DAY), ("escalate", WEEK))),
 ]
 

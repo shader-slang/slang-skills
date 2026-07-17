@@ -118,13 +118,14 @@ overdue **in place** with the `⬆️` marker. Example:
 ## Slang PR Escalation Report
 
 - **Unassigned**:
-  - ⬆️ 🌐 [slang#334](…/pull/334) — needs CI approval
-  - 🤖 [slang#9001](…/pull/9001) — awaiting review from: <@222>
+  - ⬆️ 🌐 [slang#334](…/pull/334) — idle for 1 days — needs CI approval
+  - 🤖 [slang#9001](…/pull/9001) — idle for 3 days — awaiting review from: <@222>
 - **`alice`**:
-  - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help 👥
+  - 🌐 [slang#777](…/pull/777) — idle for 9 days — changes requested, check if author is still active / needs help 👥
 - **`bob`**:
-  - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help 👥
+  - 🌐 [slang#777](…/pull/777) — idle for 9 days — changes requested, check if author is still active / needs help 👥
 ```
+- Every reason leads with the same **`idle for N days`** age phrase, then the specific condition (if any), so the day count always lands in the same spot for scanning.
 - The report is titled **"Slang PR Escalation Report"**.
 - **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. A PR with several human assignees is repeated under each. Escalations are marked identically in every group.
 - **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
@@ -142,8 +143,11 @@ once `stall >= assignee_after`, and is marked overdue in place (`⬆️`) once
 `stall >= escalate_after`. Defined in `COMMUNITY_LADDER` / `BOT_LADDER` in
 [scripts/pr_report.py](scripts/pr_report.py):
 
-- **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested — check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing — needs fixes` (24h / 48h) → `idle for N days` (24h / 48h).
-- **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing — needs fixes` (48h / 1wk) → `idle for N days` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
+Each rung's reason renders as `idle for N days — <condition>` (the `idle`
+catch-all is just `idle for N days`):
+
+- **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested, check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing, needs fixes` (24h / 48h) → `idle` (24h / 48h).
+- **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
 
 Edit the ladders to retune timeouts/audiences. The report is a **current-state**
 list: an item keeps appearing until the PR moves (which resets its stall clock).
