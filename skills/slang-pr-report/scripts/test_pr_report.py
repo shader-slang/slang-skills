@@ -623,17 +623,31 @@ class TestRealReviewersAndEffective(unittest.TestCase):
         self.assertTrue(report.classify_is_bot("Copilot", self.cfg.bot_authors))
         self.assertTrue(report.classify_is_bot("copilot-swe-agent", self.cfg.bot_authors))
 
-    def test_effective_assignee_skips_bot(self):
-        # [bmillsNV, Copilot] -> bmillsNV (first non-bot)
+    def test_human_assignees_skips_bots(self):
+        # [bmillsNV, Copilot] -> [bmillsNV] (bots dropped, order preserved)
         pr = make_pr(assignees=["bmillsNV", "Copilot"])
-        self.assertEqual(report.effective_assignee(pr, self.cfg), "bmillsNV")
+        self.assertEqual(report.human_assignees(pr.assignees, self.cfg), ["bmillsNV"])
 
-    def test_effective_assignee_bot_only_is_unassigned(self):
-        # No human assignee -> the sentinel; the report does not predict an owner.
-        pr = make_pr(assignees=["Copilot"])
-        self.assertEqual(report.effective_assignee(pr, self.cfg), report.UNASSIGNED)
-        pr2 = make_pr(assignees=[])
-        self.assertEqual(report.effective_assignee(pr2, self.cfg), report.UNASSIGNED)
+    def test_human_assignees_lists_all_humans(self):
+        pr = make_pr(assignees=["bob", "Copilot", "carol"])
+        self.assertEqual(report.human_assignees(pr.assignees, self.cfg), ["bob", "carol"])
+
+    def test_human_assignees_empty_when_no_humans(self):
+        self.assertEqual(report.human_assignees(["Copilot"], self.cfg), [])
+        self.assertEqual(report.human_assignees([], self.cfg), [])
+
+    def test_lists_under_every_human_assignee(self):
+        # A PR with two human assignees appears in both their sections.
+        pr = make_pr(number=30, source="Community", assignees=["bob", "carol"],
+                     ci_state=report.CI_PASSED, existing_reviewers=["dan"],
+                     review_decision="REVIEW_REQUIRED")
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertIn("bob", rec)
+        self.assertIn("carol", rec)
+        self.assertEqual(rec["bob"][0].pr.number, 30)
+        self.assertEqual(rec["carol"][0].pr.number, 30)
+        self.assertEqual(rec["bob"][0].assignee, "bob")
+        self.assertEqual(rec["carol"][0].assignee, "carol")
 
     def test_copilot_only_goes_to_unassigned(self):
         # A Copilot-only-assigned bot PR has no human owner -> Unassigned group.

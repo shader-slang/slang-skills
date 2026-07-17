@@ -106,11 +106,13 @@ auto-assigned non-approvers (`DEFAULT_IGNORED_REVIEWERS`) and bots are excluded.
 ## Notification model: assignee-grouped report
 
 The report is **grouped by assignee** (the caller decides how often to run and
-surface it). Each section is one assignee's queue.
-PRs with **no human assignee** are grouped under **Unassigned**, listed first —
-the report does not guess an owner (assignment happens elsewhere). An item that
-passes the escalate rung is marked overdue **in place** with the `⬆️` marker.
-Example:
+surface it). Each section is one assignee's queue. GitHub assignees are
+co-equal, so a PR with **multiple human assignees** appears in **each** of their
+sections (every responsible person sees it in their own queue, and each is
+pinged when a recipient map is supplied). PRs with **no human assignee** are
+grouped under **Unassigned**, listed first — the report does not guess an owner
+(assignment happens elsewhere). An item that passes the escalate rung is marked
+overdue **in place** with the `⬆️` marker. Example:
 
 ```
 ## Slang PR Escalation Report
@@ -122,7 +124,7 @@ Example:
   - 🌐 [slang#777](…/pull/777) — changes requested — check if author is still active / needs help
 ```
 - The report is titled **"Slang PR Escalation Report"**.
-- **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. Escalations are marked identically in every group.
+- **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. A PR with several human assignees is repeated under each. Escalations are marked identically in every group.
 - **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
 - `⬆️` marks an item **escalated/overdue** past the second (escalate) rung.
 - `🌐` Community, `🤖` Bot, `❓` source unknown (the repo's collaborators couldn't be read, so Internal-vs-Community is undetermined). Internal PRs and human drafts are excluded. PR refs are clickable links.
@@ -132,8 +134,8 @@ Example:
 Each PR's **reason** is the first matching predicate in its source's ladder; its
 **stall** (working-hours since it last *moved* — derived stage change / new
 commit / new review / a new comment by a non-author human assignee) selects the
-rung: it surfaces under its assignee/Unassigned
-group once `stall >= assignee_after`, and is marked overdue in place (`⬆️`) once
+rung: it surfaces under each of its human assignees (or Unassigned)
+once `stall >= assignee_after`, and is marked overdue in place (`⬆️`) once
 `stall >= escalate_after`. Defined in `COMMUNITY_LADDER` / `BOT_LADDER` in
 [scripts/pr_report.py](scripts/pr_report.py):
 

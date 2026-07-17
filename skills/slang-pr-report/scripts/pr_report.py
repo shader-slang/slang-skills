@@ -517,14 +517,14 @@ def summarize_reviews(reviews: list[dict[str, Any]]) -> tuple[datetime | None, b
     return last_review_at, change_requested
 
 
-def first_human_assignee(assignees: list[str], cfg: Config) -> str | None:
-    """The first non-bot assignee login (the human the report holds
-    responsible), or None when there is no human assignee. Pure. Shared by
-    effective_assignee and the assignee-comment movement signal."""
-    for a in assignees:
-        if a and not classify_is_bot(a, cfg.bot_authors) and not a.lower().endswith("[bot]"):
-            return a
-    return None
+def human_assignees(assignees: list[str], cfg: Config) -> list[str]:
+    """All non-bot assignee logins, order preserved. GitHub assignees are a
+    co-equal set (no "primary"), so the report holds every human assignee
+    responsible and lists a PR under each of them. Bots (e.g. `Copilot`, which
+    can't act on a notice) are excluded. Pure."""
+    return [a for a in assignees
+            if a and not classify_is_bot(a, cfg.bot_authors)
+            and not a.lower().endswith("[bot]")]
 
 
 def latest_assignee_comment_at(comments: list[dict[str, Any]], assignees: list[str],
@@ -540,10 +540,7 @@ def latest_assignee_comment_at(comments: list[dict[str, Any]], assignees: list[s
     when they are also assigned, so an author comment never resets the clock.
     Pure; case-insensitive on login."""
     author_l = (author or "").lower()
-    owners = {a.lower() for a in assignees
-              if a and not classify_is_bot(a, cfg.bot_authors)
-              and not a.lower().endswith("[bot]")
-              and a.lower() != author_l}
+    owners = {a.lower() for a in human_assignees(assignees, cfg) if a.lower() != author_l}
     if not owners:
         return None
     dated: list[datetime] = []
@@ -794,22 +791,16 @@ def compute_stall(pr: PR, cfg: Config, prior: dict[str, Any], now: datetime,
 
 # --- Recipient-grouped report -------------------------------------------------
 
-def effective_assignee(pr: PR, cfg: Config) -> str:
-    """The human the report holds responsible: the first non-bot assignee (a bot
-    like `Copilot` can't act on a notice). When there is no human assignee, the
-    report does not predict an owner — it returns the UNASSIGNED group so the PR
-    is surfaced honestly (assignment happens elsewhere, e.g. a GitHub Action)."""
-    return first_human_assignee(pr.assignees, cfg) or UNASSIGNED
-
-
 def build_report(prs: list[PR], cfg: Config,
                  stall_by_key: dict[str, tuple[float, int]],
                  ) -> dict[str, list[ReportItem]]:
-    """Group each flagged PR under its assignee (assignee login -> [ReportItem]),
-    with PRs that have no human assignee grouped under UNASSIGNED. A PR surfaces
-    once it passes the predicate's assignee (surface) rung; passing the escalate
-    rung marks it overdue *in place* (the `escalated` up-arrow). Pure given the
-    stall map."""
+    """Group each flagged PR under its assignees (assignee login -> [ReportItem]).
+    GitHub assignees are co-equal, so a PR is listed under *every* human assignee
+    (each responsible person sees it in their own section); a PR with no human
+    assignee is grouped under UNASSIGNED rather than guessing an owner. A PR
+    surfaces once it passes the predicate's assignee (surface) rung; passing the
+    escalate rung marks it overdue *in place* (the `escalated` up-arrow). Pure
+    given the stall map."""
     recipients: dict[str, list[ReportItem]] = {}
     for pr in prs:
         if pr.is_draft and not pr.is_bot:
@@ -826,13 +817,14 @@ def build_report(prs: list[PR], cfg: Config,
         if assignee_after is None or stall_wh < assignee_after:
             continue  # not yet at the first (surface) rung -> not surfaced
         escalate_after = rungs.get("escalate")
-        assignee = effective_assignee(pr, cfg)
         # Escalated == reached the escalate rung (overdue). Applies identically to
         # owned and Unassigned items.
         escalated = escalate_after is not None and stall_wh >= escalate_after
         reason = pred.render(pr, cfg, stall_days)
-        recipients.setdefault(assignee, []).append(
-            ReportItem(pr, reason, assignee, escalated))
+        owners = human_assignees(pr.assignees, cfg) or [UNASSIGNED]
+        for owner in owners:
+            recipients.setdefault(owner, []).append(
+                ReportItem(pr, reason, owner, escalated))
     return recipients
 
 
