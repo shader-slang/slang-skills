@@ -19,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import final
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -719,6 +720,129 @@ class TestRealReviewersAndEffective(unittest.TestCase):
         rec = report.build_report([pr], make_cfg(), {pr.key(): (200.0, 9)})
         self.assertNotIn("Copilot", rec)
         self.assertIn(report.UNASSIGNED, rec)
+
+
+@final
+class TestRateLimitHelpers(unittest.TestCase):
+    def test_looks_rate_limited_true(self):
+        for m in [
+            "gh: API rate limit exceeded for user ID 1 (HTTP 403)",
+            "You have exceeded a secondary rate limit",
+            '{"errors":[{"type":"RATE_LIMITED","message":"…"}]}',
+            "HTTP 429 Too Many Requests",
+        ]:
+            self.assertTrue(report._looks_rate_limited(m), m)
+
+    def test_looks_rate_limited_false(self):
+        for m in [
+            "HTTP 403: Resource not accessible by integration",
+            "HTTP 504 Gateway Timeout",
+            "Could not resolve host: api.github.com",
+        ]:
+            self.assertFalse(report._looks_rate_limited(m), m)
+
+    def test_wait_from_payload_picks_latest_exhausted(self):
+        payload = {"resources": {
+            "graphql": {"remaining": 0, "reset": 1300},
+            "core": {"remaining": 0, "reset": 1500},
+            "search": {"remaining": 5, "reset": 9999},
+        }}
+        self.assertEqual(report._rate_limit_wait_from_payload(payload, 1000.0), 500.0)
+
+    def test_wait_from_payload_none_when_nothing_exhausted(self):
+        payload = {"resources": {"graphql": {"remaining": 10, "reset": 1300}}}
+        self.assertIsNone(report._rate_limit_wait_from_payload(payload, 1000.0))
+
+    def test_wait_from_payload_clamps_negative_to_zero(self):
+        payload = {"resources": {"graphql": {"remaining": 0, "reset": 900}}}
+        self.assertEqual(report._rate_limit_wait_from_payload(payload, 1000.0), 0.0)
+
+    def test_rate_limited_error_is_not_runtime_error(self):
+        # So the per-repo skip (which catches RuntimeError) can't swallow it.
+        self.assertFalse(issubclass(report.RateLimitedError, RuntimeError))
+
+
+@final
+class TestExecRateLimit(unittest.TestCase):
+    """Gh._exec waits out a rate limit and retries, returns non-rate failures for
+    the caller to interpret, and aborts (RateLimitedError) past the retry cap. So
+    every gh call — including collaborator lookups — detects rate limits."""
+
+    def _proc(self, code, out="", err=""):
+        return SimpleNamespace(returncode=code, stdout=out, stderr=err)
+
+    def test_waits_then_retries_on_rate_limit(self):
+        gh = report.Gh("gh")
+        seq = [self._proc(1, err="API rate limit exceeded"), self._proc(0, out="ok")]
+        gh._run_once = lambda args: seq.pop(0)
+        waited = []
+        orig = report._wait_out_rate_limit
+        report._wait_out_rate_limit = lambda g, ctx: waited.append(ctx)
+        try:
+            proc = gh._exec(["api", "x"])
+        finally:
+            report._wait_out_rate_limit = orig
+        self.assertEqual(proc.stdout, "ok")
+        self.assertEqual(len(waited), 1)
+
+    def test_non_rate_failure_returned_not_retried(self):
+        gh = report.Gh("gh")
+        calls = {"n": 0}
+
+        def once(args):
+            calls["n"] += 1
+            return self._proc(1, err="HTTP 403: Resource not accessible by integration")
+
+        gh._run_once = once
+        proc = gh._exec(["api", "x"])
+        self.assertEqual(proc.returncode, 1)  # returned to caller
+        self.assertEqual(calls["n"], 1)       # not retried
+
+    def test_aborts_after_max_waits(self):
+        gh = report.Gh("gh")
+        gh._run_once = lambda args: self._proc(1, err="API rate limit exceeded")
+        orig = report._wait_out_rate_limit
+        report._wait_out_rate_limit = lambda g, ctx: None  # pretend to wait; never resolves
+        try:
+            with self.assertRaises(report.RateLimitedError):
+                gh._exec(["api", "x"])
+        finally:
+            report._wait_out_rate_limit = orig
+
+
+@final
+class TestScanResilience(unittest.TestCase):
+    """collect_prs_for_report skips a repo on a RuntimeError but aborts on a
+    RateLimitedError (never a silent partial report)."""
+
+    def setUp(self):
+        self.cfg = make_cfg(repos=["shader-slang/a", "shader-slang/b"])
+        self._orig = report.collect_open_prs
+
+    def tearDown(self):
+        report.collect_open_prs = self._orig
+
+    def test_runtime_error_skips_only_that_repo(self):
+        seen = []
+
+        def fake(gh, repo, cfg):
+            seen.append(repo)
+            if repo.endswith("/a"):
+                raise RuntimeError("boom (size/timeout)")
+            return [make_pr(number=1, source="Community")]
+
+        report.collect_open_prs = fake
+        prs = report.collect_prs_for_report(None, self.cfg, lambda r: set())
+        self.assertEqual(seen, ["shader-slang/a", "shader-slang/b"])  # scan continued
+        self.assertEqual(len(prs), 1)                                 # only repo b's PR
+
+    def test_rate_limited_aborts_the_scan(self):
+        def fake(gh, repo, cfg):
+            raise report.RateLimitedError("rate limited")
+
+        report.collect_open_prs = fake
+        with self.assertRaises(report.RateLimitedError):
+            report.collect_prs_for_report(None, self.cfg, lambda r: set())
 
 
 if __name__ == "__main__":

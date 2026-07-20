@@ -220,8 +220,11 @@ top of `pr_report.py`:
 ## Scheduling
 
 Any scheduler works (cron or CI); the script does not throttle, so the caller
-owns cadence. A scheduler can gate on the exit code (`10` = report to surface,
-`0` = nothing needed) to decide whether to wake the agent.
+owns cadence. Gate on the exit code: `10` = report to surface, `0` = nothing
+needed, `75` = **rate limited** (aborted rather than emitting a partial report;
+retry later). On a rate limit the script waits for the window to reset (up to
+`RATE_LIMIT_MAX_WAIT_SECONDS`) and retries; only if the reset is past that cap
+does it give up with `75`.
 
 ## Tests
 
