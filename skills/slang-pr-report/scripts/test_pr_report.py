@@ -106,13 +106,15 @@ class TestPredicates(unittest.TestCase):
         pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED)
         p = self._match(pr)
         self.assertEqual(p.key, "needs_ci_approval")
-        self.assertEqual(p.render(pr, self.cfg, 0), "needs CI approval")
+        self.assertEqual(p.render(pr, self.cfg, 0), "idle for 0 work days — needs CI approval")
 
     def test_changes_requested(self):
         pr = make_pr(source="Community", change_requested=True)
         p = self._match(pr)
         self.assertEqual(p.key, "changes_requested")
-        self.assertIn("changes requested", p.render(pr, self.cfg, 0))
+        self.assertEqual(
+            p.render(pr, self.cfg, 8),
+            "idle for 8 work days — changes requested, check if author is still active / needs help")
 
     def test_awaiting_review(self):
         # A Community PR reaches the human-ready stage via CI passed.
@@ -120,17 +122,35 @@ class TestPredicates(unittest.TestCase):
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED")
         p = self._match(pr)
         self.assertEqual(p.key, "awaiting_review")
-        self.assertEqual(p.render(pr, self.cfg, 0), "awaiting review from: `dan`")
+        self.assertEqual(p.render(pr, self.cfg, 5), "idle for 5 work days — awaiting review from: `dan`")
 
     def test_ci_failing(self):
         pr = make_pr(source="Community", ci_state=report.CI_FAILED)
-        self.assertEqual(self._match(pr).key, "ci_failing")
+        p = self._match(pr)
+        self.assertEqual(p.key, "ci_failing")
+        self.assertEqual(p.render(pr, self.cfg, 2), "idle for 2 work days — CI failing, needs fixes")
+
+    def test_no_reviewer_requested(self):
+        # CI passed, but no approve-capable reviewer requested -> no_reviewer.
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED)
+        p = self._match(pr)
+        self.assertEqual(p.key, "no_reviewer")
+        self.assertEqual(p.render(pr, self.cfg, 4), "idle for 4 work days — needs reviewer")
+
+    def test_no_reviewer_when_only_ignored_reviewer(self):
+        # An auto-assigned non-approver (bmillsNV) doesn't count as a reviewer.
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED,
+                     existing_reviewers=["bmillsNV"], review_decision="REVIEW_REQUIRED")
+        self.assertEqual(self._match(pr).key, "no_reviewer")
 
     def test_idle_catchall_and_render(self):
-        pr = make_pr(source="Community", ci_state=report.CI_PENDING)
+        # Bare idle: a real reviewer IS requested (so not no_reviewer), CI not
+        # failing, and not human-ready (CI pending) -> falls to the catch-all.
+        pr = make_pr(source="Community", ci_state=report.CI_PENDING,
+                     existing_reviewers=["dan"])
         p = self._match(pr)
         self.assertEqual(p.key, "idle")
-        self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 days")
+        self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 work days")
 
     def test_first_match_precedence(self):
         pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED, change_requested=True)
@@ -146,44 +166,179 @@ class TestPredicates(unittest.TestCase):
 
 
 @final
+class TestLastMovedAt(unittest.TestCase):
+    """last_moved_at is the max of the real, logged event timestamps (no state,
+    no updatedAt), and does not assume the timestamps are ordered."""
+
+    def test_none_when_no_signals(self):
+        self.assertIsNone(report.last_moved_at(make_pr()))
+
+    def test_head_commit_only(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 9, 12))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 9, 12))
+
+    def test_takes_latest_across_signals(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     last_review_at=utc(2026, 6, 5),
+                     ci_activity_at=utc(2026, 6, 9),
+                     last_assignee_comment_at=utc(2026, 6, 3))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 9))
+
+    def test_ci_later_than_commit_wins(self):
+        # CI can settle (or be nagged) long after the commit -> it must win.
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ci_activity_at=utc(2026, 6, 8, 15))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 8, 15))
+
+    def test_ready_for_review_counts(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ready_for_review_at=utc(2026, 6, 6))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 6))
+
+    def test_assignee_comment_counts(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     last_assignee_comment_at=utc(2026, 6, 7))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 7))
+
+
+@final
+class TestCiActivityAt(unittest.TestCase):
+    """ci_activity_at_from_rollup takes the max of every present check
+    timestamp, handles the queued/awaiting-approval (null start/complete) case
+    via the check-suite trigger time, and never assumes ordering."""
+
+    def _run(self, **kw):
+        node = {"__typename": "CheckRun"}
+        node.update(kw)
+        return {"contexts": {"nodes": [node]}}
+
+    def test_none_when_no_rollup(self):
+        self.assertIsNone(report.ci_activity_at_from_rollup(None))
+
+    def test_max_of_check_timestamps(self):
+        rollup = self._run(startedAt="2026-06-08T00:00:00Z",
+                           completedAt="2026-06-09T00:00:00Z",
+                           checkSuite={"createdAt": "2026-06-07T00:00:00Z",
+                                       "updatedAt": "2026-06-08T12:00:00Z",
+                                       "workflowRun": {"createdAt": "2026-06-07T00:00:00Z"}})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 9))
+
+    def test_non_monotonic_completed_before_started(self):
+        # Live data shows completedAt can precede startedAt -> take the max.
+        rollup = self._run(startedAt="2026-06-09T00:00:00Z",
+                           completedAt="2026-06-08T00:00:00Z",
+                           checkSuite={"createdAt": "2026-06-07T00:00:00Z", "updatedAt": None})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 9))
+
+    def test_queued_awaiting_approval_uses_suite_created(self):
+        # No start/complete (still queued / awaiting approval) -> the logged
+        # trigger, the check-suite createdAt, anchors it (decoupled from commit).
+        rollup = self._run(startedAt=None, completedAt=None,
+                           checkSuite={"createdAt": "2026-06-11T00:00:00Z", "updatedAt": None,
+                                       "workflowRun": {"createdAt": "2026-06-11T00:00:00Z"}})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 11))
+
+    def test_legacy_status_context_created_at(self):
+        rollup = {"contexts": {"nodes": [
+            {"__typename": "StatusContext", "context": "ci", "state": "SUCCESS",
+             "createdAt": "2026-06-10T00:00:00Z"}]}}
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 10))
+
+
+@final
 class TestComputeStall(unittest.TestCase):
+    """Stateless: stall is working-hours/days since last_moved_at, computed fresh
+    from the PR each run."""
+
     def setUp(self):
         self.now = utc(2026, 6, 10, 12)
         self.tz = timezone.utc
+
+    def test_stall_from_latest_signal(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ci_activity_at=utc(2026, 6, 9, 12))
+        _wh, days = report.compute_stall(pr, self.now, self.tz)
+        self.assertEqual(days, 1)  # since 6/9 12:00, one calendar day
+
+    def test_no_signal_anchors_to_now(self):
+        _wh, days = report.compute_stall(make_pr(), self.now, self.tz)
+        self.assertEqual(days, 0)
+        self.assertEqual(_wh, 0.0)
+
+    def test_weekend_hours_excluded(self):
+        # Fri 6/5 12:00 -> Wed 6/10 12:00: weekend (6/6, 6/7) dropped.
+        pr = make_pr(head_committed_at=utc(2026, 6, 5, 12))
+        wh, _days = report.compute_stall(pr, self.now, self.tz)
+        self.assertEqual(wh, 3 * 24.0)  # Fri-eve + Mon + Tue + Wed portions = 3 weekday-days
+
+
+@final
+class TestLatestAssigneeComment(unittest.TestCase):
+    def setUp(self):
         self.cfg = make_cfg()
 
-    def test_first_sight_anchors_to_activity(self):
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_activity_at=utc(2026, 6, 9, 12))
-        state, _wh, days = report.compute_stall(pr, self.cfg, {}, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 9, 12))
-        self.assertEqual(days, 1)
+    def _comment(self, login, when):
+        return {"author": {"login": login}, "createdAt": when.isoformat()}
 
-    def test_unchanged_keeps_prior(self):
-        # Derived stage Todo (CI passed); fingerprint matches prior -> no movement.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Todo", "abc", None],
-                 "last_moved_at": utc(2026, 6, 8).isoformat()}
-        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
+    def test_none_when_no_assignees(self):
+        comments = [self._comment("bob", utc(2026, 6, 5))]
+        self.assertIsNone(report.latest_assignee_comment_at(comments, [], "alice", self.cfg))
 
-    def test_movement_resets_to_now(self):
-        # New head SHA -> fingerprint changes -> last_moved resets to now.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="NEW")
-        prior = {"move_fingerprint": ["Todo", "abc", None],
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
-        self.assertEqual(days, 0)
+    def test_picks_latest_by_an_assignee(self):
+        comments = [self._comment("bob", utc(2026, 6, 3)),
+                    self._comment("bob", utc(2026, 6, 7))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 7))
 
-    def test_stage_change_counts_as_movement(self):
-        # CI flips pending -> passed: derived stage Revising -> Todo is movement.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": ["Revising", "abc", None],
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
-        self.assertEqual(days, 0)
+    def test_ignores_non_assignee_comments(self):
+        # carol is not assigned, so her comment does not count.
+        comments = [self._comment("carol", utc(2026, 6, 9)),
+                    self._comment("bob", utc(2026, 6, 4))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 4))
+
+    def test_any_non_author_assignee_counts_regardless_of_order(self):
+        # Both bob and carol are assignees (neither is the author) -> the latest
+        # of the two wins, independent of assignee list order.
+        comments = [self._comment("bob", utc(2026, 6, 3)),
+                    self._comment("carol", utc(2026, 6, 9))]
+        self.assertEqual(
+            report.latest_assignee_comment_at(comments, ["bob", "carol"], "alice", self.cfg),
+            utc(2026, 6, 9))
+        self.assertEqual(
+            report.latest_assignee_comment_at(comments, ["carol", "bob"], "alice", self.cfg),
+            utc(2026, 6, 9))
+
+    def test_excludes_author_even_when_assigned(self):
+        # The PR author (alice) is also an assignee; her comment must NOT count,
+        # but the other assignee's (bob) does.
+        comments = [self._comment("alice", utc(2026, 6, 9)),
+                    self._comment("bob", utc(2026, 6, 3))]
+        got = report.latest_assignee_comment_at(comments, ["alice", "bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 3))
+
+    def test_none_when_only_author_assigned(self):
+        # Author is the sole assignee -> no non-author assignee -> None.
+        comments = [self._comment("alice", utc(2026, 6, 9))]
+        self.assertIsNone(
+            report.latest_assignee_comment_at(comments, ["alice"], "alice", self.cfg))
+
+    def test_ignores_bot_assignee(self):
+        comments = [self._comment("bob", utc(2026, 6, 5)),
+                    self._comment("nv-slang-bot", utc(2026, 6, 8))]
+        got = report.latest_assignee_comment_at(
+            comments, ["nv-slang-bot", "bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 5))
+
+    def test_case_insensitive_login_match(self):
+        comments = [self._comment("Bob", utc(2026, 6, 6))]
+        got = report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg)
+        self.assertEqual(got, utc(2026, 6, 6))
+
+    def test_none_when_assignee_never_commented(self):
+        comments = [self._comment("carol", utc(2026, 6, 9))]
+        self.assertIsNone(
+            report.latest_assignee_comment_at(comments, ["bob"], "alice", self.cfg))
 
 
 @final
@@ -287,6 +442,30 @@ class TestBuildReport(unittest.TestCase):
         self.assertIn(f"{report.BOT_ICON} agent PR", out)
         self.assertIn(f"{report.COMMUNITY_ICON} community PR", out)
         self.assertIn(f"{report.ESCALATED_ICON} escalated/overdue", out)
+        self.assertIn(f"{report.SHARED_ICON} shared", out)
+
+    def test_single_assignee_not_shared(self):
+        pr = self._awaiting(number=96, source="Community", assignees=["bob"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertFalse(rec["bob"][0].shared)
+        out = report.render_report(rec, self.cfg)
+        item_lines = [ln for ln in out.splitlines() if "slang#96" in ln]
+        self.assertEqual(len(item_lines), 1)
+        self.assertNotIn(report.SHARED_ICON, item_lines[0])  # marker only in the legend
+
+    def test_shared_marker_on_multi_assignee(self):
+        pr = self._awaiting(number=95, source="Community", assignees=["bob", "carol"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertTrue(rec["bob"][0].shared)
+        self.assertTrue(rec["carol"][0].shared)
+        out = report.render_report(rec, self.cfg)
+        # The shared icon appears on the item lines under both assignees, tagged
+        # at the end of the line (after the link and reason).
+        item_lines = [ln for ln in out.splitlines() if "slang#95" in ln]
+        self.assertEqual(len(item_lines), 2)
+        for ln in item_lines:
+            self.assertTrue(ln.rstrip().endswith(report.SHARED_ICON))
+            self.assertLess(ln.index("slang#95"), ln.index(report.SHARED_ICON))
 
     def test_report_title(self):
         pr = self._awaiting(number=99, source="Community", assignees=["bob"])
@@ -344,34 +523,6 @@ class TestUnassignedGroup(unittest.TestCase):
         self.assertIn("- **Unassigned**:", out)                 # literal header, not a mention
         self.assertNotIn("(unassigned)", out)                   # sentinel never leaks into text
         self.assertLess(out.index("**Unassigned**"), out.index("**`bob`**"))  # listed first
-
-
-@final
-class TestPruneState(unittest.TestCase):
-    def _state(self):
-        return {"prs": {
-            "shader-slang/slang#1": {"stall": {"a": 1}},   # still open this run
-            "shader-slang/slang#2": {"stall": {"b": 2}},   # closed -> should drop
-            "shader-slang/other#9": {"stall": {"c": 3}},   # repo not scanned -> keep
-        }}
-
-    def test_open_kept_closed_dropped(self):
-        state = self._state()
-        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
-        self.assertIn("shader-slang/slang#1", state["prs"])      # open -> kept
-        self.assertNotIn("shader-slang/slang#2", state["prs"])   # closed -> dropped
-
-    def test_unscanned_repo_kept(self):
-        # A subset run (only shader-slang/slang scanned) must not wipe clocks for
-        # repos it didn't look at.
-        state = self._state()
-        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
-        self.assertIn("shader-slang/other#9", state["prs"])
-
-    def test_empty_state_is_safe(self):
-        state = {"prs": {}}
-        report.prune_state(state, set(), {"shader-slang/slang"})
-        self.assertEqual(state["prs"], {})
 
 
 @final
@@ -514,11 +665,12 @@ class TestRealReviewersAndEffective(unittest.TestCase):
                                                 self.cfg), "(no reviewers requested)")
 
     def test_awaiting_review_needs_real_reviewer(self):
-        # Only bmillsNV requested -> not "awaiting review"; falls through to idle.
+        # Only bmillsNV requested (an ignored non-approver) -> not "awaiting
+        # review"; treated as having no reviewer requested.
         pr = make_pr(source="Community", ci_state=report.CI_PASSED,
                      existing_reviewers=["bmillsNV"], review_decision="REVIEW_REQUIRED")
         match = next((p for p in report.ladder_for(pr, self.cfg) if p.applies(pr, self.cfg)), None)
-        self.assertEqual(match.key, "idle")
+        self.assertEqual(match.key, "no_reviewer")
 
     def test_failing_ci_shows_ci_failing_not_awaiting(self):
         # A Community PR with failing CI derives to Revising, so it shows
@@ -533,17 +685,31 @@ class TestRealReviewersAndEffective(unittest.TestCase):
         self.assertTrue(report.classify_is_bot("Copilot", self.cfg.bot_authors))
         self.assertTrue(report.classify_is_bot("copilot-swe-agent", self.cfg.bot_authors))
 
-    def test_effective_assignee_skips_bot(self):
-        # [bmillsNV, Copilot] -> bmillsNV (first non-bot)
+    def test_human_assignees_skips_bots(self):
+        # [bmillsNV, Copilot] -> [bmillsNV] (bots dropped, order preserved)
         pr = make_pr(assignees=["bmillsNV", "Copilot"])
-        self.assertEqual(report.effective_assignee(pr, self.cfg), "bmillsNV")
+        self.assertEqual(report.human_assignees(pr.assignees, self.cfg), ["bmillsNV"])
 
-    def test_effective_assignee_bot_only_is_unassigned(self):
-        # No human assignee -> the sentinel; the report does not predict an owner.
-        pr = make_pr(assignees=["Copilot"])
-        self.assertEqual(report.effective_assignee(pr, self.cfg), report.UNASSIGNED)
-        pr2 = make_pr(assignees=[])
-        self.assertEqual(report.effective_assignee(pr2, self.cfg), report.UNASSIGNED)
+    def test_human_assignees_lists_all_humans(self):
+        pr = make_pr(assignees=["bob", "Copilot", "carol"])
+        self.assertEqual(report.human_assignees(pr.assignees, self.cfg), ["bob", "carol"])
+
+    def test_human_assignees_empty_when_no_humans(self):
+        self.assertEqual(report.human_assignees(["Copilot"], self.cfg), [])
+        self.assertEqual(report.human_assignees([], self.cfg), [])
+
+    def test_lists_under_every_human_assignee(self):
+        # A PR with two human assignees appears in both their sections.
+        pr = make_pr(number=30, source="Community", assignees=["bob", "carol"],
+                     ci_state=report.CI_PASSED, existing_reviewers=["dan"],
+                     review_decision="REVIEW_REQUIRED")
+        rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)})
+        self.assertIn("bob", rec)
+        self.assertIn("carol", rec)
+        self.assertEqual(rec["bob"][0].pr.number, 30)
+        self.assertEqual(rec["carol"][0].pr.number, 30)
+        self.assertEqual(rec["bob"][0].assignee, "bob")
+        self.assertEqual(rec["carol"][0].assignee, "carol")
 
     def test_copilot_only_goes_to_unassigned(self):
         # A Copilot-only-assigned bot PR has no human owner -> Unassigned group.
