@@ -106,7 +106,7 @@ class TestPredicates(unittest.TestCase):
         pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED)
         p = self._match(pr)
         self.assertEqual(p.key, "needs_ci_approval")
-        self.assertEqual(p.render(pr, self.cfg, 0), "idle for 0 days — needs CI approval")
+        self.assertEqual(p.render(pr, self.cfg, 0), "idle for 0 work days — needs CI approval")
 
     def test_changes_requested(self):
         pr = make_pr(source="Community", change_requested=True)
@@ -114,7 +114,7 @@ class TestPredicates(unittest.TestCase):
         self.assertEqual(p.key, "changes_requested")
         self.assertEqual(
             p.render(pr, self.cfg, 8),
-            "idle for 8 days — changes requested, check if author is still active / needs help")
+            "idle for 8 work days — changes requested, check if author is still active / needs help")
 
     def test_awaiting_review(self):
         # A Community PR reaches the human-ready stage via CI passed.
@@ -122,20 +122,20 @@ class TestPredicates(unittest.TestCase):
                      existing_reviewers=["dan"], review_decision="REVIEW_REQUIRED")
         p = self._match(pr)
         self.assertEqual(p.key, "awaiting_review")
-        self.assertEqual(p.render(pr, self.cfg, 5), "idle for 5 days — awaiting review from: `dan`")
+        self.assertEqual(p.render(pr, self.cfg, 5), "idle for 5 work days — awaiting review from: `dan`")
 
     def test_ci_failing(self):
         pr = make_pr(source="Community", ci_state=report.CI_FAILED)
         p = self._match(pr)
         self.assertEqual(p.key, "ci_failing")
-        self.assertEqual(p.render(pr, self.cfg, 2), "idle for 2 days — CI failing, needs fixes")
+        self.assertEqual(p.render(pr, self.cfg, 2), "idle for 2 work days — CI failing, needs fixes")
 
     def test_no_reviewer_requested(self):
         # CI passed, but no approve-capable reviewer requested -> no_reviewer.
         pr = make_pr(source="Community", ci_state=report.CI_PASSED)
         p = self._match(pr)
         self.assertEqual(p.key, "no_reviewer")
-        self.assertEqual(p.render(pr, self.cfg, 4), "idle for 4 days — needs reviewer")
+        self.assertEqual(p.render(pr, self.cfg, 4), "idle for 4 work days — needs reviewer")
 
     def test_no_reviewer_when_only_ignored_reviewer(self):
         # An auto-assigned non-approver (bmillsNV) doesn't count as a reviewer.
@@ -150,7 +150,7 @@ class TestPredicates(unittest.TestCase):
                      existing_reviewers=["dan"])
         p = self._match(pr)
         self.assertEqual(p.key, "idle")
-        self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 days")
+        self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 work days")
 
     def test_first_match_precedence(self):
         pr = make_pr(source="Community", ci_state=report.CI_ACTION_REQUIRED, change_requested=True)

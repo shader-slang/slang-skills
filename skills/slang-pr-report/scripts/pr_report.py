@@ -32,6 +32,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from collections.abc import Callable
@@ -79,6 +80,13 @@ DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
 # PRs per GraphQL page (capped by server timeout, not budget: n=50 can return
 # HTTP 504 on large repos, n=25 resolves in ~5-6s).
 DEFAULT_PR_PAGE_SIZE = 25
+
+# Per-page fetch resilience. A large page can 504 on a big repo, so a failed
+# page is retried with a shrinking size (the usual 504 cause) before the repo is
+# given up on; the caller then skips just that repo instead of aborting the run.
+PAGE_FETCH_ATTEMPTS = 3
+MIN_PR_PAGE_SIZE = 5
+RETRY_BACKOFF_SECONDS = 2.0
 
 
 def _split_csv(s: str) -> list[str]:
@@ -424,16 +432,38 @@ query($owner: String!, $name: String!, $n: Int!, $cursor: String) {
 
 
 def collect_open_prs(gh: Gh, repo: str, cfg: Config) -> list[PR]:
-    """All open PRs for `repo`, fully populated, via the paginated batched query."""
+    """All open PRs for `repo`, fully populated, via the paginated batched query.
+    A failed page is retried with a shrinking page size; if it still fails,
+    RuntimeError propagates so the caller can skip just this repo rather than
+    aborting the whole org scan."""
     owner, name = repo.split("/", 1)
     prs: list[PR] = []
     cursor = None
     page_num = 0
+    page_size = DEFAULT_PR_PAGE_SIZE
     while True:
-        variables: dict[str, Any] = {"owner": owner, "name": name, "n": DEFAULT_PR_PAGE_SIZE}
+        variables: dict[str, Any] = {"owner": owner, "name": name, "n": page_size}
         if cursor:
             variables["cursor"] = cursor
-        data = gh.graphql(_PR_QUERY, variables)
+        # Fetch this page, retrying a transient failure with a shrinking page
+        # size (large pages are the usual 504 cause). If it still fails after
+        # PAGE_FETCH_ATTEMPTS, propagate so the caller can skip just this repo.
+        data = None
+        for attempt in range(1, PAGE_FETCH_ATTEMPTS + 1):
+            try:
+                data = gh.graphql(_PR_QUERY, variables)
+                break
+            except RuntimeError as e:
+                if attempt == PAGE_FETCH_ATTEMPTS:
+                    raise RuntimeError(
+                        f"{repo}: PR query failed after {PAGE_FETCH_ATTEMPTS} attempts "
+                        f"(page {page_num + 1}, size {page_size}): {e}")
+                page_size = max(MIN_PR_PAGE_SIZE, page_size // 2)
+                variables["n"] = page_size
+                _progress(f"  {repo}: page {page_num + 1} query failed "
+                          f"(attempt {attempt}/{PAGE_FETCH_ATTEMPTS}); retrying with "
+                          f"page size {page_size}…")
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
         conn = ((((data or {}).get("data") or {}).get("repository") or {})
                 .get("pullRequests") or {})
         before = len(prs)
@@ -678,7 +708,7 @@ def derive_stage(pr: PR, cfg: Config) -> str:
     """Each PR's lifecycle stage, derived from live GitHub signals.
 
     Three observable stages — Revising / Todo (ready for a human) / Done —
-    computed per source ("different fingerprints"):
+    computed per source:
       - Bot: Todo whenever promotion_gate_passed holds (always, unless a
         coverage check is configured and failing); drafts are NOT exempt.
       - Contributor/Community: Revising while draft / changes-requested / CI
@@ -731,9 +761,11 @@ def _awaiting_review(pr: PR, cfg: Config) -> bool:
 
 def _aged(days: int, tail: str = "") -> str:
     """Give every reason the same leading age phrase so the day count lands in
-    the same place across all messages (easier to scan): `idle for N days` for
-    the bare catch-all, `idle for N days — <specific reason>` otherwise."""
-    lead = f"idle for {days} days"
+    the same place across all messages (easier to scan): `idle for N work days`
+    for the bare catch-all, `idle for N work days — <specific reason>` otherwise.
+    `days` is whole work-days (weekday-only; see compute_stall), so it matches
+    the working-hour thresholds rather than calendar time."""
+    lead = f"idle for {days} work days"
     return f"{lead} — {tail}" if tail else lead
 
 
@@ -832,14 +864,17 @@ def last_moved_at(pr: PR) -> datetime | None:
 
 
 def compute_stall(pr: PR, now: datetime, tz: tzinfo) -> tuple[float, int]:
-    """How long the PR has been stalled, as (working_hours, calendar_days) since
-    it last moved (see last_moved_at). Stateless and pure — derived entirely from
-    live signals, so there is nothing to persist and nothing to migrate. A PR
-    with no timestamped signal at all anchors to `now` (zero stall)."""
+    """How long the PR has been stalled, as (working_hours, whole_work_days)
+    since it last moved (see last_moved_at). Both are weekday-only: work_days is
+    just `working_hours // 24`, so the number shown in the reason is on the same
+    footing as the working-hour surface/escalate thresholds (a PR idle over a
+    weekend doesn't inflate its day count past what actually counts). Stateless
+    and pure. A PR with no timestamped signal at all anchors to `now` (zero
+    stall)."""
     moved = last_moved_at(pr) or now
     stall_wh = working_hours_between(moved, now, tz)
-    stall_days = max(0, (now - moved).days)
-    return stall_wh, stall_days
+    work_days = int(stall_wh // 24)
+    return stall_wh, work_days
 
 
 # --- Recipient-grouped report -------------------------------------------------
@@ -969,14 +1004,26 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
     committer-signal ranking is run here."""
     _progress(f"scanning {len(cfg.repos)} repo(s) for the report — this typically takes a few minutes…")
     prs: list[PR] = []
+    skipped: list[str] = []
     for repo in cfg.repos:
-        for pr in collect_open_prs(gh, repo, cfg):
+        try:
+            repo_prs = collect_open_prs(gh, repo, cfg)
+        except RuntimeError as e:
+            # A single repo's query giving up must not abort the whole scan.
+            skipped.append(repo)
+            _progress(f"  ⚠️  skipping {repo} — {e}")
+            continue
+        for pr in repo_prs:
             # Classify Source live (reusing the repo's write+ collaborator set,
             # fetched lazily).
             pr.source = classify_source(pr, cfg, repo_collaborators(repo))
             pr.is_bot = (pr.source == cfg.source_bot)
             prs.append(pr)
-    _progress(f"collected {len(prs)} open PR(s) across {len(cfg.repos)} repo(s).")
+    if skipped:
+        _progress(f"⚠️  {len(skipped)} repo(s) skipped after repeated query failures: "
+                  f"{', '.join(skipped)}")
+    _progress(f"collected {len(prs)} open PR(s) across "
+              f"{len(cfg.repos) - len(skipped)} repo(s).")
     return prs
 
 
