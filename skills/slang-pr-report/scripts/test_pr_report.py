@@ -150,97 +150,110 @@ class TestPredicates(unittest.TestCase):
 
 
 @final
+class TestLastMovedAt(unittest.TestCase):
+    """last_moved_at is the max of the real, logged event timestamps (no state,
+    no updatedAt), and does not assume the timestamps are ordered."""
+
+    def test_none_when_no_signals(self):
+        self.assertIsNone(report.last_moved_at(make_pr()))
+
+    def test_head_commit_only(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 9, 12))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 9, 12))
+
+    def test_takes_latest_across_signals(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     last_review_at=utc(2026, 6, 5),
+                     ci_activity_at=utc(2026, 6, 9),
+                     last_assignee_comment_at=utc(2026, 6, 3))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 9))
+
+    def test_ci_later_than_commit_wins(self):
+        # CI can settle (or be nagged) long after the commit -> it must win.
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ci_activity_at=utc(2026, 6, 8, 15))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 8, 15))
+
+    def test_ready_for_review_counts(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ready_for_review_at=utc(2026, 6, 6))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 6))
+
+    def test_assignee_comment_counts(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     last_assignee_comment_at=utc(2026, 6, 7))
+        self.assertEqual(report.last_moved_at(pr), utc(2026, 6, 7))
+
+
+@final
+class TestCiActivityAt(unittest.TestCase):
+    """ci_activity_at_from_rollup takes the max of every present check
+    timestamp, handles the queued/awaiting-approval (null start/complete) case
+    via the check-suite trigger time, and never assumes ordering."""
+
+    def _run(self, **kw):
+        node = {"__typename": "CheckRun"}
+        node.update(kw)
+        return {"contexts": {"nodes": [node]}}
+
+    def test_none_when_no_rollup(self):
+        self.assertIsNone(report.ci_activity_at_from_rollup(None))
+
+    def test_max_of_check_timestamps(self):
+        rollup = self._run(startedAt="2026-06-08T00:00:00Z",
+                           completedAt="2026-06-09T00:00:00Z",
+                           checkSuite={"createdAt": "2026-06-07T00:00:00Z",
+                                       "updatedAt": "2026-06-08T12:00:00Z",
+                                       "workflowRun": {"createdAt": "2026-06-07T00:00:00Z"}})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 9))
+
+    def test_non_monotonic_completed_before_started(self):
+        # Live data shows completedAt can precede startedAt -> take the max.
+        rollup = self._run(startedAt="2026-06-09T00:00:00Z",
+                           completedAt="2026-06-08T00:00:00Z",
+                           checkSuite={"createdAt": "2026-06-07T00:00:00Z", "updatedAt": None})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 9))
+
+    def test_queued_awaiting_approval_uses_suite_created(self):
+        # No start/complete (still queued / awaiting approval) -> the logged
+        # trigger, the check-suite createdAt, anchors it (decoupled from commit).
+        rollup = self._run(startedAt=None, completedAt=None,
+                           checkSuite={"createdAt": "2026-06-11T00:00:00Z", "updatedAt": None,
+                                       "workflowRun": {"createdAt": "2026-06-11T00:00:00Z"}})
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 11))
+
+    def test_legacy_status_context_created_at(self):
+        rollup = {"contexts": {"nodes": [
+            {"__typename": "StatusContext", "context": "ci", "state": "SUCCESS",
+             "createdAt": "2026-06-10T00:00:00Z"}]}}
+        self.assertEqual(report.ci_activity_at_from_rollup(rollup), utc(2026, 6, 10))
+
+
+@final
 class TestComputeStall(unittest.TestCase):
+    """Stateless: stall is working-hours/days since last_moved_at, computed fresh
+    from the PR each run."""
+
     def setUp(self):
         self.now = utc(2026, 6, 10, 12)
         self.tz = timezone.utc
-        self.cfg = make_cfg()
 
-    def test_first_sight_anchors_to_activity(self):
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_activity_at=utc(2026, 6, 9, 12))
-        state, _wh, days = report.compute_stall(pr, self.cfg, {}, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 9, 12))
-        self.assertEqual(days, 1)
+    def test_stall_from_latest_signal(self):
+        pr = make_pr(head_committed_at=utc(2026, 6, 1),
+                     ci_activity_at=utc(2026, 6, 9, 12))
+        _wh, days = report.compute_stall(pr, self.now, self.tz)
+        self.assertEqual(days, 1)  # since 6/9 12:00, one calendar day
 
-    def _fp(self, stage="Todo", head_sha="abc", last_review_at=None,
-            last_assignee_comment_at=None):
-        # Build a dict fingerprint matching move_fingerprint()'s shape.
-        return {"stage": stage, "head_sha": head_sha,
-                "last_review_at": last_review_at,
-                "last_assignee_comment_at": last_assignee_comment_at}
-
-    def test_unchanged_keeps_prior(self):
-        # Derived stage Todo (CI passed); fingerprint matches prior -> no movement.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": self._fp(),
-                 "last_moved_at": utc(2026, 6, 8).isoformat()}
-        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
-
-    def test_movement_resets_to_now(self):
-        # New head SHA -> fingerprint changes -> last_moved resets to now.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="NEW")
-        prior = {"move_fingerprint": self._fp(head_sha="abc"),
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
+    def test_no_signal_anchors_to_now(self):
+        _wh, days = report.compute_stall(make_pr(), self.now, self.tz)
         self.assertEqual(days, 0)
+        self.assertEqual(_wh, 0.0)
 
-    def test_stage_change_counts_as_movement(self):
-        # CI flips pending -> passed: derived stage Revising -> Todo is movement.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc")
-        prior = {"move_fingerprint": self._fp(stage="Revising"),
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
-        self.assertEqual(days, 0)
-
-    def test_assignee_comment_counts_as_movement(self):
-        # A fresh comment by an assignee changes the fingerprint's comment slot
-        # -> last_moved resets to now (report stops nagging the assignee).
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_assignee_comment_at=utc(2026, 6, 10, 9))
-        prior = {"move_fingerprint": self._fp(),
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), self.now)
-        self.assertEqual(days, 0)
-
-    def test_same_assignee_comment_is_not_movement(self):
-        # An unchanged latest-assignee-comment timestamp keeps the prior clock.
-        commented = utc(2026, 6, 5, 9)
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_assignee_comment_at=commented)
-        prior = {"move_fingerprint": self._fp(last_assignee_comment_at=commented.isoformat()),
-                 "last_moved_at": utc(2026, 6, 5, 9).isoformat()}
-        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])
-
-    def test_added_signal_key_does_not_reset(self):
-        # A stored fingerprint missing a key (older schema) must NOT be treated
-        # as movement just because a new signal appeared -> keep the prior clock.
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_assignee_comment_at=utc(2026, 6, 10, 9))
-        prior = {"move_fingerprint": {"stage": "Todo", "head_sha": "abc",
-                                      "last_review_at": None},  # no comment key
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, _days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(state["last_moved_at"], prior["last_moved_at"])  # not reset to now
-
-    def test_legacy_list_fingerprint_reanchors_to_activity(self):
-        # A pre-dict (list) fingerprint from an older build must re-anchor to the
-        # PR's last activity, NOT reset to now (the mass-reset regression).
-        pr = make_pr(ci_state=report.CI_PASSED, head_sha="abc",
-                     last_activity_at=utc(2026, 6, 3, 12))
-        prior = {"move_fingerprint": ["Todo", "abc", None],  # legacy list
-                 "last_moved_at": utc(2026, 6, 1).isoformat()}
-        state, _wh, days = report.compute_stall(pr, self.cfg, prior, self.now, self.tz)
-        self.assertEqual(report.parse_iso(state["last_moved_at"]), utc(2026, 6, 3, 12))
-        self.assertNotEqual(report.parse_iso(state["last_moved_at"]), self.now)
-        self.assertEqual(days, 7)
-        # And the persisted fingerprint is upgraded to the dict shape.
-        self.assertIsInstance(state["move_fingerprint"], dict)
+    def test_weekend_hours_excluded(self):
+        # Fri 6/5 12:00 -> Wed 6/10 12:00: weekend (6/6, 6/7) dropped.
+        pr = make_pr(head_committed_at=utc(2026, 6, 5, 12))
+        wh, _days = report.compute_stall(pr, self.now, self.tz)
+        self.assertEqual(wh, 3 * 24.0)  # Fri-eve + Mon + Tue + Wed portions = 3 weekday-days
 
 
 @final
@@ -494,34 +507,6 @@ class TestUnassignedGroup(unittest.TestCase):
         self.assertIn("- **Unassigned**:", out)                 # literal header, not a mention
         self.assertNotIn("(unassigned)", out)                   # sentinel never leaks into text
         self.assertLess(out.index("**Unassigned**"), out.index("**`bob`**"))  # listed first
-
-
-@final
-class TestPruneState(unittest.TestCase):
-    def _state(self):
-        return {"prs": {
-            "shader-slang/slang#1": {"stall": {"a": 1}},   # still open this run
-            "shader-slang/slang#2": {"stall": {"b": 2}},   # closed -> should drop
-            "shader-slang/other#9": {"stall": {"c": 3}},   # repo not scanned -> keep
-        }}
-
-    def test_open_kept_closed_dropped(self):
-        state = self._state()
-        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
-        self.assertIn("shader-slang/slang#1", state["prs"])      # open -> kept
-        self.assertNotIn("shader-slang/slang#2", state["prs"])   # closed -> dropped
-
-    def test_unscanned_repo_kept(self):
-        # A subset run (only shader-slang/slang scanned) must not wipe clocks for
-        # repos it didn't look at.
-        state = self._state()
-        report.prune_state(state, {"shader-slang/slang#1"}, {"shader-slang/slang"})
-        self.assertIn("shader-slang/other#9", state["prs"])
-
-    def test_empty_state_is_safe(self):
-        state = {"prs": {}}
-        report.prune_state(state, set(), {"shader-slang/slang"})
-        self.assertEqual(state["prs"], {})
 
 
 @final

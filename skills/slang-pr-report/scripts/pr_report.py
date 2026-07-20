@@ -7,16 +7,17 @@ PRs/CI/reviews/collaborators, derives each PR's lifecycle stage from those
 signals, and emits the report (optionally with Discord/Slack mentions). The
 caller decides how often to run it — the script does not throttle.
 
-The report makes no changes on GitHub — it only reads, plus persists a small
-local state file for its stall clocks. A PR with no human assignee is surfaced
-honestly under an "Unassigned" group rather than guessing an owner.
+The report makes no changes on GitHub and keeps no local state — each PR's
+staleness is derived fresh from live event timestamps (see last_moved_at) on
+every run. A PR with no human assignee is surfaced honestly under an
+"Unassigned" group rather than guessing an owner.
 
 Portable: depends only on an authenticated `gh` and the Python stdlib. All org
 and infra constants are defaults near the top of this file.
 
-Pure decision functions (derive_stage, the predicate ladders, compute_stall,
-build_report) take plain data and are covered by test_pr_report.py with no live
-`gh` calls.
+Pure decision functions (derive_stage, the predicate ladders, last_moved_at,
+compute_stall, build_report) take plain data and are covered by
+test_pr_report.py with no live `gh` calls.
 """
 from __future__ import annotations
 
@@ -75,9 +76,6 @@ DEFAULT_SOURCE_UNKNOWN = "Unknown"
 # Workday model for the stall clock (skips weekends).
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
 
-# Where the per-PR stall / last-report state is written (cwd-relative).
-STATE_FILE = "./.pr-report-state.json"
-
 # PRs per GraphQL page (capped by server timeout, not budget: n=50 can return
 # HTTP 504 on large repos, n=25 resolves in ~5-6s).
 DEFAULT_PR_PAGE_SIZE = 25
@@ -111,7 +109,6 @@ class Config:
     ignored_reviewers: list[str] = field(
         default_factory=lambda: _split_csv(DEFAULT_IGNORED_REVIEWERS))
     workday_tz: str = DEFAULT_WORKDAY_TZ
-    state_file: str = STATE_FILE
     # GitHub login (lowercased) -> destination user ID for report mentions.
     # Empty means nobody is mapped, so every login renders as inert backticks.
     recipient_map: dict[str, str] = field(default_factory=dict)
@@ -166,10 +163,17 @@ class PR:
     coverage_passed: bool = False
     last_review_at: datetime | None = None
     change_requested: bool = False
-    last_activity_at: datetime | None = None
+    # --- Movement signals (real, logged event timestamps; see last_moved_at) ---
+    # Head-commit authored/committed date.
+    head_committed_at: datetime | None = None
+    # Latest logged CI activity for the head commit (check start/complete, its
+    # check-suite create/update, workflow-run create). Captures CI settling and
+    # queued/awaiting-approval triggers without assuming commit time.
+    ci_activity_at: datetime | None = None
+    # When the PR was last marked ready-for-review (draft -> ready).
+    ready_for_review_at: datetime | None = None
     # Latest issue-comment by a human assignee who is not the PR author. A
-    # non-author assignee engaging via comment counts as movement (resets the
-    # stall clock).
+    # non-author assignee engaging via comment counts as movement.
     last_assignee_comment_at: datetime | None = None
 
     def key(self) -> str:
@@ -239,41 +243,6 @@ def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None) -> str:
     if collaborators is None and not pr.is_bot:
         return cfg.source_unknown
     return source_for(pr.is_bot, collaborators is not None and pr.author in collaborators, cfg)
-
-
-# --- State file (per-PR stall clocks) ----------------------------------------
-
-def load_state(path: str) -> dict[str, Any]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, ValueError):
-        return {"prs": {}}
-
-
-def save_state(path: str, state: dict[str, Any]) -> None:
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
-
-
-def pr_state_entry(state: dict[str, Any], key: str) -> dict[str, Any]:
-    return state.setdefault("prs", {}).setdefault(key, {})
-
-
-def prune_state(state: dict[str, Any], seen_keys: set[str],
-                scanned_repos: set[str]) -> dict[str, Any]:
-    """Drop per-PR entries for PRs no longer open in the scanned repos, so the
-    state file does not grow forever as PRs merge/close. Keeps entries for repos
-    NOT scanned this run (so a subset run via DEFAULT_REPOS doesn't wipe other
-    repos' clocks). Pure."""
-    prs = state.get("prs", {})
-    state["prs"] = {
-        k: v for k, v in prs.items()
-        if k in seen_keys or k.rsplit("#", 1)[0] not in scanned_repos
-    }
-    return state
 
 
 # --- gh I/O layer (the only place that shells out) ---------------------------
@@ -349,25 +318,50 @@ class Gh:
 
     def preflight(self, cfg: "Config") -> None:
         # Fail loudly if we cannot access what we are about to report on. We probe
-        # a real resource (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when
-        # a repo subset is configured) rather than `gh auth status`. `gh auth
-        # status` only inspects gh's locally stored credentials, which breaks when
-        # the token is injected on the wire by a proxy (e.g. onecli) and gh has no
-        # credentials of its own — yet real API calls still succeed. Probing the
-        # actual target also gives a direct yes/no on access (and is token-type
-        # agnostic: it works for a user PAT or a GitHub App token, unlike
-        # `gh api user`, which 403s for App tokens).
+        # a real resource rather than `gh auth status`. `gh auth status` only
+        # inspects gh's locally stored credentials, which breaks when the token is
+        # injected on the wire by a proxy (e.g. onecli) and gh has no credentials
+        # of its own — yet real API calls still succeed. Probing the actual target
+        # also gives a direct yes/no on access, and is token-type agnostic (user
+        # PAT or GitHub App token, unlike `gh api user`, which 403s for App tokens).
+        #
+        # For a repo subset we probe `repos/<owner/name>` (REST). For a whole-org
+        # scan we probe the org via GraphQL, NOT REST `orgs/<org>`: some token
+        # proxies (notably the OneCLI gateway) do not route the REST `/orgs/*`
+        # path even though the token can read the same org data via GraphQL.
         if cfg.repos:
-            target, what = f"repos/{cfg.repos[0]}", f"repository {cfg.repos[0]!r}"
+            target = f"repos/{cfg.repos[0]}"
+            what = f"repository {cfg.repos[0]!r}"
+            proc = subprocess.run(
+                [self.exe, "api", target], capture_output=True, text=True)
+            ok = proc.returncode == 0
+            detail = proc.stderr.strip()
+            how = f"gh api {target}"
         else:
-            target, what = f"orgs/{cfg.org}", f"org {cfg.org!r}"
-        proc = subprocess.run(
-            [self.exe, "api", target], capture_output=True, text=True)
-        if proc.returncode != 0:
+            what = f"org {cfg.org!r}"
+            how = "gh api graphql (organization)"
+            proc = subprocess.run(
+                [self.exe, "api", "graphql", "-F", f"login={cfg.org}",
+                 "-f", "query=query($login:String!){organization(login:$login){login}}"],
+                capture_output=True, text=True)
+            ok = False
+            detail = proc.stderr.strip()
+            if proc.returncode == 0:
+                try:
+                    body = json.loads(proc.stdout or "{}")
+                    if body.get("errors"):
+                        detail = json.dumps(body["errors"])
+                    elif (((body.get("data") or {}).get("organization")) or {}).get("login"):
+                        ok = True
+                    else:
+                        detail = detail or "organization not found or not accessible"
+                except ValueError:
+                    detail = detail or "unparseable GraphQL response"
+        if not ok:
             raise SystemExit(
-                f"gh cannot access {what} (`gh api {target}` failed). Check the "
-                f"token and that it can read {what} (gh auth, GH_TOKEN, or a "
-                f"token-injecting proxy such as onecli).\n{proc.stderr.strip()}"
+                f"gh cannot access {what} (`{how}` failed). Check the token and "
+                f"that it can read {what} (gh auth, GH_TOKEN, or a token-injecting "
+                f"proxy such as onecli).\n{detail}"
             )
 
 
@@ -398,8 +392,9 @@ def collect_repo_collaborators(gh: Gh, repo: str) -> set[str] | None:
 
 
 # One batched query returns, per open PR, everything the report needs: core
-# fields, CI rollup, reviews, comments, requested reviewers, assignees,
-# merge-queue.
+# fields, CI rollup (with per-check timestamps for event-sourced staleness),
+# head-commit date, reviews, comments, requested reviewers, assignees, the
+# ready-for-review event, and merge-queue.
 _PR_QUERY = """
 query($owner: String!, $name: String!, $n: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -407,17 +402,19 @@ query($owner: String!, $name: String!, $n: Int!, $cursor: String) {
                  orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number title url isDraft headRefOid updatedAt reviewDecision
+        number title url isDraft headRefOid reviewDecision
         author { login __typename }
         assignees(first: 10) { nodes { login } }
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
-        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+        commits(last: 1) { nodes { commit { committedDate statusCheckRollup { contexts(first: 100) { nodes {
           __typename
-          ... on CheckRun { name status conclusion }
-          ... on StatusContext { context state }
+          ... on CheckRun { name status conclusion startedAt completedAt
+            checkSuite { createdAt updatedAt workflowRun { createdAt } } }
+          ... on StatusContext { context state createdAt }
         } } } } } }
         reviews(last: 50) { nodes { state submittedAt author { login } } }
         comments(last: 50) { nodes { createdAt author { login } } }
+        timelineItems(last: 1, itemTypes: [READY_FOR_REVIEW_EVENT]) { nodes { ... on ReadyForReviewEvent { createdAt } } }
         mergeQueueEntry { id }
       }
     }
@@ -502,6 +499,37 @@ def ci_state_from_rollup(rollup: dict[str, Any] | None, cfg: Config) -> tuple[st
     return summarize_ci(runs), coverage_passed
 
 
+def ci_activity_at_from_rollup(rollup: dict[str, Any] | None) -> datetime | None:
+    """Latest logged CI activity time for the head commit, event-sourced across
+    every check context: the max of all present timestamps — CheckRun
+    started/completed, its check-suite created/updated, the workflow-run created,
+    and legacy StatusContext created. This captures CI *settling* (pass/fail) via
+    completed-time and a queued/awaiting-approval or re-run/nag via the
+    check-suite's creation time (the logged trigger, which is decoupled from the
+    commit). Timestamps are NOT assumed to be ordered. Returns None when there is
+    no CI. Pure."""
+    if not rollup:
+        return None
+    times: list[datetime] = []
+
+    def add(value: Any) -> None:
+        dt = parse_iso(value) if value else None
+        if dt:
+            times.append(dt)
+
+    for c in ((rollup.get("contexts") or {}).get("nodes")) or []:
+        if c.get("__typename") == "CheckRun":
+            add(c.get("startedAt"))
+            add(c.get("completedAt"))
+            suite = c.get("checkSuite") or {}
+            add(suite.get("createdAt"))
+            add(suite.get("updatedAt"))
+            add((suite.get("workflowRun") or {}).get("createdAt"))
+        else:  # StatusContext (legacy commit status)
+            add(c.get("createdAt"))
+    return max(times) if times else None
+
+
 def summarize_reviews(reviews: list[dict[str, Any]]) -> tuple[datetime | None, bool]:
     """(last_review_at, change_requested) from review nodes. Pure;
     case-insensitive on state. change_requested = the most recent decisive
@@ -560,8 +588,17 @@ def parse_pr_node(node: dict[str, Any], repo: str, cfg: Config) -> PR:
     is_bot = author.get("__typename") == "Bot" or classify_is_bot(login, cfg.bot_authors)
 
     commits = ((node.get("commits") or {}).get("nodes")) or []
-    rollup = (((commits[0].get("commit") or {}).get("statusCheckRollup")) if commits else None)
+    head_commit = (commits[0].get("commit") or {}) if commits else {}
+    rollup = head_commit.get("statusCheckRollup")
     ci_state, coverage_passed = ci_state_from_rollup(rollup, cfg)
+    head_committed_at = parse_iso(head_commit.get("committedDate"))
+    ci_activity_at = ci_activity_at_from_rollup(rollup)
+
+    ready_events = [parse_iso(x.get("createdAt"))
+                    for x in ((node.get("timelineItems") or {}).get("nodes")) or []
+                    if x.get("createdAt")]
+    ready_events = [r for r in ready_events if r]
+    ready_for_review_at = max(ready_events) if ready_events else None
 
     last_review_at, change_requested = summarize_reviews(
         ((node.get("reviews") or {}).get("nodes")) or [])
@@ -591,11 +628,13 @@ def parse_pr_node(node: dict[str, Any], repo: str, cfg: Config) -> PR:
         review_decision=node.get("reviewDecision", "") or "",
         existing_reviewers=existing_reviewers,
         in_merge_queue=(node.get("mergeQueueEntry") is not None),
-        last_activity_at=parse_iso(node.get("updatedAt")),
         ci_state=ci_state,
         coverage_passed=coverage_passed,
         last_review_at=last_review_at,
         change_requested=change_requested,
+        head_committed_at=head_committed_at,
+        ci_activity_at=ci_activity_at,
+        ready_for_review_at=ready_for_review_at,
         last_assignee_comment_at=last_assignee_comment_at,
     )
 
@@ -771,53 +810,28 @@ def source_icon(pr: PR, cfg: Config) -> str:
 
 # --- Movement / stall clock ---------------------------------------------------
 
-def move_fingerprint(pr: PR, cfg: Config) -> dict[str, Any]:
-    """The named movement signals for a PR. A change in any of these means the
-    PR *moved* (resets the stall clock). Keyed by signal name (not a positional
-    list) so the set of signals can evolve without invalidating stored
-    fingerprints — see compute_stall."""
-    return {
-        "stage": derive_stage(pr, cfg),
-        "head_sha": pr.head_sha,
-        "last_review_at": pr.last_review_at.isoformat() if pr.last_review_at else None,
-        "last_assignee_comment_at": (pr.last_assignee_comment_at.isoformat()
-                                     if pr.last_assignee_comment_at else None),
-    }
+def last_moved_at(pr: PR) -> datetime | None:
+    """The most recent *real, logged* movement event for a PR — the latest of:
+    head-commit date, CI activity, last review, ready-for-review, and a
+    non-author-assignee comment. Fully event-sourced: no persisted state and no
+    reliance on `updatedAt` (which bumps on labels, edits, and stray comments).
+    Timestamps are NOT assumed to be ordered, so we take the max of whatever is
+    present. Pure. None only if a PR somehow has no timestamped signal at all."""
+    candidates = [pr.head_committed_at, pr.ci_activity_at, pr.last_review_at,
+                  pr.ready_for_review_at, pr.last_assignee_comment_at]
+    present = [t for t in candidates if t is not None]
+    return max(present) if present else None
 
 
-def compute_stall(pr: PR, cfg: Config, prior: dict[str, Any], now: datetime,
-                  tz: tzinfo) -> tuple[dict[str, Any], float, int]:
-    """Track when a PR last *moved* (derived stage / head SHA / last review /
-    latest assignee comment changed) and how long it has been stalled. Returns
-    (new_state, stall_wh, stall_days). Pure. First sight anchors to the PR's
-    last activity so a stale backlog surfaces immediately.
-
-    The derived stage anchors movement: a contributor PR's CI going green and a
-    bot PR's promotion each register as movement, per source. A comment by a
-    human assignee other than the author also counts as movement — a maintainer
-    engaging (e.g. pinging the author) resets the clock so the report does not
-    keep nagging them.
-
-    Movement is decided per named signal so the fingerprint schema can evolve
-    safely: only a signal that *also existed* in the stored fingerprint and now
-    differs counts as movement. A newly-added signal key does not (so adding a
-    signal never mass-resets the whole backlog to `now`). A legacy positional
-    (list) fingerprint from an older build is treated like first sight and
-    re-anchored to the PR's last activity, never to `now`."""
-    fp = move_fingerprint(pr, cfg)
-    prior_fp = prior.get("move_fingerprint")
-    if prior_fp is None or not isinstance(prior_fp, dict):
-        # First sight, or a pre-dict (list) fingerprint from an older schema:
-        # anchor to the PR's real last activity rather than treating a schema
-        # change as movement (which would reset the entire backlog to `now`).
-        last_moved = pr.last_activity_at or now
-    else:
-        moved = any(prior_fp.get(k) != v for k, v in fp.items() if k in prior_fp)
-        last_moved = now if moved else (parse_iso(prior.get("last_moved_at")) or now)
-    state = {"move_fingerprint": fp, "last_moved_at": last_moved.isoformat()}
-    stall_wh = working_hours_between(last_moved, now, tz)
-    stall_days = max(0, (now - last_moved).days)
-    return state, stall_wh, stall_days
+def compute_stall(pr: PR, now: datetime, tz: tzinfo) -> tuple[float, int]:
+    """How long the PR has been stalled, as (working_hours, calendar_days) since
+    it last moved (see last_moved_at). Stateless and pure — derived entirely from
+    live signals, so there is nothing to persist and nothing to migrate. A PR
+    with no timestamped signal at all anchors to `now` (zero stall)."""
+    moved = last_moved_at(pr) or now
+    stall_wh = working_hours_between(moved, now, tz)
+    stall_days = max(0, (now - moved).days)
+    return stall_wh, stall_days
 
 
 # --- Recipient-grouped report -------------------------------------------------
@@ -959,11 +973,9 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
 
 
 def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
-    """Build the assignee-grouped report from live state and persist the per-PR
-    stall clocks. No GitHub writes; the only side effect is the local state file
-    (the report's own bookkeeping)."""
-    state = load_state(cfg.state_file)
-
+    """Build the assignee-grouped report from live GitHub state. Stateless: no
+    GitHub writes and no local state file — every PR's stall is derived fresh
+    from event timestamps (see last_moved_at) on each run."""
     # The write+ collaborator set is per-repo, memoized; used for live Source
     # classification (Internal iff the author can commit to the repo). None means
     # the set couldn't be read -> non-bot PRs there are classified Unknown.
@@ -978,29 +990,20 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
 
     repo_stats: dict[str, dict[str, int]] = {}
     stall_by_key: dict[str, tuple[float, int]] = {}  # pr key -> (stall_wh, stall_days)
+    tz = cfg.tzinfo()
 
     for pr in prs:
         stats = repo_stats.setdefault(pr.repo, {"open": 0})
         stats["open"] += 1
 
-        entry = pr_state_entry(state, pr.key())
-
         if pr.source != cfg.source_internal and not (pr.is_draft and not pr.is_bot):
-            new_stall, stall_wh, stall_days = compute_stall(
-                pr, cfg, entry.get("stall", {}), now, cfg.tzinfo())
-            entry["stall"] = new_stall
-            stall_by_key[pr.key()] = (stall_wh, stall_days)
+            stall_by_key[pr.key()] = compute_stall(pr, now, tz)
 
     # Assignee-grouped report. The caller decides cadence; `report_due` here just
     # means "there is something to surface" (drives the exit code).
     recipients = build_report(prs, cfg, stall_by_key)
     report = render_report(recipients, cfg)
     report_due = bool(report)
-
-    # Drop stall clocks for PRs no longer open in the scanned repos, then persist
-    # the report's own state (per-PR stall clocks) so fingerprints stay current.
-    prune_state(state, {pr.key() for pr in prs}, set(cfg.repos))
-    save_state(cfg.state_file, state)
 
     return {
         "generated_at": now.isoformat(),

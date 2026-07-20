@@ -31,10 +31,10 @@ python3 scripts/pr_report.py --recipient-map <path>
 python3 scripts/pr_report.py
 ```
 
-The report reads only live GitHub state, persists its own local state file
-(`./.pr-report-state.json`: per-PR stall clocks), and exits `10` when there is a
-report to surface (`0` when nothing needs attention). The caller decides how
-often to run it — the script does not throttle.
+The report reads only live GitHub state and keeps **no local state** — each
+PR's staleness is derived fresh from event timestamps every run. It exits `10`
+when there is a report to surface (`0` when nothing needs attention). The caller
+decides how often to run it — the script does not throttle.
 
 **This is a long-running process — do not kill it.** An org-wide run takes a few
 minutes (≈5-6s per repo page). It streams progress to **stderr** (a start
@@ -50,14 +50,17 @@ falling back to a different toolchain.
 1. **Collect** (batched `gh` GraphQL): **one paginated query per repo**
    (`DEFAULT_PR_PAGE_SIZE`, default 25) returns every open PR with everything
    needed in a single shot — core fields, author type, assignees, requested
-   reviewers, CI (`statusCheckRollup` → `ci_state` + `coverage_passed`), reviews
-   (→ `last_review_at`/`change_requested`), and `mergeQueueEntry`.
+   reviewers, CI (`statusCheckRollup` → `ci_state` + `coverage_passed`, plus
+   per-check timestamps), the head-commit date, reviews
+   (→ `last_review_at`/`change_requested`), comments, the ready-for-review
+   event, and `mergeQueueEntry`.
 2. **Synthesize** (pure, in-memory): classify each PR's source, derive its
-   lifecycle stage from the collected signals, update each PR's stall clock, and
-   build the assignee-grouped report from the per-source ladders.
-3. **Emit**: a human summary + the assignee-grouped report on stdout, and persist
-   the local state file (pruning stall clocks for PRs no longer open). Exit code
+   lifecycle stage from the collected signals, compute each PR's stall from its
+   event timestamps (see below), and build the assignee-grouped report from the
+   per-source ladders.
+3. **Emit**: a human summary + the assignee-grouped report on stdout. Exit code
    `10` means "there is a report to surface"; `0` means nothing needs attention.
+   Nothing is written to disk.
 
 ### Lifecycle stage (derived from live signals)
 
@@ -72,13 +75,14 @@ Each PR's stage is derived from CI / reviews / draft / merge-queue signals (the
   check is configured and failing); drafts are **not** exempt.
 - **Done:** merged/closed or in the merge queue.
 
-The stage gates the "awaiting review" reason and anchors the stall clock (a
-contributor PR's CI going green and a bot PR's promotion each count as movement).
-A comment by a human assignee other than the PR author also counts as movement,
-so a maintainer engaging (e.g. pinging the author) resets the clock rather than
-leaving the PR to keep resurfacing. This is intentionally an unordered
-set-membership test (GitHub assignees are co-equal with no stable "primary"),
-and the author is excluded even when they are also assigned, so an author
+The stage gates the "awaiting review" reason. Staleness itself is **event-
+sourced** (see "Stall clock" below): the clock is anchored to the most recent
+real, logged movement event, so a new commit, CI settling/being re-triggered,
+a review, a ready-for-review, or a non-author-assignee comment each moves it.
+A maintainer engaging (e.g. pinging the author) therefore resets the clock
+rather than leaving the PR to keep resurfacing; assignee comments are matched by
+unordered set membership (GitHub assignees are co-equal with no stable
+"primary"), and the PR author is excluded even when also assigned, so an author
 comment never resets the clock.
 
 ## PR sources and per-source behavior
@@ -134,14 +138,28 @@ overdue **in place** with the `⬆️` marker. Example:
 - `🌐` Community, `🤖` Bot, `❓` source unknown (the repo's collaborators couldn't be read, so Internal-vs-Community is undetermined). Internal PRs and human drafts are excluded. PR refs are clickable links.
 - **Mentions** (`--recipient-map`): a login present in the supplied map renders as a `<@id>` mention that pings on Discord (the format also fits Slack); every other login renders as inert `` `login` ``. **The invoker must pass `--recipient-map PATH`** to get pings. See the schema below.
 
+### Stall clock (event-sourced, stateless)
+`last_moved_at(pr)` is the **max** of the real, logged event timestamps: the
+head-commit date, CI activity (`ci_activity_at` — see below), the last review,
+the ready-for-review event, and the latest non-author-assignee comment. Stall is
+the working-hours (weekends excluded) since then, computed fresh each run — the
+script keeps no state file and never uses GitHub's noisy `updatedAt`.
+
+`ci_activity_at` is itself the max of every per-check timestamp — `CheckRun`
+`startedAt`/`completedAt`, its `checkSuite` `createdAt`/`updatedAt`, the
+`workflowRun` `createdAt`, and legacy `StatusContext` `createdAt`. That captures
+CI settling (pass/fail) via its completion time **and** a queued/awaiting-
+approval or re-run/nag via the check-suite's creation time (the logged trigger),
+which is deliberately decoupled from the commit — CI can be nagged to run days
+later. Timestamps are never assumed to be ordered (GitHub returns non-monotonic
+values), so everything is reduced with `max`.
+
 ### Per-source predicate ladders (the single source of truth)
 Each PR's **reason** is the first matching predicate in its source's ladder; its
-**stall** (working-hours since it last *moved* — derived stage change / new
-commit / new review / a new comment by a non-author human assignee) selects the
-rung: it surfaces under each of its human assignees (or Unassigned)
-once `stall >= assignee_after`, and is marked overdue in place (`⬆️`) once
-`stall >= escalate_after`. Defined in `COMMUNITY_LADDER` / `BOT_LADDER` in
-[scripts/pr_report.py](scripts/pr_report.py):
+**stall** (see above) selects the rung: it surfaces under each of its human
+assignees (or Unassigned) once `stall >= assignee_after`, and is marked overdue
+in place (`⬆️`) once `stall >= escalate_after`. Defined in `COMMUNITY_LADDER` /
+`BOT_LADDER` in [scripts/pr_report.py](scripts/pr_report.py):
 
 Each rung's reason renders as `idle for N days — <condition>` (the `idle`
 catch-all is just `idle for N days`):
@@ -150,7 +168,7 @@ catch-all is just `idle for N days`):
 - **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
 
 Edit the ladders to retune timeouts/audiences. The report is a **current-state**
-list: an item keeps appearing until the PR moves (which resets its stall clock).
+list: an item keeps appearing until the PR moves (a newer event timestamp).
 "awaiting review" only fires when the PR has
 reached the derived `Todo` stage and a real (approve-capable) reviewer is
 requested.
@@ -202,7 +220,6 @@ it moves:
 | `DEFAULT_BOT_AUTHORS` | `nv-slang-bot,slang-coworker-nanoclaw,Copilot,copilot-swe-agent` | bot logins matched by name (GitHub's `is_bot`/`__typename` is also honored for authors). `Copilot` is the coding-agent's assignee/reviewer login — GitHub types it as a `User` there, so it must be name-matched; bot-only-assigned PRs route to the Unassigned group |
 | `DEFAULT_IGNORED_REVIEWERS` | `bmillsNV` | auto-assigned reviewers that can't approve; ignored when checking reviewer coverage |
 | `DEFAULT_WORKDAY_TZ` | `America/Los_Angeles` | timezone for the workday model (stall clock skips weekends) |
-| `STATE_FILE` | `./.pr-report-state.json` | per-PR stall clocks (`move_fingerprint` + `last_moved_at`); entries for closed/merged PRs are pruned automatically |
 | `DEFAULT_PR_PAGE_SIZE` | `25` | PRs per batched GraphQL page (capped by server timeout: n=50 can return HTTP 504, n=25 resolves in ~5-6s) |
 
 The report's delivery channel is intentionally not configured here — the script
@@ -212,12 +229,16 @@ emits the report and the agent decides where it goes.
 
 - An authenticated `gh`: a usable token via `gh auth login`, `GH_TOKEN`, or a
   token-injecting proxy (e.g. onecli). The script preflights by reading the
-  target org (`gh api orgs/<org>`, or `gh api repos/<owner/name>` when a repo
-  subset is configured) rather than `gh auth status` — a direct yes/no on access
-  that works with wire-injected tokens and is token-type agnostic (user PAT or
-  GitHub App token). It fails loudly if that resource can't be read.
-- **repo read** for the PR/CI/review GraphQL query (classic `repo` scope covers
-  private repos).
+  target resource rather than `gh auth status` — a direct yes/no on access that
+  works with wire-injected tokens and is token-type agnostic (user PAT or GitHub
+  App token). For a repo subset it probes `repos/<owner/name>` (REST); for a
+  whole-org scan it probes the org via **GraphQL** (`organization(login)`), not
+  REST `orgs/<org>`, because some token proxies (e.g. the OneCLI gateway) don't
+  route the REST `/orgs/*` path even when the token can read org data. It fails
+  loudly if the probe can't be read.
+- **repo read** for the PR/CI/review/timeline GraphQL query (classic `repo`
+  scope, or a GitHub App with Pull requests + Contents + Checks read; covers
+  private repos). CI timing also reads check-suite/workflow-run metadata.
 - **repo push access** to list the write+ collaborator pool
   (`repos/{repo}/collaborators`) — used to classify a PR's source (Internal iff
   the author can commit). If that call fails for a repo (no push access), its
@@ -243,4 +264,6 @@ python3 scripts/test_pr_report.py
 Covers the pure decision functions with no live `gh` calls: bot + source
 classification, the per-source lifecycle-stage derivation, the predicate ladders
 + assignee-grouped report routing (including the Unassigned group), the
-movement/stall clock, and CI summarization.
+event-sourced stall clock (`last_moved_at` / `ci_activity_at_from_rollup`,
+including the queued/awaiting-approval and non-monotonic-timestamp cases), and
+CI summarization.
