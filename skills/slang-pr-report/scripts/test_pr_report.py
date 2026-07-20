@@ -130,8 +130,24 @@ class TestPredicates(unittest.TestCase):
         self.assertEqual(p.key, "ci_failing")
         self.assertEqual(p.render(pr, self.cfg, 2), "idle for 2 days — CI failing, needs fixes")
 
+    def test_no_reviewer_requested(self):
+        # CI passed, but no approve-capable reviewer requested -> no_reviewer.
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED)
+        p = self._match(pr)
+        self.assertEqual(p.key, "no_reviewer")
+        self.assertEqual(p.render(pr, self.cfg, 4), "idle for 4 days — needs reviewer")
+
+    def test_no_reviewer_when_only_ignored_reviewer(self):
+        # An auto-assigned non-approver (bmillsNV) doesn't count as a reviewer.
+        pr = make_pr(source="Community", ci_state=report.CI_PASSED,
+                     existing_reviewers=["bmillsNV"], review_decision="REVIEW_REQUIRED")
+        self.assertEqual(self._match(pr).key, "no_reviewer")
+
     def test_idle_catchall_and_render(self):
-        pr = make_pr(source="Community", ci_state=report.CI_PENDING)
+        # Bare idle: a real reviewer IS requested (so not no_reviewer), CI not
+        # failing, and not human-ready (CI pending) -> falls to the catch-all.
+        pr = make_pr(source="Community", ci_state=report.CI_PENDING,
+                     existing_reviewers=["dan"])
         p = self._match(pr)
         self.assertEqual(p.key, "idle")
         self.assertEqual(p.render(pr, self.cfg, 3), "idle for 3 days")
@@ -649,11 +665,12 @@ class TestRealReviewersAndEffective(unittest.TestCase):
                                                 self.cfg), "(no reviewers requested)")
 
     def test_awaiting_review_needs_real_reviewer(self):
-        # Only bmillsNV requested -> not "awaiting review"; falls through to idle.
+        # Only bmillsNV requested (an ignored non-approver) -> not "awaiting
+        # review"; treated as having no reviewer requested.
         pr = make_pr(source="Community", ci_state=report.CI_PASSED,
                      existing_reviewers=["bmillsNV"], review_decision="REVIEW_REQUIRED")
         match = next((p for p in report.ladder_for(pr, self.cfg) if p.applies(pr, self.cfg)), None)
-        self.assertEqual(match.key, "idle")
+        self.assertEqual(match.key, "no_reviewer")
 
     def test_failing_ci_shows_ci_failing_not_awaiting(self):
         # A Community PR with failing CI derives to Revising, so it shows

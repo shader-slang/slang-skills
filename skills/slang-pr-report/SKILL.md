@@ -164,8 +164,14 @@ in place (`⬆️`) once `stall >= escalate_after`. Defined in `COMMUNITY_LADDER
 Each rung's reason renders as `idle for N days — <condition>` (the `idle`
 catch-all is just `idle for N days`):
 
-- **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested, check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing, needs fixes` (24h / 48h) → `idle` (24h / 48h).
-- **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
+- **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested, check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing, needs fixes` (24h / 48h) → `needs reviewer` (24h / 48h) → `idle` (24h / 48h).
+- **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `needs reviewer` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
+
+The `needs reviewer` rung (a hint to the assignee to get one assigned) fires when a
+surfaced PR has no approve-capable reviewer requested (auto-assigned non-approvers
+in `DEFAULT_IGNORED_REVIEWERS` and bots don't count) and isn't already caught by an
+earlier rung — so a bare `idle` now only means a reviewer *is* requested but the PR
+still hasn't moved.
 
 Edit the ladders to retune timeouts/audiences. The report is a **current-state**
 list: an item keeps appearing until the PR moves (a newer event timestamp).
