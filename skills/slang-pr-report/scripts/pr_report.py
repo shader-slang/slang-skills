@@ -88,6 +88,47 @@ PAGE_FETCH_ATTEMPTS = 3
 MIN_PR_PAGE_SIZE = 5
 RETRY_BACKOFF_SECONDS = 2.0
 
+# Rate-limit handling. On a GitHub rate limit we wait for the window to reset
+# (capped) and retry the *same* request rather than shrinking or skipping; if the
+# reset is further out than the cap we abort loudly so the report is never a
+# silent partial. Distinct from the size/timeout path above.
+RATE_LIMIT_MAX_WAIT_SECONDS = 900.0      # never sleep longer than this for a reset
+RATE_LIMIT_FALLBACK_WAIT_SECONDS = 60.0  # used when the reset time can't be read
+RATE_LIMIT_MAX_RETRIES = 3               # wait-and-retry cycles per page before giving up
+
+# Exit code for "aborted because rate limited" — distinct from 0 (nothing) and
+# 10 (report due). 75 = BSD EX_TEMPFAIL: transient, a scheduler can retry later.
+EXIT_RATE_LIMITED = 75
+
+
+class RateLimitedError(Exception):
+    """A GitHub rate limit prevented completing the scan and could not be waited
+    out within the cap. Deliberately NOT a RuntimeError, so the per-repo skip in
+    collect_prs_for_report does not swallow it — it aborts the whole run instead
+    of silently emitting a partial report."""
+
+
+def _looks_rate_limited(msg: str) -> bool:
+    """Whether a gh error message is a GitHub rate limit (primary, secondary, or
+    GraphQL RATE_LIMITED), as opposed to a permission/timeout failure. Pure."""
+    m = msg.lower()
+    return ("rate limit" in m or "rate_limited" in m
+            or "too many requests" in m or "http 429" in m)
+
+
+def _rate_limit_wait_from_payload(payload: dict[str, Any], now_epoch: float) -> float | None:
+    """Seconds until the latest-resetting *exhausted* window (graphql/core/search)
+    in a GitHub /rate_limit payload, so a retry will find every window open, or
+    None if none is exhausted (e.g. a secondary limit, which /rate_limit does not
+    reflect). Pure."""
+    resources = payload.get("resources") or {}
+    waits: list[float] = []
+    for name in ("graphql", "core", "search"):
+        r = resources.get(name) or {}
+        if r.get("remaining") == 0 and r.get("reset"):
+            waits.append(max(0.0, float(r["reset"]) - now_epoch))
+    return max(waits) if waits else None
+
 
 def _split_csv(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
@@ -282,10 +323,33 @@ class Gh:
     def __init__(self, exe: str):
         self.exe = exe
 
+    def _run_once(self, args: list[str]) -> "subprocess.CompletedProcess[str]":
+        return subprocess.run([self.exe] + args, capture_output=True, text=True)
+
+    def _exec(self, args: list[str]) -> "subprocess.CompletedProcess[str]":
+        """Run gh once, but transparently **wait out GitHub rate limits**: on a
+        rate-limited response, sleep until the window resets and retry the same
+        command (bounded by RATE_LIMIT_MAX_RETRIES); raise RateLimitedError if it
+        can't be waited out within the cap. Every gh call funnels through here,
+        so rate limits are handled uniformly. Returns the completed process for
+        the caller to interpret success/other-failure. Rate detection reads both
+        streams because gh reports GraphQL errors (incl. RATE_LIMITED) on stderr."""
+        waits = 0
+        while True:
+            proc = self._run_once(args)
+            if proc.returncode == 0:
+                return proc
+            if not _looks_rate_limited(f"{proc.stderr}\n{proc.stdout}"):
+                return proc
+            waits += 1
+            if waits > RATE_LIMIT_MAX_RETRIES:
+                raise RateLimitedError(
+                    f"gh {' '.join(args[:2])} still rate limited after "
+                    f"{RATE_LIMIT_MAX_RETRIES} waits: {proc.stderr.strip()}")
+            _wait_out_rate_limit(self, f"gh {' '.join(args[:2])}")
+
     def run(self, args: list[str], check: bool = True) -> str:
-        proc = subprocess.run(
-            [self.exe] + args, capture_output=True, text=True
-        )
+        proc = self._exec(args)
         if check and proc.returncode != 0:
             raise RuntimeError(
                 f"gh {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
@@ -306,13 +370,14 @@ class Gh:
 
     def api_lines(self, path: str, jq: str, paginate: bool = True) -> list[str] | None:
         """Run a `gh api` jq query and return its non-empty output lines, or
-        `None` if the call failed. Lets callers distinguish "no access" (None)
-        from "empty result" ([])."""
+        `None` if the call failed (non-rate). Lets callers distinguish "no
+        access" (None) from "empty result" ([]). Rate limits are waited out /
+        raised by `_exec`, not silently turned into None."""
         args = ["api", path]
         if paginate:
             args.append("--paginate")
         args += ["--jq", jq]
-        proc = subprocess.run([self.exe] + args, capture_output=True, text=True)
+        proc = self._exec(args)
         if proc.returncode != 0:
             return None
         return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -323,6 +388,20 @@ class Gh:
             args += ["-F", f"{k}={v}"]
         out = self.run(args)
         return json.loads(out) if out.strip() else None
+
+    def rate_limit_wait_seconds(self) -> float | None:
+        """Seconds until the exhausted rate-limit window resets, via the
+        (limit-exempt) `rate_limit` endpoint. None if it can't be determined
+        (endpoint failed, unparseable, or nothing is currently exhausted)."""
+        proc = subprocess.run(
+            [self.exe, "api", "rate_limit"], capture_output=True, text=True)
+        if proc.returncode != 0:
+            return None
+        try:
+            payload = json.loads(proc.stdout or "{}")
+        except ValueError:
+            return None
+        return _rate_limit_wait_from_payload(payload, time.time())
 
     def preflight(self, cfg: "Config") -> None:
         # Fail loudly if we cannot access what we are about to report on. We probe
@@ -337,21 +416,22 @@ class Gh:
         # scan we probe the org via GraphQL, NOT REST `orgs/<org>`: some token
         # proxies (notably the OneCLI gateway) do not route the REST `/orgs/*`
         # path even though the token can read the same org data via GraphQL.
+        # Both probes go through `_exec`, so a rate limit here is waited out (or
+        # raises RateLimitedError past the cap) rather than misreported as an
+        # access failure.
         if cfg.repos:
             target = f"repos/{cfg.repos[0]}"
             what = f"repository {cfg.repos[0]!r}"
-            proc = subprocess.run(
-                [self.exe, "api", target], capture_output=True, text=True)
+            proc = self._exec(["api", target])
             ok = proc.returncode == 0
             detail = proc.stderr.strip()
             how = f"gh api {target}"
         else:
             what = f"org {cfg.org!r}"
             how = "gh api graphql (organization)"
-            proc = subprocess.run(
-                [self.exe, "api", "graphql", "-F", f"login={cfg.org}",
-                 "-f", "query=query($login:String!){organization(login:$login){login}}"],
-                capture_output=True, text=True)
+            proc = self._exec(
+                ["api", "graphql", "-F", f"login={cfg.org}",
+                 "-f", "query=query($login:String!){organization(login:$login){login}}"])
             ok = False
             detail = proc.stderr.strip()
             if proc.returncode == 0:
@@ -366,6 +446,10 @@ class Gh:
                 except ValueError:
                     detail = detail or "unparseable GraphQL response"
         if not ok:
+            if _looks_rate_limited(detail):
+                raise RateLimitedError(
+                    f"gh is rate limited while probing {what} (`{how}`); try again "
+                    f"after the limit resets.\n{detail}")
             raise SystemExit(
                 f"gh cannot access {what} (`{how}` failed). Check the token and "
                 f"that it can read {what} (gh auth, GH_TOKEN, or a token-injecting "
@@ -378,7 +462,8 @@ class Gh:
 # ---------------------------------------------------------------------------
 
 def list_org_repos(gh: Gh, org: str) -> list[str]:
-    """Every non-archived repo in `org` (owner/name), via `gh repo list`."""
+    """Every non-archived repo in `org` (owner/name), via `gh repo list`. Rate
+    limits are handled centrally in Gh._exec."""
     data = gh.json([
         "repo", "list", org, "--no-archived", "--limit", "1000",
         "--json", "nameWithOwner",
@@ -431,11 +516,32 @@ query($owner: String!, $name: String!, $n: Int!, $cursor: String) {
 """
 
 
+def _wait_out_rate_limit(gh: Gh, context: str) -> None:
+    """Sleep until the GitHub rate-limit window resets, then return so the caller
+    can retry. Waits for the reset reported by `rate_limit` (or a fallback when
+    that's unknown, e.g. a secondary limit), plus a small cushion. Raises
+    RateLimitedError if the reset is further out than RATE_LIMIT_MAX_WAIT_SECONDS,
+    so the run aborts loudly rather than emitting a silent partial report."""
+    wait = gh.rate_limit_wait_seconds()
+    if wait is None:
+        wait = RATE_LIMIT_FALLBACK_WAIT_SECONDS
+    if wait > RATE_LIMIT_MAX_WAIT_SECONDS:
+        raise RateLimitedError(
+            f"{context}: GitHub rate limit resets in ~{int(wait)}s, past the "
+            f"{int(RATE_LIMIT_MAX_WAIT_SECONDS)}s cap — aborting rather than "
+            f"emitting a partial report.")
+    wait = min(wait, RATE_LIMIT_MAX_WAIT_SECONDS) + 2.0  # cushion past the reset
+    _progress(f"  {context}: rate limited by GitHub; waiting {int(wait)}s for the "
+              f"window to reset…")
+    time.sleep(wait)
+
+
 def collect_open_prs(gh: Gh, repo: str, cfg: Config) -> list[PR]:
     """All open PRs for `repo`, fully populated, via the paginated batched query.
-    A failed page is retried with a shrinking page size; if it still fails,
-    RuntimeError propagates so the caller can skip just this repo rather than
-    aborting the whole org scan."""
+    A size/timeout failure is retried with a shrinking page size; if it still
+    fails, RuntimeError propagates so the caller can skip just this repo. A rate
+    limit is instead waited out and the same page retried; if it can't be waited
+    out within the cap, RateLimitedError propagates and aborts the whole run."""
     owner, name = repo.split("/", 1)
     prs: list[PR] = []
     cursor = None
@@ -445,25 +551,27 @@ def collect_open_prs(gh: Gh, repo: str, cfg: Config) -> list[PR]:
         variables: dict[str, Any] = {"owner": owner, "name": name, "n": page_size}
         if cursor:
             variables["cursor"] = cursor
-        # Fetch this page, retrying a transient failure with a shrinking page
-        # size (large pages are the usual 504 cause). If it still fails after
-        # PAGE_FETCH_ATTEMPTS, propagate so the caller can skip just this repo.
+        # Rate limits are handled centrally in Gh._exec (wait-and-retry, or a
+        # RateLimitedError that propagates and aborts). Here we only handle a
+        # size/timeout failure: shrink the page and retry, giving up after
+        # PAGE_FETCH_ATTEMPTS so the caller can skip just this repo.
         data = None
-        for attempt in range(1, PAGE_FETCH_ATTEMPTS + 1):
+        size_attempts = 0
+        while data is None:
             try:
                 data = gh.graphql(_PR_QUERY, variables)
-                break
             except RuntimeError as e:
-                if attempt == PAGE_FETCH_ATTEMPTS:
+                size_attempts += 1
+                if size_attempts >= PAGE_FETCH_ATTEMPTS:
                     raise RuntimeError(
                         f"{repo}: PR query failed after {PAGE_FETCH_ATTEMPTS} attempts "
                         f"(page {page_num + 1}, size {page_size}): {e}")
                 page_size = max(MIN_PR_PAGE_SIZE, page_size // 2)
                 variables["n"] = page_size
                 _progress(f"  {repo}: page {page_num + 1} query failed "
-                          f"(attempt {attempt}/{PAGE_FETCH_ATTEMPTS}); retrying with "
+                          f"(attempt {size_attempts}/{PAGE_FETCH_ATTEMPTS}); retrying with "
                           f"page size {page_size}…")
-                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                time.sleep(RETRY_BACKOFF_SECONDS * size_attempts)
         conn = ((((data or {}).get("data") or {}).get("repository") or {})
                 .get("pullRequests") or {})
         before = len(prs)
@@ -1109,17 +1217,24 @@ def main(argv: list[str]) -> int:
     if args.recipient_map:
         cfg.recipient_map = load_recipient_map(args.recipient_map)
 
-    # Verify access to the target org (or a configured repo) before doing work.
-    gh.preflight(cfg)
+    try:
+        # Verify access to the target org (or a configured repo) before doing work.
+        gh.preflight(cfg)
 
-    # Default scope: every non-archived repo in the org (DEFAULT_REPOS is empty).
-    if not cfg.repos:
-        cfg.repos = list_org_repos(gh, cfg.org)
+        # Default scope: every non-archived repo in the org (DEFAULT_REPOS empty).
         if not cfg.repos:
-            raise SystemExit(f"No repositories found in org {cfg.org!r}.")
+            cfg.repos = list_org_repos(gh, cfg.org)
+            if not cfg.repos:
+                raise SystemExit(f"No repositories found in org {cfg.org!r}.")
 
-    now = datetime.now(timezone.utc)
-    summary = run_report(gh, cfg, now)
+        now = datetime.now(timezone.utc)
+        summary = run_report(gh, cfg, now)
+    except RateLimitedError as e:
+        # Abort loudly rather than emit a silent partial report; exit code lets a
+        # scheduler distinguish this transient failure from 0 (nothing) / 10 (due).
+        print(f"[RATE LIMITED] {e}", file=sys.stderr)
+        return EXIT_RATE_LIMITED
+
     _print_summary(summary)
 
     # Exit 10 signals "there is a report to surface" so the caller can decide
