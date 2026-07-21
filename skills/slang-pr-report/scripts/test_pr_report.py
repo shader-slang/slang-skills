@@ -413,7 +413,7 @@ class TestBuildReport(unittest.TestCase):
                             url="https://github.com/shader-slang/slang/pull/99")
         out = report.render_report(report.build_report([pr], self.cfg, {pr.key(): (50.0, 3)}), self.cfg)
         self.assertIn("**`bob`**:", out)                # grouped under the assignee (inert by default)
-        self.assertIn("[slang#99](https://github.com/shader-slang/slang/pull/99)", out)
+        self.assertIn("[slang#99](<https://github.com/shader-slang/slang/pull/99>)", out)
         self.assertIn(report.ESCALATED_ICON, out)       # in-place up-arrow
         self.assertNotIn("(@bob)", out)                 # redundant once grouped by assignee
         self.assertIn(report.COMMUNITY_ICON, out)
