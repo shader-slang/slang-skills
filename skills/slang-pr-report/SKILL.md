@@ -84,7 +84,7 @@ Internal from Community. Behavior differs by source:
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
 |---|---|---|---|---|
 | Report predicate ladder | **none** (excluded) | `COMMUNITY_LADDER` (incl. `needs CI approval`, `changes requested`) | `BOT_LADDER` (no CI-approval/changes rungs) | `COMMUNITY_LADDER` (surfaced, flagged `❓`) |
-| Drafts | excluded (author "not ready") | excluded (author "not ready") | **not excluded** (bot drafts still surface) | excluded (treated like a contributor) |
+| Drafts | excluded (author "not ready") | excluded (author "not ready") | **not excluded** (bot drafts still surface, marked `📝`) | excluded (treated like a contributor) |
 
 Internal PRs are self-managed and not surfaced; Community/Bot/Unknown surface
 when stalled (`Unknown` flagged `❓` so a missing-access gap is visible, not
@@ -105,7 +105,7 @@ doesn't guess an owner). Example:
 
 - **Unassigned**:
   - ⬆️ 🌐 [slang#334](<…/pull/334>) — idle for 1 work days — needs CI approval
-  - 🤖 [slang#9001](<…/pull/9001>) — idle for 3 work days — awaiting review from: <@222>
+  - 🤖 [slang#9001](<…/pull/9001>) 📝 — idle for 3 work days — awaiting review from: <@222>
 - **`alice`**:
   - 🌐 [slang#777](<…/pull/777>) — idle for 9 work days — changes requested, check if author is still active / needs help 👥
 - **`bob`**:
@@ -114,7 +114,7 @@ doesn't guess an owner). Example:
 - Every reason leads with the same **`idle for N work days`** age phrase, then the specific condition (if any), so the count always lands in the same spot for scanning.
 - **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. A PR with several human assignees is repeated under each (marked `👥`, tagged at the **end** of the line).
 - **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
-- Icons: `⬆️` escalated/overdue (past the escalate rung), `👥` shared (multiple human assignees), `🌐` Community, `🤖` Bot, `❓` source unknown. Internal PRs and human drafts are excluded; PR refs are clickable links with the URL wrapped in `<>` so chat clients don't expand a link preview.
+- Icons: `⬆️` escalated/overdue (past the escalate rung; non-escalated rows reserve this slot with an invisible blank so the source icons line up), `👥` shared (multiple human assignees), `📝` still a draft (just after the PR link; only bot drafts surface), `🌐` Community, `🤖` Bot, `❓` source unknown. Internal PRs and human drafts are excluded; PR refs are clickable links with the URL wrapped in `<>` so chat clients don't expand a link preview.
 - **Mentions**: with `--recipient-map`, mapped logins render as pinging `<@id>` mentions; everyone else stays inert `` `login` `` — see [Recipient map](#recipient-map---recipient-map).
 
 ### Stall clock (event-sourced, stateless)

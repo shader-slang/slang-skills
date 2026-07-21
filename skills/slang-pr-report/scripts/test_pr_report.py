@@ -444,6 +444,39 @@ class TestBuildReport(unittest.TestCase):
         self.assertIn(f"{report.COMMUNITY_ICON} community PR", out)
         self.assertIn(f"{report.ESCALATED_ICON} escalated/overdue", out)
         self.assertIn(f"{report.SHARED_ICON} shared", out)
+        self.assertIn(f"{report.DRAFT_ICON} draft", out)
+
+    def test_draft_marker_on_bot_draft(self):
+        # Only bot drafts surface; the draft PR carries the memo marker.
+        pr = self._awaiting(number=50, source="Bot", is_bot=True, is_draft=True,
+                            assignees=["bob"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (200.0, 9)})
+        out = report.render_report(rec, self.cfg)
+        item = [ln for ln in out.splitlines() if "slang#50" in ln][0]
+        self.assertIn(report.DRAFT_ICON, item)
+
+    def test_no_draft_marker_when_not_draft(self):
+        pr = self._awaiting(number=51, source="Bot", is_bot=True, is_draft=False,
+                            assignees=["bob"])
+        rec = report.build_report([pr], self.cfg, {pr.key(): (200.0, 9)})
+        out = report.render_report(rec, self.cfg)
+        item = [ln for ln in out.splitlines() if "slang#51" in ln][0]
+        self.assertNotIn(report.DRAFT_ICON, item)
+
+    def test_escalation_slot_spacer_on_non_escalated_rows(self):
+        # Escalated rows lead with the up-arrow; non-escalated rows reserve the
+        # slot with the ideographic-space spacer so source icons align.
+        esc = self._awaiting(number=60, source="Community", assignees=["bob"])
+        plain = self._awaiting(number=61, source="Community", assignees=["bob"])
+        rec = report.build_report(
+            [esc, plain], self.cfg, {esc.key(): (50.0, 3), plain.key(): (30.0, 2)})
+        out = report.render_report(rec, self.cfg)
+        esc_line = [ln for ln in out.splitlines() if "slang#60" in ln][0]
+        plain_line = [ln for ln in out.splitlines() if "slang#61" in ln][0]
+        self.assertIn(report.ESCALATED_ICON, esc_line)
+        self.assertNotIn(report.ESCALATION_SPACER, esc_line)
+        self.assertNotIn(report.ESCALATED_ICON, plain_line)
+        self.assertIn(report.ESCALATION_SPACER, plain_line)
 
     def test_single_assignee_not_shared(self):
         pr = self._awaiting(number=96, source="Community", assignees=["bob"])
