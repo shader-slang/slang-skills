@@ -560,6 +560,50 @@ class TestSourceClassify(unittest.TestCase):
         pr = make_pr(author="nv-slang-bot", is_bot=True)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Bot")
 
+    # --- per-user permission fallback (author not in the collaborators list) ---
+    def _fallback(self, verdict):
+        return lambda repo, author: verdict
+
+    def test_fallback_internal_when_list_omits_author(self):
+        # Author absent from a downscoped list, but the per-user endpoint says
+        # they can commit -> Internal.
+        pr = make_pr(author="member", is_bot=False)
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(True)), "Internal")
+
+    def test_fallback_community_when_not_committer(self):
+        pr = make_pr(author="ext", is_bot=False)
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(False)), "Community")
+
+    def test_fallback_resolves_even_when_list_unreadable(self):
+        pr = make_pr(author="member", is_bot=False)
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, None, self._fallback(True)), "Internal")
+
+    def test_fallback_undetermined_falls_back_to_list(self):
+        pr = make_pr(author="ext", is_bot=False)
+        # list readable, author absent, fallback can't tell -> Community
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, set(), self._fallback(None)), "Community")
+        # list unreadable, fallback can't tell -> Unknown
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, None, self._fallback(None)), "Unknown")
+
+    def test_fallback_not_consulted_when_author_in_list(self):
+        def boom(repo, author):
+            raise AssertionError("fallback should not run when author is in the list")
+        pr = make_pr(author="dev", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}, boom), "Internal")
+
+    def test_permission_is_internal(self):
+        for p in ("admin", "maintain", "write", "push", "ADMIN", "Write"):
+            self.assertIs(report._permission_is_internal(p), True, p)
+        for p in ("read", "triage", "none"):
+            self.assertIs(report._permission_is_internal(p), False, p)
+        for p in (None, ""):
+            self.assertIsNone(report._permission_is_internal(p))
+
 
 @final
 class TestUnknownSource(unittest.TestCase):
@@ -818,6 +862,8 @@ class TestScanResilience(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg(repos=["shader-slang/a", "shader-slang/b"])
         self._orig = report.collect_open_prs
+        # Stub gh: source classification's per-user fallback may be consulted.
+        self.gh = SimpleNamespace(repo_user_permission=lambda repo, user: None)
 
     def tearDown(self):
         report.collect_open_prs = self._orig
@@ -832,7 +878,7 @@ class TestScanResilience(unittest.TestCase):
             return [make_pr(number=1, source="Community")]
 
         report.collect_open_prs = fake
-        prs = report.collect_prs_for_report(None, self.cfg, lambda r: set())
+        prs = report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
         self.assertEqual(seen, ["shader-slang/a", "shader-slang/b"])  # scan continued
         self.assertEqual(len(prs), 1)                                 # only repo b's PR
 
@@ -842,7 +888,7 @@ class TestScanResilience(unittest.TestCase):
 
         report.collect_open_prs = fake
         with self.assertRaises(report.RateLimitedError):
-            report.collect_prs_for_report(None, self.cfg, lambda r: set())
+            report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
 
 
 if __name__ == "__main__":

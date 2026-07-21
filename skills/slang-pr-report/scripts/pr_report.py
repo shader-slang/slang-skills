@@ -283,15 +283,46 @@ def source_for(is_bot: bool, can_commit: bool, cfg: Config) -> str:
     return cfg.source_internal if can_commit else cfg.source_community
 
 
-def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None) -> str:
-    """Classify a PR's source. Pure. `collaborators` is the repo's write+ set
-    (Internal iff the author can commit to the repo), or None when that set
-    couldn't be read — in which case a non-bot PR is `Unknown` (we can't tell
-    Internal from Community) rather than being silently assumed Community. A bot
-    PR is always `Bot` (bot detection doesn't need the collaborator set)."""
-    if collaborators is None and not pr.is_bot:
+# Effective repo permissions/roles that mean the author can commit -> Internal.
+INTERNAL_PERMISSIONS = frozenset({"admin", "maintain", "write"})
+
+
+def _permission_is_internal(permission: str | None) -> bool | None:
+    """Interpret a per-user repo permission/role (admin / maintain / write /
+    push / triage / read / none) as Internal (can commit) or not; None when
+    undetermined. Pure."""
+    if not permission:
+        return None
+    p = permission.lower()
+    return (p in INTERNAL_PERMISSIONS) or (p == "push")
+
+
+def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None,
+                    author_permission: "Callable[[str, str], bool | None] | None" = None) -> str:
+    """Classify a PR's source. Pure given its inputs. A bot PR is always Bot.
+
+    `collaborators` is the repo's write+ set (Internal iff the author is in it),
+    or None when the list couldn't be read. A downscoped token's collaborators
+    *list* can omit members who hold push via org base permission or a team, so
+    for any non-bot author not found in the list an optional
+    `author_permission(repo, author)` fallback is consulted — the per-user
+    permission endpoint, which reflects that access. It returns True (can commit
+    -> Internal), False (cannot -> Community), or None (undetermined). Only when
+    the fallback is absent/undetermined do we defer to the list: author-not-in-set
+    -> Community, or Unknown when the list itself was unreadable."""
+    if pr.is_bot:
+        return cfg.source_bot
+    if collaborators is not None and pr.author in collaborators:
+        return cfg.source_internal
+    if author_permission is not None:
+        verdict = author_permission(pr.repo, pr.author)
+        if verdict is True:
+            return cfg.source_internal
+        if verdict is False:
+            return cfg.source_community
+    if collaborators is None:
         return cfg.source_unknown
-    return source_for(pr.is_bot, collaborators is not None and pr.author in collaborators, cfg)
+    return cfg.source_community
 
 
 # --- gh I/O layer (the only place that shells out) ---------------------------
@@ -388,6 +419,22 @@ class Gh:
             args += ["-F", f"{k}={v}"]
         out = self.run(args)
         return json.loads(out) if out.strip() else None
+
+    def repo_user_permission(self, repo: str, user: str) -> str | None:
+        """Effective permission of `user` on `repo` (admin / maintain / write /
+        triage / read / none) via the per-user endpoint
+        `repos/{repo}/collaborators/{user}/permission`, which reflects access
+        granted through org base permission or a team even when the collaborators
+        *list* omits it. Returns the role/permission string, or None if the call
+        failed (non-fatal — the caller degrades gracefully)."""
+        out = self.api(f"repos/{repo}/collaborators/{user}/permission")
+        if not (out or "").strip():
+            return None
+        try:
+            data = json.loads(out)
+        except ValueError:
+            return None
+        return (data.get("role_name") or data.get("permission") or "").lower() or None
 
     def rate_limit_wait_seconds(self) -> float | None:
         """Seconds until the exhausted rate-limit window resets, via the
@@ -1113,6 +1160,18 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
     _progress(f"scanning {len(cfg.repos)} repo(s) for the report — this typically takes a few minutes…")
     prs: list[PR] = []
     skipped: list[str] = []
+
+    # Per-user permission fallback for authors the collaborators *list* omits
+    # (a downscoped token doesn't list members who hold push via org base
+    # permission or a team). Memoized per (repo, author) to bound the extra calls.
+    perm_cache: dict[tuple[str, str], bool | None] = {}
+
+    def author_permission(repo: str, author: str) -> bool | None:
+        key = (repo, author.lower())
+        if key not in perm_cache:
+            perm_cache[key] = _permission_is_internal(gh.repo_user_permission(repo, author))
+        return perm_cache[key]
+
     for repo in cfg.repos:
         try:
             repo_prs = collect_open_prs(gh, repo, cfg)
@@ -1122,9 +1181,9 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
             _progress(f"  ⚠️  skipping {repo} — {e}")
             continue
         for pr in repo_prs:
-            # Classify Source live (reusing the repo's write+ collaborator set,
-            # fetched lazily).
-            pr.source = classify_source(pr, cfg, repo_collaborators(repo))
+            # Classify Source live: the repo's write+ collaborator set (fetched
+            # lazily), with the per-user permission fallback for authors not in it.
+            pr.source = classify_source(pr, cfg, repo_collaborators(repo), author_permission)
             pr.is_bot = (pr.source == cfg.source_bot)
             prs.append(pr)
     if skipped:

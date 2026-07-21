@@ -72,11 +72,14 @@ pinging the author resets the clock — but the PR author's own comments never d
 
 Every PR is classified into a **source** — **`Internal` / `Community` / `Bot`** —
 from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
-`Internal` if the author can commit to the target repo (a write+ collaborator),
-else `Community`. When the repo's collaborator set **can't be read** (the token
-lacks push access there), a non-bot PR is classified **`Unknown`** rather than
-silently assumed `Community` — we genuinely can't tell Internal from Community.
-Behavior differs by source:
+`Internal` if the author can commit to the target repo, else `Community`. "Can
+commit" is checked first against the `repos/{repo}/collaborators` list, then —
+for authors the list omits (a downscoped token doesn't list members with push
+via org base permission or a team) — against the per-user
+`repos/{repo}/collaborators/{user}/permission` endpoint (push/maintain/admin ⇒
+Internal). Only when **both** are unreadable is a non-bot PR classified
+**`Unknown`** rather than silently assumed `Community` — we genuinely can't tell
+Internal from Community. Behavior differs by source:
 
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
 |---|---|---|---|---|
@@ -212,9 +215,14 @@ top of `pr_report.py`:
 - **repo read** for the PR/CI/review/timeline GraphQL query (classic `repo`
   scope, or a GitHub App with Pull requests + Contents + Checks read; covers
   private repos). CI timing also reads check-suite/workflow-run metadata.
-- **repo push access** to read `repos/{repo}/collaborators` (classifies source —
-  Internal iff the author can commit). If it fails for a repo, that repo's
-  non-bot PRs classify as `Unknown` (`❓`) and the report still runs.
+- **repo push access** to classify source (Internal iff the author can commit).
+  The primary signal is the `repos/{repo}/collaborators` list. Because a
+  downscoped token's list can omit members who hold push via org base permission
+  or a team, any author **not** in the list is re-checked via the per-user
+  endpoint `repos/{repo}/collaborators/{user}/permission` (push/maintain/admin ⇒
+  Internal). Only when both are unavailable does a non-bot PR fall back to
+  `Unknown` (`❓`); the report still runs. (This fallback is what lets a
+  downscoped app token scope the report correctly.)
 - No writes, no GitHub Projects scope, and no local clone required (all via `gh api`).
 
 ## Scheduling
