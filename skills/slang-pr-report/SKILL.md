@@ -104,17 +104,17 @@ doesn't guess an owner). Example:
 ## Slang PR Escalation Report
 
 - **Unassigned**:
-  - ⬆️ 🌐 [slang#334](…/pull/334) — idle for 1 work days — needs CI approval
-  - 🤖 [slang#9001](…/pull/9001) — idle for 3 work days — awaiting review from: <@222>
+  - ⬆️ 🌐 [slang#334](<…/pull/334>) — idle for 1 work days — needs CI approval
+  - 🤖 [slang#9001](<…/pull/9001>) — idle for 3 work days — awaiting review from: <@222>
 - **`alice`**:
-  - 🌐 [slang#777](…/pull/777) — idle for 9 work days — changes requested, check if author is still active / needs help 👥
+  - 🌐 [slang#777](<…/pull/777>) — idle for 9 work days — changes requested, check if author is still active / needs help 👥
 - **`bob`**:
-  - 🌐 [slang#777](…/pull/777) — idle for 9 work days — changes requested, check if author is still active / needs help 👥
+  - 🌐 [slang#777](<…/pull/777>) — idle for 9 work days — changes requested, check if author is still active / needs help 👥
 ```
 - Every reason leads with the same **`idle for N work days`** age phrase, then the specific condition (if any), so the count always lands in the same spot for scanning.
 - **Unassigned** (PRs with no human assignee, incl. bot-only like `Copilot`) is listed first; named assignees follow, sorted. A PR with several human assignees is repeated under each (marked `👥`, tagged at the **end** of the line).
 - **Within each group**, items are ordered Community (`🌐`), then Unknown (`❓`), then Bot (`🤖`), and within each source escalated (`⬆️`) before not-escalated.
-- Icons: `⬆️` escalated/overdue (past the escalate rung), `👥` shared (multiple human assignees), `🌐` Community, `🤖` Bot, `❓` source unknown. Internal PRs and human drafts are excluded; PR refs are clickable links.
+- Icons: `⬆️` escalated/overdue (past the escalate rung), `👥` shared (multiple human assignees), `🌐` Community, `🤖` Bot, `❓` source unknown. Internal PRs and human drafts are excluded; PR refs are clickable links with the URL wrapped in `<>` so chat clients don't expand a link preview.
 - **Mentions**: with `--recipient-map`, mapped logins render as pinging `<@id>` mentions; everyone else stays inert `` `login` `` — see [Recipient map](#recipient-map---recipient-map).
 
 ### Stall clock (event-sourced, stateless)

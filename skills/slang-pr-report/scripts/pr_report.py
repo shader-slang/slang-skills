@@ -1110,7 +1110,9 @@ def render_report(recipients: dict[str, list[ReportItem]], cfg: Config) -> str:
         for it in sorted(recipients[recipient], key=lambda i: _item_sort_key(i, cfg)):
             prefix = (ESCALATED_ICON + " ") if it.escalated else ""
             icon = source_icon(it.pr, cfg)
-            link = f"[{_repo_short(it.pr.repo)}#{it.pr.number}]({it.pr.url})"
+            # Wrap the URL in <> so Discord/Slack don't auto-expand it into a
+            # link preview; still renders as a normal link on GitHub.
+            link = f"[{_repo_short(it.pr.repo)}#{it.pr.number}](<{it.pr.url}>)"
             # Shared-ownership marker is tagged at the end of the line (after the
             # reason), never as a prefix.
             suffix = f" {SHARED_ICON}" if it.shared else ""
