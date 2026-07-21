@@ -830,6 +830,12 @@ COMMUNITY_ICON = "\U0001f310"     # globe
 BOT_ICON = "\U0001f916"           # robot
 UNKNOWN_ICON = "\u2753"           # red question mark: source couldn't be determined
 SHARED_ICON = "\U0001f465"        # busts: shared across multiple human assignees
+DRAFT_ICON = "\U0001f4dd"         # memo: PR is still a draft
+# Ideographic-space placeholder for the escalation slot on non-escalated rows, so
+# the source icons line up better. Renders as (near-)invisible whitespace and —
+# unlike regular spaces — is not collapsed by markdown; typically two columns,
+# matching the up-arrow emoji's width more closely than a narrow braille blank.
+ESCALATION_SPACER = "\u3000"
 
 # Group key for PRs with no human assignee. Parentheses can't appear in a GitHub
 # login, so this never collides with a real assignee; rendered as "Unassigned".
@@ -1094,29 +1100,36 @@ def _item_sort_key(it: ReportItem, cfg: Config) -> tuple[int, int]:
 def render_report(recipients: dict[str, list[ReportItem]], cfg: Config) -> str:
     """Render the assignee-grouped report. The Unassigned group is listed first,
     then named assignees sorted; an `escalated` item keeps its place and gains
-    the overdue up-arrow, and a `shared` item (listed under more than one human
-    assignee) gains the shared-ownership marker at the end of the line."""
+    the overdue up-arrow, a still-draft PR gains the draft marker just after the
+    link, and a `shared` item (listed under more than one human assignee) gains
+    the shared-ownership marker at the end of the line."""
     if not recipients:
         return ""
     named = sorted(r for r in recipients if r != UNASSIGNED)
     order = ([UNASSIGNED] if UNASSIGNED in recipients else []) + named
     legend = (f"_{BOT_ICON} agent PR · {COMMUNITY_ICON} community PR · "
-              f"{UNKNOWN_ICON} source unknown · {ESCALATED_ICON} escalated/overdue · "
+              f"{UNKNOWN_ICON} source unknown · {DRAFT_ICON} draft · "
+              f"{ESCALATED_ICON} escalated/overdue · "
               f"{SHARED_ICON} shared (multiple assignees)_")
     lines = ["## Slang PR Escalation Report", "", legend, ""]
     for recipient in order:
         header = "Unassigned" if recipient == UNASSIGNED else format_mention(recipient, cfg)
         lines.append(f"- **{header}**:")
         for it in sorted(recipients[recipient], key=lambda i: _item_sort_key(i, cfg)):
-            prefix = (ESCALATED_ICON + " ") if it.escalated else ""
+            # Escalated rows lead with the up-arrow; others reserve the slot with
+            # a blank so the source icons line up row to row.
+            prefix = f"{ESCALATED_ICON if it.escalated else ESCALATION_SPACER} "
             icon = source_icon(it.pr, cfg)
             # Wrap the URL in <> so Discord/Slack don't auto-expand it into a
             # link preview; still renders as a normal link on GitHub.
             link = f"[{_repo_short(it.pr.repo)}#{it.pr.number}](<{it.pr.url}>)"
+            # Draft marker sits just after the link (only bot drafts ever surface
+            # — human drafts are excluded).
+            draft = f" {DRAFT_ICON}" if it.pr.is_draft else ""
             # Shared-ownership marker is tagged at the end of the line (after the
             # reason), never as a prefix.
             suffix = f" {SHARED_ICON}" if it.shared else ""
-            lines.append(f"  - {prefix}{icon} {link} — {it.reason}{suffix}")
+            lines.append(f"  - {prefix}{icon} {link}{draft} — {it.reason}{suffix}")
     return "\n".join(lines).strip()
 
 
