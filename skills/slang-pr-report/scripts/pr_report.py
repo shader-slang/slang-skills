@@ -382,7 +382,7 @@ def classify_source(pr: PR, cfg: Config,
     itself is unreadable do we return Unknown. An empty index is Community for
     every non-bot author."""
     if pr.is_bot:
-        return cfg.source_bot
+        return source_for(True, False, cfg)
     if internal_index is None:
         return cfg.source_unknown
     members = internal_members_for_repo(
