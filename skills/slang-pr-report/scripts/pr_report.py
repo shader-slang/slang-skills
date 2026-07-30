@@ -3,9 +3,10 @@
 
 Generates an assignee-grouped report of open PRs that need human attention,
 computed entirely from live GitHub state via `gh`: it reads
-PRs/CI/reviews/collaborators, derives each PR's lifecycle stage from those
-signals, and emits the report (optionally with Discord/Slack mentions). The
-caller decides how often to run it — the script does not throttle.
+PRs/CI/reviews and the org `source-internal` team, derives each PR's lifecycle
+stage from those signals, and emits the report (optionally with Discord/Slack
+mentions). The caller decides how often to run it — the script does not
+throttle.
 
 The report makes no changes on GitHub and keeps no local state — each PR's
 staleness is derived fresh from live event timestamps (see last_moved_at) on
@@ -67,12 +68,16 @@ DEFAULT_COVERAGE_CHECK = ""
 DEFAULT_STATUS_REVISING = "Revising"
 DEFAULT_STATUS_TODO = "Todo"
 DEFAULT_STATUS_DONE = "Done"
-# PR source categories. "Unknown" is used when the repo's collaborator set
-# couldn't be read, so we can't tell Internal from Community (see classify_source).
+# PR source categories. "Unknown" is used when the source-internal team
+# membership couldn't be read, so we can't tell Internal from Community
+# (see classify_source).
 DEFAULT_SOURCE_INTERNAL = "Internal"
 DEFAULT_SOURCE_COMMUNITY = "Community"
 DEFAULT_SOURCE_BOT = "Bot"
 DEFAULT_SOURCE_UNKNOWN = "Unknown"
+# org/team-slug whose members (direct or nested) are classified as Internal.
+# Matches pr-board-sync.yml's source_internal_team input.
+DEFAULT_SOURCE_INTERNAL_TEAM = "shader-slang/source-internal"
 
 # Workday model for the stall clock (skips weekends).
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
@@ -153,6 +158,7 @@ class Config:
     source_community: str = DEFAULT_SOURCE_COMMUNITY
     source_bot: str = DEFAULT_SOURCE_BOT
     source_unknown: str = DEFAULT_SOURCE_UNKNOWN
+    source_internal_team: str = DEFAULT_SOURCE_INTERNAL_TEAM
     bot_authors: list[str] = field(
         default_factory=lambda: _split_csv(DEFAULT_BOT_AUTHORS))
     ignored_reviewers: list[str] = field(
@@ -275,54 +281,37 @@ def promotion_gate_passed(pr: PR, cfg: Config) -> bool:
     return pr.ci_state == CI_PASSED
 
 
-def source_for(is_bot: bool, can_commit: bool, cfg: Config) -> str:
+def is_internal_login(login: str | None, members: set[str] | None) -> bool:
+    """True when login is in the source-internal member set (case-insensitive).
+    Pure. False when login or members is missing/empty."""
+    if not login or not members:
+        return False
+    lower = login.lower()
+    return any((m or "").lower() == lower for m in members)
+
+
+def source_for(is_bot: bool, is_internal: bool, cfg: Config) -> str:
     """Source classification (pure): Bot if a bot authored it, else Internal if
-    the author can commit to the target repo, else Community."""
+    the author is on the source-internal team, else Community."""
     if is_bot:
         return cfg.source_bot
-    return cfg.source_internal if can_commit else cfg.source_community
+    return cfg.source_internal if is_internal else cfg.source_community
 
 
-# Effective repo permissions/roles that mean the author can commit -> Internal.
-INTERNAL_PERMISSIONS = frozenset({"admin", "maintain", "write"})
-
-
-def _permission_is_internal(permission: str | None) -> bool | None:
-    """Interpret a per-user repo permission/role (admin / maintain / write /
-    push / triage / read / none) as Internal (can commit) or not; None when
-    undetermined. Pure."""
-    if not permission:
-        return None
-    p = permission.lower()
-    return (p in INTERNAL_PERMISSIONS) or (p == "push")
-
-
-def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None,
-                    author_permission: "Callable[[str, str], bool | None] | None" = None) -> str:
+def classify_source(pr: PR, cfg: Config, internal_members: set[str] | None) -> str:
     """Classify a PR's source. Pure given its inputs. A bot PR is always Bot.
 
-    `collaborators` is the repo's write+ set (Internal iff the author is in it),
-    or None when the list couldn't be read. A downscoped token's collaborators
-    *list* can omit members who hold push via org base permission or a team, so
-    for any non-bot author not found in the list an optional
-    `author_permission(repo, author)` fallback is consulted — the per-user
-    permission endpoint, which reflects that access. It returns True (can commit
-    -> Internal), False (cannot -> Community), or None (undetermined). Only when
-    the fallback is absent/undetermined do we defer to the list: author-not-in-set
-    -> Community, or Unknown when the list itself was unreadable."""
+    `internal_members` is the org `source-internal` team (direct + nested
+    membership), or None when the team couldn't be listed. Internal iff the
+    author is in that set; otherwise Community. Only when the set itself was
+    unreadable do we return Unknown — we genuinely can't tell Internal from
+    Community. An empty set (team unset or genuinely empty) is Community for
+    every non-bot author."""
     if pr.is_bot:
         return cfg.source_bot
-    if collaborators is not None and pr.author in collaborators:
-        return cfg.source_internal
-    if author_permission is not None:
-        verdict = author_permission(pr.repo, pr.author)
-        if verdict is True:
-            return cfg.source_internal
-        if verdict is False:
-            return cfg.source_community
-    if collaborators is None:
+    if internal_members is None:
         return cfg.source_unknown
-    return cfg.source_community
+    return source_for(False, is_internal_login(pr.author, internal_members), cfg)
 
 
 # --- gh I/O layer (the only place that shells out) ---------------------------
@@ -420,22 +409,6 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
-    def repo_user_permission(self, repo: str, user: str) -> str | None:
-        """Effective permission of `user` on `repo` (admin / maintain / write /
-        triage / read / none) via the per-user endpoint
-        `repos/{repo}/collaborators/{user}/permission`, which reflects access
-        granted through org base permission or a team even when the collaborators
-        *list* omits it. Returns the role/permission string, or None if the call
-        failed (non-fatal — the caller degrades gracefully)."""
-        out = self.api(f"repos/{repo}/collaborators/{user}/permission")
-        if not (out or "").strip():
-            return None
-        try:
-            data = json.loads(out)
-        except ValueError:
-            return None
-        return (data.get("role_name") or data.get("permission") or "").lower() or None
-
     def rate_limit_wait_seconds(self) -> float | None:
         """Seconds until the exhausted rate-limit window resets, via the
         (limit-exempt) `rate_limit` endpoint. None if it can't be determined
@@ -518,15 +491,24 @@ def list_org_repos(gh: Gh, org: str) -> list[str]:
     return [r["nameWithOwner"] for r in data if r.get("nameWithOwner")]
 
 
-def collect_repo_collaborators(gh: Gh, repo: str) -> set[str] | None:
-    """Logins with write+ access (push/maintain/admin) to `repo`, used to
-    classify a PR's source (Internal iff the author can commit). Returns `None`
-    when the call fails (the endpoint needs push access on the repo) so the
-    caller can mark the source `Unknown` rather than assume Community; an empty
-    set means the repo genuinely has no write+ collaborators."""
+def collect_source_internal_members(gh: Gh, team_spec: str) -> set[str] | None:
+    """Member logins of an org team given as `org/slug` (direct + nested), used
+    to classify a PR's Source (Internal iff the author is in the set). Returns
+    `None` when the call fails so the caller can mark the source `Unknown`
+    rather than assume Community; an empty set means the team is unset/empty
+    (every non-bot author is Community). Matches pr-board-sync's
+    `listTeamMembers` / `source_internal_team`."""
+    if not team_spec or "/" not in team_spec:
+        return set()
+    slash = team_spec.index("/")
+    org = team_spec[:slash]
+    slug = team_spec[slash + 1:]
+    if not org or not slug:
+        return set()
+    # teams.listMembersInOrg includes nested-team members by default.
     lines = gh.api_lines(
-        f"repos/{repo}/collaborators",
-        ".[] | select(.permissions.push == true) | .login",
+        f"orgs/{org}/teams/{slug}/members",
+        ".[].login",
     )
     return set(lines) if lines is not None else None
 
@@ -989,7 +971,7 @@ BOT_LADDER: list[Predicate] = [
 
 def ladder_for(pr: PR, cfg: Config) -> list[Predicate]:
     """The predicate ladder for a PR's source (empty -> not surfaced).
-    `Unknown` PRs (collaborator set unreadable, can't tell Internal from
+    `Unknown` PRs (source-internal team unreadable, can't tell Internal from
     Community) are surfaced via the community ladder and flagged with the
     unknown icon, rather than being silently dropped or assumed Community."""
     if pr.source == cfg.source_bot:
@@ -1168,24 +1150,13 @@ def load_recipient_map(path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def collect_prs_for_report(gh: Gh, cfg: Config,
-                           repo_collaborators: Callable[[str], set[str] | None]) -> list[PR]:
+                           internal_members: set[str] | None) -> list[PR]:
     """All open PRs across cfg.repos, fully populated by the batched query, with
-    Source classified live. The report does not predict owners, so no
-    committer-signal ranking is run here."""
+    Source classified live from the org source-internal team. The report does
+    not predict owners, so no committer-signal ranking is run here."""
     _progress(f"scanning {len(cfg.repos)} repo(s) for the report — this typically takes a few minutes…")
     prs: list[PR] = []
     skipped: list[str] = []
-
-    # Per-user permission fallback for authors the collaborators *list* omits
-    # (a downscoped token doesn't list members who hold push via org base
-    # permission or a team). Memoized per (repo, author) to bound the extra calls.
-    perm_cache: dict[tuple[str, str], bool | None] = {}
-
-    def author_permission(repo: str, author: str) -> bool | None:
-        key = (repo, author.lower())
-        if key not in perm_cache:
-            perm_cache[key] = _permission_is_internal(gh.repo_user_permission(repo, author))
-        return perm_cache[key]
 
     for repo in cfg.repos:
         try:
@@ -1196,9 +1167,9 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
             _progress(f"  ⚠️  skipping {repo} — {e}")
             continue
         for pr in repo_prs:
-            # Classify Source live: the repo's write+ collaborator set (fetched
-            # lazily), with the per-user permission fallback for authors not in it.
-            pr.source = classify_source(pr, cfg, repo_collaborators(repo), author_permission)
+            # Classify Source live from the org-wide source-internal team
+            # (fetched once per run by the caller).
+            pr.source = classify_source(pr, cfg, internal_members)
             pr.is_bot = (pr.source == cfg.source_bot)
             prs.append(pr)
     if skipped:
@@ -1213,17 +1184,19 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     """Build the assignee-grouped report from live GitHub state. Stateless: no
     GitHub writes and no local state file — every PR's stall is derived fresh
     from event timestamps (see last_moved_at) on each run."""
-    # The write+ collaborator set is per-repo, memoized; used for live Source
-    # classification (Internal iff the author can commit to the repo). None means
-    # the set couldn't be read -> non-bot PRs there are classified Unknown.
-    collaborators_cache: dict[str, set[str] | None] = {}
+    # Org-wide source-internal team, fetched once per run. None means the team
+    # couldn't be listed -> non-bot PRs are classified Unknown.
+    internal_members = collect_source_internal_members(gh, cfg.source_internal_team)
+    if internal_members is None:
+        _progress(
+            f"⚠️  could not list {cfg.source_internal_team}; "
+            f"non-bot PRs will be classified Unknown")
+    else:
+        _progress(
+            f"source-internal team {cfg.source_internal_team}: "
+            f"{len(internal_members)} member(s)")
 
-    def repo_collaborators(repo: str) -> set[str] | None:
-        if repo not in collaborators_cache:
-            collaborators_cache[repo] = collect_repo_collaborators(gh, repo)
-        return collaborators_cache[repo]
-
-    prs = collect_prs_for_report(gh, cfg, repo_collaborators)
+    prs = collect_prs_for_report(gh, cfg, internal_members)
 
     repo_stats: dict[str, dict[str, int]] = {}
     stall_by_key: dict[str, tuple[float, int]] = {}  # pr key -> (stall_wh, stall_days)

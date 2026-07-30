@@ -72,14 +72,12 @@ pinging the author resets the clock — but the PR author's own comments never d
 
 Every PR is classified into a **source** — **`Internal` / `Community` / `Bot`** —
 from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
-`Internal` if the author can commit to the target repo, else `Community`. "Can
-commit" is checked first against the `repos/{repo}/collaborators` list, then —
-for authors the list omits (a downscoped token doesn't list members with push
-via org base permission or a team) — against the per-user
-`repos/{repo}/collaborators/{user}/permission` endpoint (push/maintain/admin ⇒
-Internal). Only when **both** are unreadable is a non-bot PR classified
-**`Unknown`** rather than silently assumed `Community` — we genuinely can't tell
-Internal from Community. Behavior differs by source:
+`Internal` if the author is a member of the org `source-internal` team
+(`DEFAULT_SOURCE_INTERNAL_TEAM`, default `shader-slang/source-internal`; direct
+or nested membership), else `Community`. The team is listed once per run via
+`orgs/{org}/teams/{slug}/members`. Only when that team list is **unreadable** is
+a non-bot PR classified **`Unknown`** rather than silently assumed `Community` —
+we genuinely can't tell Internal from Community. Behavior differs by source:
 
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
 |---|---|---|---|---|
@@ -196,7 +194,8 @@ top of `pr_report.py`:
 | `DEFAULT_ORG` | `shader-slang` | org scanned when `DEFAULT_REPOS` is empty |
 | `DEFAULT_REPOS` | _(empty)_ | comma-separated `owner/name` subset; empty -> every non-archived repo in the org |
 | `DEFAULT_STATUS_*` | `Revising`/`Todo`/`Done` | internal lifecycle-stage labels (derived; see `derive_stage`) |
-| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the collaborator set can't be read) |
+| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the source-internal team can't be listed) |
+| `DEFAULT_SOURCE_INTERNAL_TEAM` | `shader-slang/source-internal` | org/team-slug whose members (direct or nested) are Internal |
 | `DEFAULT_COVERAGE_CHECK` | _(empty)_ | optional CI check gating a bot PR's promotion to ready; while empty, bot PRs are treated as ready |
 | `DEFAULT_BOT_AUTHORS` | `nv-slang-bot,slang-coworker-nanoclaw,Copilot,copilot-swe-agent` | bot logins matched by name (plus GitHub's `is_bot`). `Copilot` is typed as a `User` on reviews/assignees, so it must be name-matched; bot-only-assigned PRs go to Unassigned |
 | `DEFAULT_IGNORED_REVIEWERS` | `bmillsNV` | auto-assigned reviewers that can't approve; ignored when checking reviewer coverage |
@@ -215,15 +214,12 @@ top of `pr_report.py`:
 - **repo read** for the PR/CI/review/timeline GraphQL query (classic `repo`
   scope, or a GitHub App with Pull requests + Contents + Checks read; covers
   private repos). CI timing also reads check-suite/workflow-run metadata.
-- **repo push access** to classify source (Internal iff the author can commit).
-  The primary signal is the `repos/{repo}/collaborators` list. Because a
-  downscoped token's list can omit members who hold push via org base permission
-  or a team, any author **not** in the list is re-checked via the per-user
-  endpoint `repos/{repo}/collaborators/{user}/permission` (push/maintain/admin ⇒
-  Internal). Only when both are unavailable does a non-bot PR fall back to
-  `Unknown` (`❓`); the report still runs. (This fallback is what lets a
-  downscoped app token scope the report correctly.)
-- No writes, no GitHub Projects scope, and no local clone required (all via `gh api`).
+- **org Members: read** (classic `read:org`, or a GitHub App with Organization
+  Members: Read) to list `DEFAULT_SOURCE_INTERNAL_TEAM` and classify Source
+  (Internal iff the author is on that team). When the team list is unavailable
+  a non-bot PR falls back to `Unknown` (`❓`); the report still runs.
+- No writes, no repo push/collaborator permission, no GitHub Projects scope, and
+  no local clone required (all via `gh api`).
 
 ## Scheduling
 

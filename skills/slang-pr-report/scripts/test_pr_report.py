@@ -569,73 +569,41 @@ class TestSourceClassify(unittest.TestCase):
         self.assertEqual(report.source_for(False, True, self.cfg), "Internal")
         self.assertEqual(report.source_for(False, False, self.cfg), "Community")
 
-    def test_internal_when_author_can_commit(self):
+    def test_is_internal_login_case_insensitive(self):
+        self.assertTrue(report.is_internal_login("Alice", {"alice"}))
+        self.assertTrue(report.is_internal_login("alice", {"Alice"}))
+        self.assertFalse(report.is_internal_login("carol", {"alice"}))
+        self.assertFalse(report.is_internal_login("", {"alice"}))
+        self.assertFalse(report.is_internal_login("alice", None))
+        self.assertFalse(report.is_internal_login("alice", set()))
+
+    def test_internal_when_author_on_team(self):
         pr = make_pr(author="dev", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
 
-    def test_community_when_author_cannot_commit(self):
+    def test_community_when_author_not_on_team(self):
         pr = make_pr(author="ext", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Community")
 
-    def test_empty_collaborators_is_community_not_unknown(self):
-        # A successful-but-empty set (repo genuinely has no write+ collaborators)
-        # is NOT unknown -> non-bot author is Community.
+    def test_empty_team_is_community_not_unknown(self):
+        # A successful-but-empty set (team unset/empty) is NOT unknown ->
+        # non-bot author is Community.
         pr = make_pr(author="ext", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, set()), "Community")
 
-    def test_none_collaborators_is_unknown_for_non_bot(self):
-        # None == collaborator set couldn't be read -> Unknown, not Community.
+    def test_none_team_is_unknown_for_non_bot(self):
+        # None == team couldn't be listed -> Unknown, not Community.
         pr = make_pr(author="ext", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Unknown")
 
-    def test_none_collaborators_still_bot_for_bot(self):
-        # Bot detection doesn't need the collaborator set.
+    def test_none_team_still_bot_for_bot(self):
+        # Bot detection doesn't need the team membership set.
         pr = make_pr(author="nv-slang-bot", is_bot=True)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Bot")
 
-    # --- per-user permission fallback (author not in the collaborators list) ---
-    def _fallback(self, verdict):
-        return lambda repo, author: verdict
-
-    def test_fallback_internal_when_list_omits_author(self):
-        # Author absent from a downscoped list, but the per-user endpoint says
-        # they can commit -> Internal.
-        pr = make_pr(author="member", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(True)), "Internal")
-
-    def test_fallback_community_when_not_committer(self):
-        pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(False)), "Community")
-
-    def test_fallback_resolves_even_when_list_unreadable(self):
-        pr = make_pr(author="member", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, None, self._fallback(True)), "Internal")
-
-    def test_fallback_undetermined_falls_back_to_list(self):
-        pr = make_pr(author="ext", is_bot=False)
-        # list readable, author absent, fallback can't tell -> Community
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, set(), self._fallback(None)), "Community")
-        # list unreadable, fallback can't tell -> Unknown
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, None, self._fallback(None)), "Unknown")
-
-    def test_fallback_not_consulted_when_author_in_list(self):
-        def boom(repo, author):
-            raise AssertionError("fallback should not run when author is in the list")
-        pr = make_pr(author="dev", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}, boom), "Internal")
-
-    def test_permission_is_internal(self):
-        for p in ("admin", "maintain", "write", "push", "ADMIN", "Write"):
-            self.assertIs(report._permission_is_internal(p), True, p)
-        for p in ("read", "triage", "none"):
-            self.assertIs(report._permission_is_internal(p), False, p)
-        for p in (None, ""):
-            self.assertIsNone(report._permission_is_internal(p))
+    def test_internal_membership_is_case_insensitive(self):
+        pr = make_pr(author="Dev", is_bot=False)
+        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
 
 
 @final
@@ -663,28 +631,37 @@ class TestUnknownSource(unittest.TestCase):
 
 
 @final
-class TestCollectRepoCollaborators(unittest.TestCase):
+class TestCollectSourceInternalMembers(unittest.TestCase):
     @final
     class _Gh:
         def __init__(self, lines):
             self._lines = lines  # list[str] | None
+            self.last_path = None
 
         def api_lines(self, path, jq, paginate=True):
+            self.last_path = path
             return self._lines
 
     def test_failure_returns_none(self):
-        # api_lines returns None on a failed call -> collect returns None.
         self.assertIsNone(
-            report.collect_repo_collaborators(self._Gh(None), "o/r"))
+            report.collect_source_internal_members(self._Gh(None), "o/t"))
 
     def test_success_returns_set(self):
+        gh = self._Gh(["dev1", "dev2"])
         self.assertEqual(
-            report.collect_repo_collaborators(self._Gh(["dev1", "dev2"]), "o/r"),
+            report.collect_source_internal_members(gh, "shader-slang/source-internal"),
             {"dev1", "dev2"})
+        self.assertEqual(gh.last_path, "orgs/shader-slang/teams/source-internal/members")
 
     def test_success_empty_is_empty_set_not_none(self):
         self.assertEqual(
-            report.collect_repo_collaborators(self._Gh([]), "o/r"), set())
+            report.collect_source_internal_members(self._Gh([]), "o/t"), set())
+
+    def test_unset_or_bare_slug_is_empty_set(self):
+        gh = self._Gh(["should-not-be-called"])
+        self.assertEqual(report.collect_source_internal_members(gh, ""), set())
+        self.assertEqual(report.collect_source_internal_members(gh, "bare-slug"), set())
+        self.assertIsNone(gh.last_path)  # never called the API
 
 
 @final
@@ -895,8 +872,7 @@ class TestScanResilience(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg(repos=["shader-slang/a", "shader-slang/b"])
         self._orig = report.collect_open_prs
-        # Stub gh: source classification's per-user fallback may be consulted.
-        self.gh = SimpleNamespace(repo_user_permission=lambda repo, user: None)
+        self.gh = SimpleNamespace()
 
     def tearDown(self):
         report.collect_open_prs = self._orig
@@ -911,7 +887,7 @@ class TestScanResilience(unittest.TestCase):
             return [make_pr(number=1, source="Community")]
 
         report.collect_open_prs = fake
-        prs = report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
+        prs = report.collect_prs_for_report(self.gh, self.cfg, set())
         self.assertEqual(seen, ["shader-slang/a", "shader-slang/b"])  # scan continued
         self.assertEqual(len(prs), 1)                                 # only repo b's PR
 
@@ -921,7 +897,7 @@ class TestScanResilience(unittest.TestCase):
 
         report.collect_open_prs = fake
         with self.assertRaises(report.RateLimitedError):
-            report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
+            report.collect_prs_for_report(self.gh, self.cfg, set())
 
 
 if __name__ == "__main__":
