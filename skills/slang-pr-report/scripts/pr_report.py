@@ -309,7 +309,8 @@ def repo_short_name(repo: str | None) -> str:
 
 def parse_team_scope_repos(description: str | None) -> list[str]:
     """Parse `Scope: [repo1, repo2]` from a team description into short repo names.
-    Bare names and `owner/name` forms are both accepted. Pure.
+    Bare names and `owner/name` forms are both accepted; the owner is stripped,
+    so `Scope: [otherorg/slangpy]` matches `shader-slang/slangpy`. Pure.
 
     The brackets delimit the list so other description text can follow.
     Unbracketed `Scope: repo1, repo2` is ignored (returns []). The label is
