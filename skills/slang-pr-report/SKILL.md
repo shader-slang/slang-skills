@@ -3,7 +3,7 @@ name: slang-pr-report
 license: MIT
 description: "Surface the open shader-slang PRs needing human attention with a bundled gh-only Python script (scripts/pr_report.py): an assignee-grouped escalation report computed entirely from live GitHub state (read-only; no writes; optional Discord/Slack mentions). Use for PR triage, the reviewer-attention report, stale-PR follow-up, or a scheduled report run."
 provides: []
-argument-hint: "[--recipient-map PATH]"
+argument-hint: "[all|bot|community] [options]"
 allowed-tools: Bash Read Grep Glob
 ---
 
@@ -19,13 +19,23 @@ surfaces the emitted report.
 ## Quick start
 
 ```bash
-# Render the assignee-grouped escalation report with notifying mentions.
-python3 scripts/pr_report.py --recipient-map <path>
+# Render all reportable PRs (the default) with notifying mentions.
+python3 scripts/pr_report.py all --recipient-map <path>
+
+# Render only Community/Unknown PRs; useful for a daily community report.
+python3 scripts/pr_report.py community --recipient-map <path>
+
+# Render only Bot PRs and override its common surface/escalate thresholds.
+python3 scripts/pr_report.py bot --bot-surface-hours 72 --bot-escalate-hours 240
 
 # No mapping file (absent / testing): every login renders as inert `backticks`
 # so nobody is pinged. Otherwise identical.
 python3 scripts/pr_report.py
 ```
+
+The optional first positional argument selects `all` (default), `bot`, or
+`community`. The `community` scope includes `Unknown`, since an unreadable
+source-internal team causes those PRs to use the Community ladder.
 
 The report reads only live GitHub state and keeps **no local state** — each
 PR's staleness is derived fresh from event timestamps every run. It exits `10`
@@ -148,6 +158,13 @@ catch-all is just `idle for N work days`):
 - **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested, check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing, needs fixes` (24h / 48h) → `needs reviewer` (24h / 48h) → `idle` (24h / 48h).
 - **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `needs reviewer` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
 
+The common Community thresholds can be overridden with
+`--community-surface-hours` / `--community-escalate-hours`; Bot thresholds use
+`--bot-surface-hours` / `--bot-escalate-hours`. Values are weekday-hours and
+must be non-negative, with escalation at or after surface. Community's special
+`needs CI approval` and `changes requested` timings remain fixed. Run
+`scripts/pr_report.py --help` for every default.
+
 The `needs reviewer` rung (a hint to the assignee to get one assigned) fires when a
 surfaced PR has no approve-capable reviewer requested (auto-assigned non-approvers
 in `DEFAULT_IGNORED_REVIEWERS` and bots don't count) and isn't already caught by an
@@ -163,7 +180,7 @@ requested.
 ### Agent's job
 
 The script does everything except delivery: run
-`scripts/pr_report.py --recipient-map <path>`, and when the exit code is `10`
+`scripts/pr_report.py [all|bot|community] --recipient-map <path>`, and when the exit code is `10`
 surface the emitted report to its recipients through whatever channel is
 available (this skill is delivery-method-agnostic). Everything else is the
 script's.
@@ -184,10 +201,18 @@ notify the wrong person. The path is supplied by the invoker **each run** (no
 auto-discovery) and affects the **report text only** — routing and bot detection
 stay on GitHub logins.
 
-## Configuration (top-of-file constants)
+## Report options and configuration
 
-The only flag is `--recipient-map PATH`; everything else is a constant near the
-top of `pr_report.py`:
+```text
+scope                              all (default), bot, or community
+--community-surface-hours HOURS    default 24
+--community-escalate-hours HOURS   default 48
+--bot-surface-hours HOURS          default 48
+--bot-escalate-hours HOURS         default 168
+--recipient-map PATH               default: no mapping
+```
+
+The defaults are constants near the top of `pr_report.py`:
 
 | Constant | Value | Notes |
 |------|---------|-------|
@@ -196,6 +221,9 @@ top of `pr_report.py`:
 | `DEFAULT_STATUS_*` | `Revising`/`Todo`/`Done` | internal lifecycle-stage labels (derived; see `derive_stage`) |
 | `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the source-internal team can't be listed) |
 | `DEFAULT_SOURCE_INTERNAL_TEAM` | `shader-slang/source-internal` | org/team-slug whose members (direct or nested) are Internal |
+| `DEFAULT_REPORT_SCOPE` | `all` | source scope when the positional argument is omitted |
+| `DEFAULT_COMMUNITY_SURFACE_HOURS` / `DEFAULT_COMMUNITY_ESCALATE_HOURS` | `24` / `48` | common Community/Unknown condition thresholds; excludes the two specialized rungs |
+| `DEFAULT_BOT_SURFACE_HOURS` / `DEFAULT_BOT_ESCALATE_HOURS` | `48` / `168` | all Bot condition thresholds |
 | `DEFAULT_COVERAGE_CHECK` | _(empty)_ | optional CI check gating a bot PR's promotion to ready; while empty, bot PRs are treated as ready |
 | `DEFAULT_BOT_AUTHORS` | `nv-slang-bot,slang-coworker-nanoclaw,Copilot,copilot-swe-agent` | bot logins matched by name (plus GitHub's `is_bot`). `Copilot` is typed as a `User` on reviews/assignees, so it must be name-matched; bot-only-assigned PRs go to Unassigned |
 | `DEFAULT_IGNORED_REVIEWERS` | `bmillsNV` | auto-assigned reviewers that can't approve; ignored when checking reviewer coverage |

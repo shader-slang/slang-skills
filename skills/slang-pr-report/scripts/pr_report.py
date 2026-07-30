@@ -79,6 +79,15 @@ DEFAULT_SOURCE_UNKNOWN = "Unknown"
 # Matches pr-board-sync.yml's source_internal_team input.
 DEFAULT_SOURCE_INTERNAL_TEAM = "shader-slang/source-internal"
 
+# Report scope and default thresholds, in weekday-hours since the PR last moved.
+# Community's special needs-CI-approval and changes-requested rungs retain their
+# fixed 0h/24h and 168h/336h thresholds respectively.
+DEFAULT_REPORT_SCOPE = "all"
+DEFAULT_COMMUNITY_SURFACE_HOURS = 24.0
+DEFAULT_COMMUNITY_ESCALATE_HOURS = 48.0
+DEFAULT_BOT_SURFACE_HOURS = 48.0
+DEFAULT_BOT_ESCALATE_HOURS = 168.0
+
 # Workday model for the stall clock (skips weekends).
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
 
@@ -159,6 +168,11 @@ class Config:
     source_bot: str = DEFAULT_SOURCE_BOT
     source_unknown: str = DEFAULT_SOURCE_UNKNOWN
     source_internal_team: str = DEFAULT_SOURCE_INTERNAL_TEAM
+    report_scope: str = DEFAULT_REPORT_SCOPE
+    community_surface_hours: float = DEFAULT_COMMUNITY_SURFACE_HOURS
+    community_escalate_hours: float = DEFAULT_COMMUNITY_ESCALATE_HOURS
+    bot_surface_hours: float = DEFAULT_BOT_SURFACE_HOURS
+    bot_escalate_hours: float = DEFAULT_BOT_ESCALATE_HOURS
     bot_authors: list[str] = field(
         default_factory=lambda: _split_csv(DEFAULT_BOT_AUTHORS))
     ignored_reviewers: list[str] = field(
@@ -981,6 +995,35 @@ def ladder_for(pr: PR, cfg: Config) -> list[Predicate]:
     return []  # Internal: not surfaced (author self-manages)
 
 
+def report_scope_includes(pr: PR, cfg: Config) -> bool:
+    """Whether the selected report scope includes this PR's source.
+    `community` includes Unknown because Unknown uses the Community ladder."""
+    if cfg.report_scope == "bot":
+        return pr.source == cfg.source_bot
+    if cfg.report_scope == "community":
+        return pr.source in (cfg.source_community, cfg.source_unknown)
+    return True
+
+
+def predicate_rungs(pr: PR, pred: Predicate, cfg: Config) -> dict[str, float]:
+    """Effective thresholds for a predicate after command-line overrides.
+    Community's CI-approval and changes-requested predicates intentionally keep
+    their specialized fixed timings; the common Community predicates and every
+    Bot predicate use the source-level configurable thresholds."""
+    if pr.source == cfg.source_bot:
+        return {
+            "assignee": cfg.bot_surface_hours,
+            "escalate": cfg.bot_escalate_hours,
+        }
+    if (pr.source in (cfg.source_community, cfg.source_unknown)
+            and pred.key not in ("needs_ci_approval", "changes_requested")):
+        return {
+            "assignee": cfg.community_surface_hours,
+            "escalate": cfg.community_escalate_hours,
+        }
+    return dict(pred.ladder)
+
+
 def source_icon(pr: PR, cfg: Config) -> str:
     if pr.source == cfg.source_bot:
         return BOT_ICON
@@ -1034,6 +1077,8 @@ def build_report(prs: list[PR], cfg: Config,
     given the stall map."""
     recipients: dict[str, list[ReportItem]] = {}
     for pr in prs:
+        if not report_scope_includes(pr, cfg):
+            continue
         if pr.is_draft and not pr.is_bot:
             continue  # human drafts exempt
         ladder = ladder_for(pr, cfg)
@@ -1043,7 +1088,7 @@ def build_report(prs: list[PR], cfg: Config,
         if pred is None:
             continue
         stall_wh, stall_days = stall_by_key.get(pr.key(), (0.0, 0))
-        rungs = dict(pred.ladder)
+        rungs = predicate_rungs(pr, pred, cfg)
         assignee_after = rungs.get("assignee")
         if assignee_after is None or stall_wh < assignee_after:
             continue  # not yet at the first (surface) rung -> not surfaced
@@ -1227,20 +1272,60 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _nonnegative_hours(value: str) -> float:
+    try:
+        hours = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be a number of hours") from e
+    if hours < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return hours
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Emit the assignee-grouped escalation report for open shader-slang "
-            "PRs. Reads only live GitHub state and writes nothing to GitHub. All "
-            "configuration except the flag below lives in the constants at the "
-            "top of this file."
+            "PRs. Reads only live GitHub state and writes nothing to GitHub. "
+            "Thresholds are weekday-hours since the PR last moved. Community "
+            "needs-CI-approval (0h/24h) and changes-requested (168h/336h) keep "
+            "their specialized fixed surface/escalate thresholds."
         )
     )
+    p.add_argument("scope", nargs="?", choices=("all", "bot", "community"),
+                   default=DEFAULT_REPORT_SCOPE,
+                   help="Source scope: all reportable PRs, Bot only, or "
+                        "Community plus Unknown")
     p.add_argument("--recipient-map", default="", metavar="PATH",
                    help="Path to a flat JSON object mapping GitHub login -> destination "
                         "user ID (e.g. Discord). Mapped logins render as <@id> mentions in "
                         "the report; unmapped logins (or no file) render as inert `backticks`.")
-    return p.parse_args(argv)
+    p.add_argument("--community-surface-hours", type=_nonnegative_hours,
+                   default=DEFAULT_COMMUNITY_SURFACE_HOURS, metavar="HOURS",
+                   help="Surface common Community/Unknown conditions after this many "
+                        "weekday-hours")
+    p.add_argument("--community-escalate-hours", type=_nonnegative_hours,
+                   default=DEFAULT_COMMUNITY_ESCALATE_HOURS, metavar="HOURS",
+                   help="Mark common Community/Unknown conditions overdue after this "
+                        "many weekday-hours")
+    p.add_argument("--bot-surface-hours", type=_nonnegative_hours,
+                   default=DEFAULT_BOT_SURFACE_HOURS, metavar="HOURS",
+                   help="Surface Bot conditions after this many weekday-hours")
+    p.add_argument("--bot-escalate-hours", type=_nonnegative_hours,
+                   default=DEFAULT_BOT_ESCALATE_HOURS, metavar="HOURS",
+                   help="Mark Bot conditions overdue after this many weekday-hours")
+    return p
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = build_argument_parser()
+    args = p.parse_args(argv)
+    if args.community_escalate_hours < args.community_surface_hours:
+        p.error("--community-escalate-hours must be >= --community-surface-hours")
+    if args.bot_escalate_hours < args.bot_surface_hours:
+        p.error("--bot-escalate-hours must be >= --bot-surface-hours")
+    return args
 
 
 def _print_summary(summary: dict[str, Any]) -> None:
@@ -1260,7 +1345,13 @@ def main(argv: list[str]) -> int:
 
     gh = Gh(find_gh())
 
-    cfg = Config()
+    cfg = Config(
+        report_scope=args.scope,
+        community_surface_hours=args.community_surface_hours,
+        community_escalate_hours=args.community_escalate_hours,
+        bot_surface_hours=args.bot_surface_hours,
+        bot_escalate_hours=args.bot_escalate_hours,
+    )
     if args.recipient_map:
         cfg.recipient_map = load_recipient_map(args.recipient_map)
 

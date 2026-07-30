@@ -167,6 +167,47 @@ class TestPredicates(unittest.TestCase):
 
 
 @final
+class TestCli(unittest.TestCase):
+    def test_defaults(self):
+        args = report.parse_args([])
+        self.assertEqual(args.scope, "all")
+        self.assertEqual(args.community_surface_hours, 24.0)
+        self.assertEqual(args.community_escalate_hours, 48.0)
+        self.assertEqual(args.bot_surface_hours, 48.0)
+        self.assertEqual(args.bot_escalate_hours, 168.0)
+
+    def test_scope_and_threshold_overrides(self):
+        args = report.parse_args([
+            "community",
+            "--community-surface-hours", "12",
+            "--community-escalate-hours", "36",
+            "--bot-surface-hours", "72",
+            "--bot-escalate-hours", "240",
+        ])
+        self.assertEqual(args.scope, "community")
+        self.assertEqual(args.community_surface_hours, 12.0)
+        self.assertEqual(args.community_escalate_hours, 36.0)
+        self.assertEqual(args.bot_surface_hours, 72.0)
+        self.assertEqual(args.bot_escalate_hours, 240.0)
+
+    def test_help_documents_defaults(self):
+        help_text = report.build_argument_parser().format_help()
+        self.assertIn("(default: all)", help_text)
+        self.assertIn("(default: 24.0)", help_text)
+        self.assertIn("(default: 48.0)", help_text)
+        self.assertIn("(default: 168.0)", help_text)
+        self.assertIn("needs-CI-approval (0h/24h)", help_text)
+        self.assertIn("changes-requested (168h/336h)", help_text)
+
+    def test_rejects_escalate_before_surface(self):
+        with self.assertRaises(SystemExit):
+            report.parse_args([
+                "--community-surface-hours", "48",
+                "--community-escalate-hours", "24",
+            ])
+
+
+@final
 class TestLastMovedAt(unittest.TestCase):
     """last_moved_at is the max of the real, logged event timestamps (no state,
     no updatedAt), and does not assume the timestamps are ordered."""
@@ -390,6 +431,72 @@ class TestBuildReport(unittest.TestCase):
         rec = report.build_report([pr], self.cfg, {pr.key(): (50.0, 2)})  # community would escalate; bot escalate=168
         self.assertIn("carol", rec)
         self.assertFalse(rec["carol"][0].escalated)
+
+    def test_report_scope_filters_sources(self):
+        community = self._awaiting(
+            number=70, source="Community", assignees=["alice"])
+        unknown = self._awaiting(
+            number=71, source="Unknown", assignees=["bob"])
+        bot = self._awaiting(
+            number=72, source="Bot", is_bot=True, assignees=["carol"])
+        stalls = {
+            community.key(): (200.0, 9),
+            unknown.key(): (200.0, 9),
+            bot.key(): (200.0, 9),
+        }
+
+        community_report = report.build_report(
+            [community, unknown, bot],
+            make_cfg(report_scope="community"),
+            stalls)
+        self.assertEqual(set(community_report), {"alice", "bob"})
+
+        bot_report = report.build_report(
+            [community, unknown, bot],
+            make_cfg(report_scope="bot"),
+            stalls)
+        self.assertEqual(set(bot_report), {"carol"})
+
+    def test_common_threshold_overrides(self):
+        community = self._awaiting(
+            number=73, source="Community", assignees=["alice"])
+        bot = self._awaiting(
+            number=74, source="Bot", is_bot=True, assignees=["bob"])
+        cfg = make_cfg(
+            community_surface_hours=10.0,
+            community_escalate_hours=20.0,
+            bot_surface_hours=12.0,
+            bot_escalate_hours=24.0)
+
+        community_report = report.build_report(
+            [community], cfg, {community.key(): (15.0, 0)})
+        self.assertIn("alice", community_report)
+        self.assertFalse(community_report["alice"][0].escalated)
+
+        bot_report = report.build_report(
+            [bot], cfg, {bot.key(): (25.0, 1)})
+        self.assertIn("bob", bot_report)
+        self.assertTrue(bot_report["bob"][0].escalated)
+
+    def test_special_community_thresholds_are_not_overridden(self):
+        ci_approval = make_pr(
+            number=75, source="Community", assignees=["alice"],
+            ci_state=report.CI_ACTION_REQUIRED)
+        changes = make_pr(
+            number=76, source="Community", assignees=["bob"],
+            change_requested=True)
+        cfg = make_cfg(
+            community_surface_hours=1.0,
+            community_escalate_hours=2.0)
+
+        ci_report = report.build_report(
+            [ci_approval], cfg, {ci_approval.key(): (1.0, 0)})
+        self.assertIn("alice", ci_report)
+        self.assertFalse(ci_report["alice"][0].escalated)  # fixed escalate=24h
+
+        changes_report = report.build_report(
+            [changes], cfg, {changes.key(): (10.0, 0)})
+        self.assertEqual(changes_report, {})  # fixed surface=168h
 
     def test_internal_and_human_draft_excluded(self):
         internal = self._awaiting(number=14, source="Internal", assignees=["x"])
