@@ -670,6 +670,14 @@ class TestUnassignedGroup(unittest.TestCase):
 class TestSourceClassify(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg()
+        self.base_index = {
+            "base_members": {"dev"},
+            "scoped_teams": [{
+                "slug": "source-internal-slangpy",
+                "repos": {"slangpy", "slangpy-samples"},
+                "members": {"bob"},
+            }],
+        }
 
     def test_source_for(self):
         self.assertEqual(report.source_for(True, False, self.cfg), "Bot")
@@ -684,33 +692,53 @@ class TestSourceClassify(unittest.TestCase):
         self.assertFalse(report.is_internal_login("alice", None))
         self.assertFalse(report.is_internal_login("alice", set()))
 
-    def test_internal_when_author_on_team(self):
-        pr = make_pr(author="dev", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
+    def test_parse_team_scope_and_family_slug(self):
+        self.assertEqual(
+            report.parse_team_scope_repos(
+                "Internal. Scope: slangpy, slangpy-samples"),
+            ["slangpy", "slangpy-samples"])
+        self.assertEqual(
+            report.parse_team_scope_repos("Scope: shader-slang/slang-rhi"),
+            ["slang-rhi"])
+        self.assertEqual(report.parse_team_scope_repos("no scope"), [])
+        self.assertTrue(report.is_source_internal_family_slug(
+            "source-internal", "source-internal-slangpy"))
+        self.assertFalse(report.is_source_internal_family_slug(
+            "source-internal", "source-internally"))
+
+    def test_internal_when_author_on_base_team(self):
+        pr = make_pr(author="dev", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
+
+    def test_internal_when_author_on_scoped_team_for_repo(self):
+        pr = make_pr(author="bob", is_bot=False, repo="shader-slang/slangpy")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
+
+    def test_community_when_scoped_member_on_other_repo(self):
+        pr = make_pr(author="bob", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Community")
 
     def test_community_when_author_not_on_team(self):
         pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Community")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Community")
 
-    def test_empty_team_is_community_not_unknown(self):
-        # A successful-but-empty set (team unset/empty) is NOT unknown ->
-        # non-bot author is Community.
+    def test_empty_index_is_community_not_unknown(self):
         pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, set()), "Community")
+        self.assertEqual(
+            report.classify_source(pr, self.cfg, {"base_members": set(), "scoped_teams": []}),
+            "Community")
 
-    def test_none_team_is_unknown_for_non_bot(self):
-        # None == team couldn't be listed -> Unknown, not Community.
+    def test_none_index_is_unknown_for_non_bot(self):
         pr = make_pr(author="ext", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Unknown")
 
-    def test_none_team_still_bot_for_bot(self):
-        # Bot detection doesn't need the team membership set.
+    def test_none_index_still_bot_for_bot(self):
         pr = make_pr(author="nv-slang-bot", is_bot=True)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Bot")
 
     def test_internal_membership_is_case_insensitive(self):
-        pr = make_pr(author="Dev", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
+        pr = make_pr(author="Dev", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
 
 
 @final
@@ -738,37 +766,55 @@ class TestUnknownSource(unittest.TestCase):
 
 
 @final
-class TestCollectSourceInternalMembers(unittest.TestCase):
+class TestCollectSourceInternalIndex(unittest.TestCase):
     @final
     class _Gh:
-        def __init__(self, lines):
-            self._lines = lines  # list[str] | None
-            self.last_path = None
+        def __init__(self, by_path):
+            self._by_path = by_path  # path -> list[str] | None
+            self.calls = []
 
         def api_lines(self, path, jq, paginate=True):
-            self.last_path = path
-            return self._lines
+            self.calls.append(path)
+            return self._by_path.get(path, [])
 
-    def test_failure_returns_none(self):
+    def test_failure_listing_teams_returns_none(self):
+        gh = self._Gh({"orgs/shader-slang/teams": None})
         self.assertIsNone(
-            report.collect_source_internal_members(self._Gh(None), "o/t"))
+            report.collect_source_internal_index(gh, "shader-slang/source-internal"))
 
-    def test_success_returns_set(self):
-        gh = self._Gh(["dev1", "dev2"])
+    def test_success_builds_base_and_scoped(self):
+        gh = self._Gh({
+            "orgs/shader-slang/teams": [
+                "source-internal\torg-wide",
+                "source-internal-slangpy\tScope: slangpy, slangpy-samples",
+                "source-internal-slang-rhi\tScope: slang-rhi",
+                "pr-owners\tignored",
+            ],
+            "orgs/shader-slang/teams/source-internal/members": ["alice"],
+            "orgs/shader-slang/teams/source-internal-slangpy/members": ["bob"],
+            "orgs/shader-slang/teams/source-internal-slang-rhi/members": ["carol"],
+        })
+        index = report.collect_source_internal_index(gh, "shader-slang/source-internal")
+        self.assertEqual(index["base_members"], {"alice"})
         self.assertEqual(
-            report.collect_source_internal_members(gh, "shader-slang/source-internal"),
-            {"dev1", "dev2"})
-        self.assertEqual(gh.last_path, "orgs/shader-slang/teams/source-internal/members")
+            {(t["slug"], frozenset(t["repos"]), frozenset(t["members"]))
+             for t in index["scoped_teams"]},
+            {
+                ("source-internal-slangpy",
+                 frozenset({"slangpy", "slangpy-samples"}), frozenset({"bob"})),
+                ("source-internal-slang-rhi",
+                 frozenset({"slang-rhi"}), frozenset({"carol"})),
+            })
 
-    def test_success_empty_is_empty_set_not_none(self):
+    def test_unset_or_bare_slug_is_empty_index(self):
+        gh = self._Gh({})
         self.assertEqual(
-            report.collect_source_internal_members(self._Gh([]), "o/t"), set())
-
-    def test_unset_or_bare_slug_is_empty_set(self):
-        gh = self._Gh(["should-not-be-called"])
-        self.assertEqual(report.collect_source_internal_members(gh, ""), set())
-        self.assertEqual(report.collect_source_internal_members(gh, "bare-slug"), set())
-        self.assertIsNone(gh.last_path)  # never called the API
+            report.collect_source_internal_index(gh, ""),
+            {"base_members": set(), "scoped_teams": []})
+        self.assertEqual(
+            report.collect_source_internal_index(gh, "bare-slug"),
+            {"base_members": set(), "scoped_teams": []})
+        self.assertEqual(gh.calls, [])
 
 
 @final
@@ -994,7 +1040,8 @@ class TestScanResilience(unittest.TestCase):
             return [make_pr(number=1, source="Community")]
 
         report.collect_open_prs = fake
-        prs = report.collect_prs_for_report(self.gh, self.cfg, set())
+        empty_index = {"base_members": set(), "scoped_teams": []}
+        prs = report.collect_prs_for_report(self.gh, self.cfg, empty_index)
         self.assertEqual(seen, ["shader-slang/a", "shader-slang/b"])  # scan continued
         self.assertEqual(len(prs), 1)                                 # only repo b's PR
 
@@ -1004,7 +1051,8 @@ class TestScanResilience(unittest.TestCase):
 
         report.collect_open_prs = fake
         with self.assertRaises(report.RateLimitedError):
-            report.collect_prs_for_report(self.gh, self.cfg, set())
+            report.collect_prs_for_report(
+                self.gh, self.cfg, {"base_members": set(), "scoped_teams": []})
 
 
 if __name__ == "__main__":

@@ -84,9 +84,11 @@ Every PR is classified into a **source** — **`Internal` / `Community` / `Bot`*
 from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
 `Internal` if the author is a member of the org `source-internal` team
 (`DEFAULT_SOURCE_INTERNAL_TEAM`, default `shader-slang/source-internal`; direct
-or nested membership), else `Community`. The team is listed once per run via
-`orgs/{org}/teams/{slug}/members`. Only when that team list is **unreadable** is
-a non-bot PR classified **`Unknown`** rather than silently assumed `Community` —
+or nested membership) **or** a sibling `source-internal-*` team whose
+description includes `Scope: repo1, repo2` covering this PR's repository, else
+`Community`. The team family is listed once per run via `orgs/{org}/teams` plus
+per-team member lists. Only when that org team list is **unreadable** is a
+non-bot PR classified **`Unknown`** rather than silently assumed `Community` —
 we genuinely can't tell Internal from Community. Behavior differs by source:
 
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
@@ -220,7 +222,7 @@ The defaults are constants near the top of `pr_report.py`:
 | `DEFAULT_REPOS` | _(empty)_ | comma-separated `owner/name` subset; empty -> every non-archived repo in the org |
 | `DEFAULT_STATUS_*` | `Revising`/`Todo`/`Done` | internal lifecycle-stage labels (derived; see `derive_stage`) |
 | `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the source-internal team can't be listed) |
-| `DEFAULT_SOURCE_INTERNAL_TEAM` | `shader-slang/source-internal` | org/team-slug whose members (direct or nested) are Internal |
+| `DEFAULT_SOURCE_INTERNAL_TEAM` | `shader-slang/source-internal` | base org/team-slug for Internal; also consults sibling `source-internal-*` teams with `Scope:` in their description |
 | `DEFAULT_REPORT_SCOPE` | `all` | source scope when the positional argument is omitted |
 | `DEFAULT_COMMUNITY_SURFACE_HOURS` / `DEFAULT_COMMUNITY_ESCALATE_HOURS` | `24` / `48` | common Community/Unknown condition thresholds; excludes the two specialized rungs |
 | `DEFAULT_BOT_SURFACE_HOURS` / `DEFAULT_BOT_ESCALATE_HOURS` | `48` / `168` | all Bot condition thresholds |
@@ -243,9 +245,9 @@ The defaults are constants near the top of `pr_report.py`:
   scope, or a GitHub App with Pull requests + Contents + Checks read; covers
   private repos). CI timing also reads check-suite/workflow-run metadata.
 - **org Members: read** (classic `read:org`, or a GitHub App with Organization
-  Members: Read) to list `DEFAULT_SOURCE_INTERNAL_TEAM` and classify Source
-  (Internal iff the author is on that team). When the team list is unavailable
-  a non-bot PR falls back to `Unknown` (`❓`); the report still runs.
+  Members: Read) to list org teams and `DEFAULT_SOURCE_INTERNAL_TEAM` (plus
+  sibling `source-internal-*` teams) and classify Source. When the org team list
+  is unavailable a non-bot PR falls back to `Unknown` (`❓`); the report still runs.
 - No writes, no repo push/collaborator permission, no GitHub Projects scope, and
   no local clone required (all via `gh api`).
 
