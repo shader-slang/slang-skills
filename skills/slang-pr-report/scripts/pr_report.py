@@ -79,7 +79,7 @@ DEFAULT_SOURCE_BOT = "Bot"
 DEFAULT_SOURCE_UNKNOWN = "Unknown"
 # org/team-slug base for Source Internal. Sibling teams whose slug starts with
 # this slug plus '-' (e.g. source-internal-slangpy) are also consulted when their
-# description includes `Scope: repo1, repo2` (short names in the org).
+# description includes `Scope: [repo1, repo2]` (short names in the org).
 # Matches pr-board-sync.yml's source_internal_team input.
 DEFAULT_SOURCE_INTERNAL_TEAM = "shader-slang/source-internal"
 
@@ -308,11 +308,14 @@ def repo_short_name(repo: str | None) -> str:
 
 
 def parse_team_scope_repos(description: str | None) -> list[str]:
-    """Parse `Scope: repo1, repo2` from a team description into short repo names.
-    Bare names and `owner/name` forms are both accepted. Pure."""
+    """Parse `Scope: [repo1, repo2]` from a team description into short repo names.
+    Bare names and `owner/name` forms are both accepted. Pure.
+
+    The brackets delimit the list so other description text can follow.
+    Unbracketed `Scope: repo1, repo2` is ignored (returns [])."""
     if not description:
         return []
-    match = re.search(r"\bScope:\s*(.*)$", description, flags=re.IGNORECASE | re.DOTALL)
+    match = re.search(r"\bScope:\s*\[([^\]]*)\]", description, flags=re.IGNORECASE)
     if not match:
         return []
     out: list[str] = []
@@ -343,21 +346,29 @@ def is_internal_login(login: str | None, members: set[str] | None) -> bool:
 
 def internal_members_for_repo(
     repo: str,
-    base_members: set[str] | None,
-    scoped_teams: list[dict[str, Any]] | None,
-) -> set[str]:
-    """Effective Internal members for a repo: base team plus scoped siblings
-    whose Scope: includes the repo short name. Pure."""
+    teams: list[dict[str, Any]] | None,
+) -> set[str] | None:
+    """Effective Internal members for a repo, from the source-internal team
+    family: one entry per team, `{repos, members}`, where `repos` None marks the
+    base team (it covers every repo) and any other entry covers just the repos
+    its `Scope:` listed. Pure.
+
+    Returns None -- "membership is unknown for this repo" -- when `teams` is None
+    (the org team list was unreadable) or when a team covering this repo has
+    `members` None (its roster was unreadable), so a caller reports Unknown
+    instead of mislabelling an Internal author as Community."""
+    if teams is None:
+        return None
     short = repo_short_name(repo)
     out: set[str] = set()
-    for m in (base_members or set()):
-        if m:
-            out.add(m)
-    for team in (scoped_teams or []):
-        repos = {str(r).lower() for r in (team.get("repos") or [])}
-        if short not in repos:
+    for team in teams:
+        scope = team.get("repos")
+        if scope is not None and short not in {str(r).lower() for r in scope}:
             continue
-        for m in (team.get("members") or set()):
+        members = team.get("members")
+        if members is None:
+            return None
+        for m in members:
             if m:
                 out.add(m)
     return out
@@ -372,24 +383,19 @@ def source_for(is_bot: bool, is_internal: bool, cfg: Config) -> str:
 
 
 def classify_source(pr: PR, cfg: Config,
-                    internal_index: dict[str, Any] | None) -> str:
+                    internal_teams: list[dict[str, Any]] | None) -> str:
     """Classify a PR's source. Pure given its inputs. A bot PR is always Bot.
 
-    `internal_index` is `{base_members, scoped_teams}` for the org
-    source-internal family, or None when the org team list couldn't be read.
-    Internal iff the author is in the base team or a scoped sibling whose
-    Scope: includes this PR's repo; otherwise Community. Only when the index
-    itself is unreadable do we return Unknown. An empty index is Community for
-    every non-bot author."""
+    `internal_teams` is the org source-internal team family (see
+    internal_members_for_repo). Internal iff the author is in the base team or a
+    scoped sibling whose Scope: includes this PR's repo; otherwise Community.
+    Unknown only when membership for this repo could not be read -- an empty
+    family is a successful read, so every non-bot author is then Community."""
     if pr.is_bot:
         return source_for(True, False, cfg)
-    if internal_index is None:
+    members = internal_members_for_repo(pr.repo, internal_teams)
+    if members is None:
         return cfg.source_unknown
-    members = internal_members_for_repo(
-        pr.repo,
-        internal_index.get("base_members") or set(),
-        internal_index.get("scoped_teams") or [],
-    )
     return source_for(False, is_internal_login(pr.author, members), cfg)
 
 
@@ -570,22 +576,26 @@ def list_org_repos(gh: Gh, org: str) -> list[str]:
     return [r["nameWithOwner"] for r in data if r.get("nameWithOwner")]
 
 
-def collect_source_internal_index(gh: Gh, team_spec: str) -> dict[str, Any] | None:
-    """Load the org source-internal family used for Source classification.
+def collect_source_internal_index(
+        gh: Gh, team_spec: str) -> list[dict[str, Any]] | None:
+    """Load the org source-internal team family used for Source classification.
 
-    Returns `{base_members, scoped_teams}` where `scoped_teams` is a list of
-    `{repos, members, slug}` for sibling `source-internal-*` teams with a
-    parseable `Scope:` description. Returns `None` when the org team list
-    cannot be read (caller marks Source Unknown). An empty index means every
-    non-bot author is Community. Matches pr-board-sync's source_internal_team
-    family resolution."""
+    Returns the `{slug, repos, members}` entries internal_members_for_repo
+    consumes: the base team (`repos` None, covering every repo) plus each sibling
+    `source-internal-*` team with a parseable `Scope:` description. A team whose
+    roster could not be read keeps `members` None, so only the repos it covers go
+    Unknown. Returns None when the org team list itself cannot be read, or when
+    the configured base team is absent from it (renamed, deleted, or invisible to
+    this token) -- reporting every author Community would be worse than saying we
+    do not know. Matches pr-board-sync's source_internal_team family
+    resolution."""
     if not team_spec or "/" not in team_spec:
-        return {"base_members": set(), "scoped_teams": []}
+        return []
     slash = team_spec.index("/")
     org = team_spec[:slash]
     base_slug = team_spec[slash + 1:]
     if not org or not base_slug:
-        return {"base_members": set(), "scoped_teams": []}
+        return []
 
     team_lines = gh.api_lines(
         f"orgs/{org}/teams",
@@ -594,30 +604,28 @@ def collect_source_internal_index(gh: Gh, team_spec: str) -> dict[str, Any] | No
     if team_lines is None:
         return None
 
-    base_members: set[str] = set()
-    scoped_teams: list[dict[str, Any]] = []
+    family: list[dict[str, Any]] = []
     for line in team_lines:
         parts = line.split("\t", 1)
         slug = parts[0].strip() if parts else ""
         description = parts[1] if len(parts) > 1 else ""
         if not is_source_internal_family_slug(base_slug, slug):
             continue
-        members = gh.api_lines(
-            f"orgs/{org}/teams/{slug}/members",
-            ".[].login",
-        )
-        member_set = set(members or [])
+        members = gh.api_lines(f"orgs/{org}/teams/{slug}/members", ".[].login")
+        member_set = None if members is None else set(members)
         if slug == base_slug:
-            base_members = member_set
+            family.append({"slug": slug, "repos": None, "members": member_set})
             continue
         repos = parse_team_scope_repos(description)
         if repos:
-            scoped_teams.append({
+            family.append({
                 "slug": slug,
                 "repos": set(repos),
                 "members": member_set,
             })
-    return {"base_members": base_members, "scoped_teams": scoped_teams}
+    if not any(t["repos"] is None for t in family):
+        return None
+    return family
 
 
 # One batched query returns, per open PR, everything the report needs: core
@@ -1288,7 +1296,7 @@ def load_recipient_map(path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def collect_prs_for_report(gh: Gh, cfg: Config,
-                           internal_index: dict[str, Any] | None) -> list[PR]:
+                           internal_teams: list[dict[str, Any]] | None) -> list[PR]:
     """All open PRs across cfg.repos, fully populated by the batched query, with
     Source classified live from the org source-internal team family. The report
     does not predict owners, so no committer-signal ranking is run here."""
@@ -1307,7 +1315,7 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
         for pr in repo_prs:
             # Classify Source live from the org-wide source-internal family
             # (fetched once per run by the caller).
-            pr.source = classify_source(pr, cfg, internal_index)
+            pr.source = classify_source(pr, cfg, internal_teams)
             pr.is_bot = (pr.source == cfg.source_bot)
             prs.append(pr)
     if skipped:
@@ -1324,19 +1332,25 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     from event timestamps (see last_moved_at) on each run."""
     # Org source-internal family, fetched once per run. None means the org team
     # list couldn't be read -> non-bot PRs are classified Unknown.
-    internal_index = collect_source_internal_index(gh, cfg.source_internal_team)
-    if internal_index is None:
+    internal_teams = collect_source_internal_index(gh, cfg.source_internal_team)
+    if internal_teams is None:
         _progress(
             f"⚠️  could not list teams for {cfg.source_internal_team}; "
             f"non-bot PRs will be classified Unknown")
     else:
-        scoped = internal_index.get("scoped_teams") or []
+        base = next((t for t in internal_teams if t["repos"] is None), None)
+        scoped = [t for t in internal_teams if t["repos"] is not None]
+        unreadable = [t["slug"] for t in internal_teams if t["members"] is None]
         _progress(
             f"source-internal family {cfg.source_internal_team}: "
-            f"{len(internal_index.get('base_members') or [])} base member(s), "
+            f"{len((base or {}).get('members') or [])} base member(s), "
             f"{len(scoped)} scoped team(s)")
+        if unreadable:
+            _progress(
+                f"⚠️  could not read roster(s) for {', '.join(unreadable)}; "
+                f"affected repos' non-bot PRs will be classified Unknown")
 
-    prs = collect_prs_for_report(gh, cfg, internal_index)
+    prs = collect_prs_for_report(gh, cfg, internal_teams)
 
     repo_stats: dict[str, dict[str, int]] = {}
     stall_by_key: dict[str, tuple[float, int]] = {}  # pr key -> (stall_wh, stall_days)
