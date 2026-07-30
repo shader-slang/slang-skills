@@ -715,6 +715,24 @@ class TestSourceClassify(unittest.TestCase):
         self.assertFalse(report.is_source_internal_family_slug(
             "source-internal", "source-internally"))
 
+    def test_parse_team_scope_edges(self):
+        # Authoritative form is `Scope: [repo, ...]` (no space before colon).
+        self.assertEqual(report.parse_team_scope_repos("scope: [slangpy]"),
+                         ["slangpy"])
+        self.assertEqual(report.parse_team_scope_repos("SCOPE: [slangpy]"),
+                         ["slangpy"])
+        self.assertEqual(report.parse_team_scope_repos("Scope: []"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope: [  ]"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope : [slangpy]"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope :[slangpy]"), [])
+        self.assertEqual(
+            report.parse_team_scope_repos(
+                "Scope: [slangpy] Scope: [slang-rhi]"),
+            ["slangpy"])
+        self.assertEqual(
+            report.parse_team_scope_repos("Scope: [ slangpy , slang-rhi ]"),
+            ["slangpy", "slang-rhi"])
+
     def test_internal_when_author_on_base_team(self):
         pr = make_pr(author="dev", is_bot=False, repo="shader-slang/slang")
         self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")

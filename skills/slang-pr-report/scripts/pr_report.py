@@ -312,7 +312,9 @@ def parse_team_scope_repos(description: str | None) -> list[str]:
     Bare names and `owner/name` forms are both accepted. Pure.
 
     The brackets delimit the list so other description text can follow.
-    Unbracketed `Scope: repo1, repo2` is ignored (returns [])."""
+    Unbracketed `Scope: repo1, repo2` is ignored (returns []). The label is
+    case-insensitive; a space before the colon (e.g. `Scope :`) is not
+    accepted — write `Scope: [...]` exactly."""
     if not description:
         return []
     match = re.search(r"\bScope:\s*\[([^\]]*)\]", description, flags=re.IGNORECASE)
