@@ -617,12 +617,18 @@ def collect_source_internal_index(
             family.append({"slug": slug, "repos": None, "members": member_set})
             continue
         repos = parse_team_scope_repos(description)
+        # A sibling with no parseable `Scope: [...]` contributes nobody, so its
+        # members would silently look Community. Say so rather than letting the
+        # misconfiguration pass as a plausible Source.
         if repos:
             family.append({
                 "slug": slug,
                 "repos": set(repos),
                 "members": member_set,
             })
+        else:
+            _progress(
+                f"⚠️  team {org}/{slug} has no 'Scope: [repo, ...]'; ignoring it")
     if not any(t["repos"] is None for t in family):
         return None
     return family
