@@ -80,6 +80,7 @@ version.
 
 | Skill | Description | Dependencies |
 |-------|-------------|-------------|
+| `human-names` | Policy for naming people and choosing pronouns: prefer lookup / `.mailmap` / handle over guessed names; pronouns only when provided or high-confidence from the name, else they/them. | *(standalone)* |
 | `tmux-agent-manager` | Manage multiple Claude Code agent sessions in tmux: status reporting, message delivery, health monitoring, and spawning new agents from GitHub issues or free-form prompts. Works on Linux, macOS, WSL, and Windows (Git Bash / PowerShell). | *(standalone)* |
 | `zellij-agent-manager` | Sibling of `tmux-agent-manager` for Zellij users. Same `status` / `send` / `monitor` / `new` commands, swapping tmux primitives for Zellij's (`list-sessions`, `action list-panes`, `action dump-screen`, `action write-chars` + `send-keys`, `attach -b`). Linux and macOS only. | *(standalone)* |
 
