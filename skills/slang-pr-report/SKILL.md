@@ -53,7 +53,9 @@ and stops if `gh` is missing rather than falling back to a different toolchain.
    (`DEFAULT_PR_PAGE_SIZE`, default 25) returns every open PR with everything in
    one shot — core fields, author type, assignees, requested reviewers, CI
    rollup (with per-check timestamps), head-commit date, reviews, comments, the
-   ready-for-review event, and `mergeQueueEntry`.
+   ready-for-review event, and `mergeQueueEntry`. Org team membership for Source
+   is a second GraphQL pass (`organization.teams` / `team.members`; see
+   [GitHub transport](#github-transport)).
 2. **Synthesize** (pure, in-memory): classify each PR's source, derive its
    lifecycle stage, compute its stall from the event timestamps (see below), and
    build the assignee-grouped report from the per-source ladders.
@@ -86,13 +88,14 @@ from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
 (`DEFAULT_SOURCE_INTERNAL_TEAM`, default `shader-slang/source-internal`; direct
 or nested membership) **or** a sibling `source-internal-*` team whose
 description includes `Scope: [repo1, repo2]` covering this PR's repository, else
-`Community`. The team family is listed once per run via `orgs/{org}/teams` plus
-per-team member lists. A non-bot PR is classified **`Unknown`** rather than
-silently assumed `Community` whenever membership for its repo is **unreadable** —
-the org team list failed, the configured base team is missing from it, or a team
-covering that repo has an unreadable roster — because we genuinely can't tell
-Internal from Community. A roster failure on a team scoped to other repos does
-not affect this repo. Behavior differs by source:
+`Community`. The team family is listed once per run via GraphQL
+`organization.teams` / `team.members` (see
+[GitHub transport](#github-transport)). A non-bot PR is classified **`Unknown`**
+rather than silently assumed `Community` whenever membership for its repo is
+**unreadable** — the org team list failed, the configured base team is missing
+from it, or a team covering that repo has an unreadable roster — because we
+genuinely can't tell Internal from Community. A roster failure on a team scoped
+to other repos does not affect this repo. Behavior differs by source:
 
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
 |---|---|---|---|---|
@@ -235,15 +238,26 @@ The defaults are constants near the top of `pr_report.py`:
 | `DEFAULT_WORKDAY_TZ` | `America/Los_Angeles` | timezone for the workday model (stall clock skips weekends) |
 | `DEFAULT_PR_PAGE_SIZE` | `25` | PRs per batched GraphQL page (capped by server timeout: n=50 can 504, n=25 resolves in ~5-6s). A failed page is retried with a shrinking size; if it still fails, that one repo is skipped (warned on stderr) rather than aborting the scan |
 
+## GitHub transport
+
+Scheduled runs of this skill go through **OneCLI**, which injects a token on the
+wire and **does not route REST `/orgs/*`**. Org data that GitHub also exposes
+under that prefix — listing teams and members for Source, and the whole-org
+preflight — must use GraphQL `organization(login)` (`teams`, `team.members`).
+Do not add REST `/orgs/{org}/teams` or `/orgs/{org}/teams/{slug}/members`.
+Slang's board-sync workflow may still use those REST endpoints in GitHub
+Actions; that environment is not this one. A REST `/orgs/*` failure here
+classifies every non-bot PR **Unknown**. Repo REST (`repos/...`) is fine.
+
 ## Prerequisites
 
 - An authenticated `gh`: a token via `gh auth login`, `GH_TOKEN`, or a
   token-injecting proxy (e.g. onecli). Preflight reads the target resource (not
   `gh auth status`, which misses wire-injected tokens) and is token-type
   agnostic: a repo subset probes `repos/<owner/name>` (REST); a whole-org scan
-  probes the org via **GraphQL** (`organization(login)`), not REST `orgs/<org>`
-  — some proxies (e.g. the OneCLI gateway) don't route `/orgs/*`. Fails loudly
-  if the probe can't be read.
+  probes the org via GraphQL `organization(login)` (see
+  [GitHub transport](#github-transport)). Fails loudly if the probe can't be
+  read.
 - **repo read** for the PR/CI/review/timeline GraphQL query (classic `repo`
   scope, or a GitHub App with Pull requests + Contents + Checks read; covers
   private repos). CI timing also reads check-suite/workflow-run metadata.

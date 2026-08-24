@@ -402,6 +402,33 @@ def classify_source(pr: PR, cfg: Config,
     return source_for(False, is_internal_login(pr.author, members), cfg)
 
 
+# GraphQL org-team reads. Scheduled runs go through OneCLI, which does not
+# route REST `/orgs/*`; keep these on `organization.teams` / `team.members`.
+_ORG_TEAMS_QUERY = """
+query($login: String!, $cursor: String) {
+  organization(login: $login) {
+    teams(first: 100, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes { slug description }
+    }
+  }
+}
+"""
+
+_TEAM_MEMBERS_QUERY = """
+query($org: String!, $slug: String!, $cursor: String) {
+  organization(login: $org) {
+    team(slug: $slug) {
+      members(first: 100, after: $cursor, membership: ALL) {
+        pageInfo { hasNextPage endCursor }
+        nodes { login }
+      }
+    }
+  }
+}
+"""
+
+
 # --- gh I/O layer (the only place that shells out) ---------------------------
 
 def is_wsl() -> bool:
@@ -497,6 +524,97 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
+    def graphql_ok(self, query: str, variables: dict[str, Any] | None = None) -> Any:
+        """Return the GraphQL `data` object, or None when the call failed.
+
+        Distinguishes no-access (None) from a successful empty payload, matching
+        `api_lines`. Rate limits are waited out by `_exec`. Top-level GraphQL
+        `errors` count as failure so a forbidden `teams` field is not treated as
+        an empty org."""
+        args = ["api", "graphql", "-f", f"query={query}"]
+        for k, v in (variables or {}).items():
+            args += ["-F", f"{k}={v}"]
+        proc = self._exec(args)
+        if proc.returncode != 0:
+            return None
+        try:
+            body = json.loads(proc.stdout or "{}")
+        except ValueError:
+            return None
+        if body.get("errors"):
+            return None
+        return body.get("data")
+
+    def list_org_teams(self, org: str) -> list[dict[str, str]] | None:
+        """Return `{slug, description}` for every team in `org` via GraphQL
+        `organization.teams`. None when the org or its teams cannot be read.
+        Do not replace this with REST `/orgs/{org}/teams`: this script's
+        scheduled environment (OneCLI) does not route `/orgs/*`."""
+        out: list[dict[str, str]] = []
+        cursor = None
+        while True:
+            variables: dict[str, Any] = {"login": org}
+            if cursor:
+                variables["cursor"] = cursor
+            data = self.graphql_ok(_ORG_TEAMS_QUERY, variables)
+            if data is None:
+                return None
+            org_node = data.get("organization")
+            if not org_node:
+                return None
+            conn = org_node.get("teams") or {}
+            for node in conn.get("nodes") or []:
+                if not node:
+                    continue
+                slug = node.get("slug") or ""
+                if not slug:
+                    continue
+                out.append({
+                    "slug": slug,
+                    "description": node.get("description") or "",
+                })
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+            if not cursor:
+                break
+        return out
+
+    def list_team_members(self, org: str, slug: str) -> list[str] | None:
+        """Return logins of `org/slug` members via GraphQL, including nested
+        child-team members (`membership: ALL`). None when the team or roster
+        cannot be read; an empty list is a successful empty roster.
+        Do not replace this with REST `/orgs/{org}/teams/{slug}/members`:
+        OneCLI does not route `/orgs/*`."""
+        out: list[str] = []
+        cursor = None
+        while True:
+            variables: dict[str, Any] = {"org": org, "slug": slug}
+            if cursor:
+                variables["cursor"] = cursor
+            data = self.graphql_ok(_TEAM_MEMBERS_QUERY, variables)
+            if data is None:
+                return None
+            org_node = data.get("organization")
+            if not org_node:
+                return None
+            team = org_node.get("team")
+            if not team:
+                return None
+            conn = team.get("members") or {}
+            for node in conn.get("nodes") or []:
+                login = (node or {}).get("login")
+                if login:
+                    out.append(login)
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+            if not cursor:
+                break
+        return out
+
     def rate_limit_wait_seconds(self) -> float | None:
         """Seconds until the exhausted rate-limit window resets, via the
         (limit-exempt) `rate_limit` endpoint. None if it can't be determined
@@ -591,7 +709,8 @@ def collect_source_internal_index(
     the configured base team is absent from it (renamed, deleted, or invisible to
     this token) -- reporting every author Community would be worse than saying we
     do not know. Matches pr-board-sync's source_internal_team family
-    resolution."""
+    resolution. Loaded via GraphQL `organization.teams` / `team.members` so the
+    same OneCLI transport as preflight works."""
     if not team_spec or "/" not in team_spec:
         return []
     slash = team_spec.index("/")
@@ -600,38 +719,36 @@ def collect_source_internal_index(
     if not org or not base_slug:
         return []
 
-    team_lines = gh.api_lines(
-        f"orgs/{org}/teams",
-        ".[] | [.slug, (.description // \"\")] | @tsv",
-    )
-    if team_lines is None:
+    teams = gh.list_org_teams(org)
+    if teams is None:
         return None
 
     family: list[dict[str, Any]] = []
-    for line in team_lines:
-        parts = line.split("\t", 1)
-        slug = parts[0].strip() if parts else ""
-        description = parts[1] if len(parts) > 1 else ""
+    for team in teams:
+        slug = (team.get("slug") or "").strip()
+        description = team.get("description") or ""
         if not is_source_internal_family_slug(base_slug, slug):
             continue
-        members = gh.api_lines(f"orgs/{org}/teams/{slug}/members", ".[].login")
-        member_set = None if members is None else set(members)
         if slug == base_slug:
+            members = gh.list_team_members(org, slug)
+            member_set = None if members is None else set(members)
             family.append({"slug": slug, "repos": None, "members": member_set})
             continue
         repos = parse_team_scope_repos(description)
         # A sibling with no parseable `Scope: [...]` contributes nobody, so its
         # members would silently look Community. Say so rather than letting the
-        # misconfiguration pass as a plausible Source.
-        if repos:
-            family.append({
-                "slug": slug,
-                "repos": set(repos),
-                "members": member_set,
-            })
-        else:
+        # misconfiguration pass as a plausible Source. Skip the roster fetch —
+        # the team is not in the family either way.
+        if not repos:
             _progress(
                 f"⚠️  team {org}/{slug} has no 'Scope: [repo, ...]'; ignoring it")
+            continue
+        members = gh.list_team_members(org, slug)
+        family.append({
+            "slug": slug,
+            "repos": set(repos),
+            "members": None if members is None else set(members),
+        })
     if not any(t["repos"] is None for t in family):
         return None
     return family
