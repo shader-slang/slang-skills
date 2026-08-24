@@ -193,6 +193,12 @@ surface the emitted report to its recipients through whatever channel is
 available (this skill is delivery-method-agnostic). Everything else is the
 script's.
 
+Post the script's stdout as **message text**, unchanged. PR links are already
+`[repo#n](<url>)` so Discord/Slack do not generate a link embed or preview; do
+not unwrap the `<>`, rewrite the URLs, or attach Discord `embeds`. Do not
+reformat the report into cards, extra markdown links, or a summary that drops
+the `<>` wrapping.
+
 ### Recipient map (`--recipient-map`)
 
 Delivery is agnostic, but to **notify** people (e.g. on Discord/Slack) pass a
