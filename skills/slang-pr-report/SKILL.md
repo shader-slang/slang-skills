@@ -3,7 +3,7 @@ name: slang-pr-report
 license: MIT
 description: "Surface the open shader-slang PRs needing human attention with a bundled gh-only Python script (scripts/pr_report.py): an assignee-grouped escalation report computed entirely from live GitHub state (read-only; no writes; optional Discord/Slack mentions). Use for PR triage, the reviewer-attention report, stale-PR follow-up, or a scheduled report run."
 provides: []
-argument-hint: "[--recipient-map PATH]"
+argument-hint: "[all|bot|community] [options]"
 allowed-tools: Bash Read Grep Glob
 ---
 
@@ -19,13 +19,23 @@ surfaces the emitted report.
 ## Quick start
 
 ```bash
-# Render the assignee-grouped escalation report with notifying mentions.
-python3 scripts/pr_report.py --recipient-map <path>
+# Render all reportable PRs (the default) with notifying mentions.
+python3 scripts/pr_report.py all --recipient-map <path>
+
+# Render only Community/Unknown PRs; useful for a daily community report.
+python3 scripts/pr_report.py community --recipient-map <path>
+
+# Render only Bot PRs and override its common surface/escalate thresholds.
+python3 scripts/pr_report.py bot --bot-surface-hours 72 --bot-escalate-hours 240
 
 # No mapping file (absent / testing): every login renders as inert `backticks`
 # so nobody is pinged. Otherwise identical.
 python3 scripts/pr_report.py
 ```
+
+The optional first positional argument selects `all` (default), `bot`, or
+`community`. The `community` scope includes `Unknown`, since an unreadable
+source-internal team causes those PRs to use the Community ladder.
 
 The report reads only live GitHub state and keeps **no local state** — each
 PR's staleness is derived fresh from event timestamps every run. It exits `10`
@@ -43,7 +53,9 @@ and stops if `gh` is missing rather than falling back to a different toolchain.
    (`DEFAULT_PR_PAGE_SIZE`, default 25) returns every open PR with everything in
    one shot — core fields, author type, assignees, requested reviewers, CI
    rollup (with per-check timestamps), head-commit date, reviews, comments, the
-   ready-for-review event, and `mergeQueueEntry`.
+   ready-for-review event, and `mergeQueueEntry`. Org team membership for Source
+   is a second GraphQL pass (`organization.teams` with nested `members`; see
+   [GitHub transport](#github-transport)).
 2. **Synthesize** (pure, in-memory): classify each PR's source, derive its
    lifecycle stage, compute its stall from the event timestamps (see below), and
    build the assignee-grouped report from the per-source ladders.
@@ -72,14 +84,18 @@ pinging the author resets the clock — but the PR author's own comments never d
 
 Every PR is classified into a **source** — **`Internal` / `Community` / `Bot`** —
 from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
-`Internal` if the author can commit to the target repo, else `Community`. "Can
-commit" is checked first against the `repos/{repo}/collaborators` list, then —
-for authors the list omits (a downscoped token doesn't list members with push
-via org base permission or a team) — against the per-user
-`repos/{repo}/collaborators/{user}/permission` endpoint (push/maintain/admin ⇒
-Internal). Only when **both** are unreadable is a non-bot PR classified
-**`Unknown`** rather than silently assumed `Community` — we genuinely can't tell
-Internal from Community. Behavior differs by source:
+`Internal` if the author is a member of the org `source-internal` team
+(`DEFAULT_SOURCE_INTERNAL_TEAM`, default `shader-slang/source-internal`; direct
+or nested membership) **or** a sibling `source-internal-*` team whose
+description includes `Scope: [repo1, repo2]` covering this PR's repository, else
+`Community`. The team family is listed once per run via GraphQL
+`organization.teams` with nested `members` (see
+[GitHub transport](#github-transport)). A non-bot PR is classified **`Unknown`**
+rather than silently assumed `Community` whenever membership for its repo is
+**unreadable** — the org team list failed, the configured base team is missing
+from it, or a team covering that repo has an unreadable roster — because we
+genuinely can't tell Internal from Community. A roster failure on a team scoped
+to other repos does not affect this repo. Behavior differs by source:
 
 | Behavior | **Internal** | **Community** | **Bot** | **Unknown** |
 |---|---|---|---|---|
@@ -150,6 +166,13 @@ catch-all is just `idle for N work days`):
 - **Community:** `needs CI approval` (surface 0h / escalate 24h) → `changes requested, check if author is still active / needs help` (1wk / 2wk) → `awaiting review from: …` (24h / 48h) → `CI failing, needs fixes` (24h / 48h) → `needs reviewer` (24h / 48h) → `idle` (24h / 48h).
 - **Bot:** `awaiting review from: …` (48h / 1wk) → `CI failing, needs fixes` (48h / 1wk) → `needs reviewer` (48h / 1wk) → `idle` (48h / 1wk). No `needs CI approval` or `changes requested` rung.
 
+The common Community thresholds can be overridden with
+`--community-surface-hours` / `--community-escalate-hours`; Bot thresholds use
+`--bot-surface-hours` / `--bot-escalate-hours`. Values are weekday-hours and
+must be non-negative, with escalation at or after surface. Community's special
+`needs CI approval` and `changes requested` timings remain fixed. Run
+`scripts/pr_report.py --help` for every default.
+
 The `needs reviewer` rung (a hint to the assignee to get one assigned) fires when a
 surfaced PR has no approve-capable reviewer requested (auto-assigned non-approvers
 in `DEFAULT_IGNORED_REVIEWERS` and bots don't count) and isn't already caught by an
@@ -165,10 +188,16 @@ requested.
 ### Agent's job
 
 The script does everything except delivery: run
-`scripts/pr_report.py --recipient-map <path>`, and when the exit code is `10`
+`scripts/pr_report.py [all|bot|community] --recipient-map <path>`, and when the exit code is `10`
 surface the emitted report to its recipients through whatever channel is
 available (this skill is delivery-method-agnostic). Everything else is the
 script's.
+
+Post the script's stdout as **message text**, unchanged. PR links are already
+`[repo#n](<url>)` so Discord/Slack do not generate a link embed or preview; do
+not unwrap the `<>`, rewrite the URLs, or attach Discord `embeds`. Do not
+reformat the report into cards, extra markdown links, or a summary that drops
+the `<>` wrapping.
 
 ### Recipient map (`--recipient-map`)
 
@@ -186,22 +215,46 @@ notify the wrong person. The path is supplied by the invoker **each run** (no
 auto-discovery) and affects the **report text only** — routing and bot detection
 stay on GitHub logins.
 
-## Configuration (top-of-file constants)
+## Report options and configuration
 
-The only flag is `--recipient-map PATH`; everything else is a constant near the
-top of `pr_report.py`:
+```text
+scope                              all (default), bot, or community
+--community-surface-hours HOURS    default 24
+--community-escalate-hours HOURS   default 48
+--bot-surface-hours HOURS          default 48
+--bot-escalate-hours HOURS         default 168
+--recipient-map PATH               default: no mapping
+```
+
+The defaults are constants near the top of `pr_report.py`:
 
 | Constant | Value | Notes |
 |------|---------|-------|
 | `DEFAULT_ORG` | `shader-slang` | org scanned when `DEFAULT_REPOS` is empty |
 | `DEFAULT_REPOS` | _(empty)_ | comma-separated `owner/name` subset; empty -> every non-archived repo in the org |
 | `DEFAULT_STATUS_*` | `Revising`/`Todo`/`Done` | internal lifecycle-stage labels (derived; see `derive_stage`) |
-| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the collaborator set can't be read) |
+| `DEFAULT_SOURCE_*` | `Internal`/`Community`/`Bot`/`Unknown` | source-classification labels (`Unknown` when the source-internal team can't be listed) |
+| `DEFAULT_SOURCE_INTERNAL_TEAM` | `shader-slang/source-internal` | base org/team-slug for Internal; also consults sibling `source-internal-*` teams with `Scope: [repo1, repo2]` in their description |
+| `DEFAULT_REPORT_SCOPE` | `all` | source scope when the positional argument is omitted |
+| `DEFAULT_COMMUNITY_SURFACE_HOURS` / `DEFAULT_COMMUNITY_ESCALATE_HOURS` | `24` / `48` | common Community/Unknown condition thresholds; excludes the two specialized rungs |
+| `DEFAULT_BOT_SURFACE_HOURS` / `DEFAULT_BOT_ESCALATE_HOURS` | `48` / `168` | all Bot condition thresholds |
 | `DEFAULT_COVERAGE_CHECK` | _(empty)_ | optional CI check gating a bot PR's promotion to ready; while empty, bot PRs are treated as ready |
 | `DEFAULT_BOT_AUTHORS` | `nv-slang-bot,slang-coworker-nanoclaw,Copilot,copilot-swe-agent` | bot logins matched by name (plus GitHub's `is_bot`). `Copilot` is typed as a `User` on reviews/assignees, so it must be name-matched; bot-only-assigned PRs go to Unassigned |
 | `DEFAULT_IGNORED_REVIEWERS` | `bmillsNV` | auto-assigned reviewers that can't approve; ignored when checking reviewer coverage |
 | `DEFAULT_WORKDAY_TZ` | `America/Los_Angeles` | timezone for the workday model (stall clock skips weekends) |
 | `DEFAULT_PR_PAGE_SIZE` | `25` | PRs per batched GraphQL page (capped by server timeout: n=50 can 504, n=25 resolves in ~5-6s). A failed page is retried with a shrinking size; if it still fails, that one repo is skipped (warned on stderr) rather than aborting the scan |
+
+## GitHub transport
+
+Scheduled runs of this skill go through **OneCLI**, which injects a token on the
+wire and **does not route REST `/orgs/*`**. Org data that GitHub also exposes
+under that prefix — listing teams and members for Source, and the whole-org
+preflight — must use GraphQL `organization(login)` (`teams` with nested
+`members`). Do not add REST `/orgs/{org}/teams` or
+`/orgs/{org}/teams/{slug}/members`.
+Slang's board-sync workflow may still use those REST endpoints in GitHub
+Actions; that environment is not this one. A REST `/orgs/*` failure here
+classifies every non-bot PR **Unknown**. Repo REST (`repos/...`) is fine.
 
 ## Prerequisites
 
@@ -209,21 +262,19 @@ top of `pr_report.py`:
   token-injecting proxy (e.g. onecli). Preflight reads the target resource (not
   `gh auth status`, which misses wire-injected tokens) and is token-type
   agnostic: a repo subset probes `repos/<owner/name>` (REST); a whole-org scan
-  probes the org via **GraphQL** (`organization(login)`), not REST `orgs/<org>`
-  — some proxies (e.g. the OneCLI gateway) don't route `/orgs/*`. Fails loudly
-  if the probe can't be read.
+  probes the org via GraphQL `organization(login)` (see
+  [GitHub transport](#github-transport)). Fails loudly if the probe can't be
+  read.
 - **repo read** for the PR/CI/review/timeline GraphQL query (classic `repo`
   scope, or a GitHub App with Pull requests + Contents + Checks read; covers
   private repos). CI timing also reads check-suite/workflow-run metadata.
-- **repo push access** to classify source (Internal iff the author can commit).
-  The primary signal is the `repos/{repo}/collaborators` list. Because a
-  downscoped token's list can omit members who hold push via org base permission
-  or a team, any author **not** in the list is re-checked via the per-user
-  endpoint `repos/{repo}/collaborators/{user}/permission` (push/maintain/admin ⇒
-  Internal). Only when both are unavailable does a non-bot PR fall back to
-  `Unknown` (`❓`); the report still runs. (This fallback is what lets a
-  downscoped app token scope the report correctly.)
-- No writes, no GitHub Projects scope, and no local clone required (all via `gh api`).
+- **org Members: read** (classic `read:org`, or a GitHub App with Organization
+  Members: Read) to list org teams and `DEFAULT_SOURCE_INTERNAL_TEAM` (plus
+  sibling `source-internal-*` teams) and classify Source. When a roster the repo
+  depends on is unavailable, its non-bot PRs fall back to `Unknown` (`❓`); the
+  report still runs.
+- No writes, no repo push/collaborator permission, no GitHub Projects scope, and
+  no local clone required (all via `gh api`).
 
 ## Scheduling
 

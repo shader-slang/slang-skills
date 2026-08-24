@@ -167,6 +167,47 @@ class TestPredicates(unittest.TestCase):
 
 
 @final
+class TestCli(unittest.TestCase):
+    def test_defaults(self):
+        args = report.parse_args([])
+        self.assertEqual(args.scope, "all")
+        self.assertEqual(args.community_surface_hours, 24.0)
+        self.assertEqual(args.community_escalate_hours, 48.0)
+        self.assertEqual(args.bot_surface_hours, 48.0)
+        self.assertEqual(args.bot_escalate_hours, 168.0)
+
+    def test_scope_and_threshold_overrides(self):
+        args = report.parse_args([
+            "community",
+            "--community-surface-hours", "12",
+            "--community-escalate-hours", "36",
+            "--bot-surface-hours", "72",
+            "--bot-escalate-hours", "240",
+        ])
+        self.assertEqual(args.scope, "community")
+        self.assertEqual(args.community_surface_hours, 12.0)
+        self.assertEqual(args.community_escalate_hours, 36.0)
+        self.assertEqual(args.bot_surface_hours, 72.0)
+        self.assertEqual(args.bot_escalate_hours, 240.0)
+
+    def test_help_documents_defaults(self):
+        help_text = report.build_argument_parser().format_help()
+        self.assertIn("(default: all)", help_text)
+        self.assertIn("(default: 24.0)", help_text)
+        self.assertIn("(default: 48.0)", help_text)
+        self.assertIn("(default: 168.0)", help_text)
+        self.assertIn("needs-CI-approval (0h/24h)", help_text)
+        self.assertIn("changes-requested (168h/336h)", help_text)
+
+    def test_rejects_escalate_before_surface(self):
+        with self.assertRaises(SystemExit):
+            report.parse_args([
+                "--community-surface-hours", "48",
+                "--community-escalate-hours", "24",
+            ])
+
+
+@final
 class TestLastMovedAt(unittest.TestCase):
     """last_moved_at is the max of the real, logged event timestamps (no state,
     no updatedAt), and does not assume the timestamps are ordered."""
@@ -391,6 +432,72 @@ class TestBuildReport(unittest.TestCase):
         self.assertIn("carol", rec)
         self.assertFalse(rec["carol"][0].escalated)
 
+    def test_report_scope_filters_sources(self):
+        community = self._awaiting(
+            number=70, source="Community", assignees=["alice"])
+        unknown = self._awaiting(
+            number=71, source="Unknown", assignees=["bob"])
+        bot = self._awaiting(
+            number=72, source="Bot", is_bot=True, assignees=["carol"])
+        stalls = {
+            community.key(): (200.0, 9),
+            unknown.key(): (200.0, 9),
+            bot.key(): (200.0, 9),
+        }
+
+        community_report = report.build_report(
+            [community, unknown, bot],
+            make_cfg(report_scope="community"),
+            stalls)
+        self.assertEqual(set(community_report), {"alice", "bob"})
+
+        bot_report = report.build_report(
+            [community, unknown, bot],
+            make_cfg(report_scope="bot"),
+            stalls)
+        self.assertEqual(set(bot_report), {"carol"})
+
+    def test_common_threshold_overrides(self):
+        community = self._awaiting(
+            number=73, source="Community", assignees=["alice"])
+        bot = self._awaiting(
+            number=74, source="Bot", is_bot=True, assignees=["bob"])
+        cfg = make_cfg(
+            community_surface_hours=10.0,
+            community_escalate_hours=20.0,
+            bot_surface_hours=12.0,
+            bot_escalate_hours=24.0)
+
+        community_report = report.build_report(
+            [community], cfg, {community.key(): (15.0, 0)})
+        self.assertIn("alice", community_report)
+        self.assertFalse(community_report["alice"][0].escalated)
+
+        bot_report = report.build_report(
+            [bot], cfg, {bot.key(): (25.0, 1)})
+        self.assertIn("bob", bot_report)
+        self.assertTrue(bot_report["bob"][0].escalated)
+
+    def test_special_community_thresholds_are_not_overridden(self):
+        ci_approval = make_pr(
+            number=75, source="Community", assignees=["alice"],
+            ci_state=report.CI_ACTION_REQUIRED)
+        changes = make_pr(
+            number=76, source="Community", assignees=["bob"],
+            change_requested=True)
+        cfg = make_cfg(
+            community_surface_hours=1.0,
+            community_escalate_hours=2.0)
+
+        ci_report = report.build_report(
+            [ci_approval], cfg, {ci_approval.key(): (1.0, 0)})
+        self.assertIn("alice", ci_report)
+        self.assertFalse(ci_report["alice"][0].escalated)  # fixed escalate=24h
+
+        changes_report = report.build_report(
+            [changes], cfg, {changes.key(): (10.0, 0)})
+        self.assertEqual(changes_report, {})  # fixed surface=168h
+
     def test_internal_and_human_draft_excluded(self):
         internal = self._awaiting(number=14, source="Internal", assignees=["x"])
         draft = self._awaiting(number=15, source="Community", is_draft=True, assignees=["y"])
@@ -563,79 +670,116 @@ class TestUnassignedGroup(unittest.TestCase):
 class TestSourceClassify(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg()
+        # The base team is the entry with repos None (it covers every repo);
+        # every other entry covers only the repos its Scope: listed.
+        self.base_index = [
+            {"slug": "source-internal", "repos": None, "members": {"dev"}},
+            {
+                "slug": "source-internal-slangpy",
+                "repos": {"slangpy", "slangpy-samples"},
+                "members": {"bob"},
+            },
+        ]
 
     def test_source_for(self):
         self.assertEqual(report.source_for(True, False, self.cfg), "Bot")
         self.assertEqual(report.source_for(False, True, self.cfg), "Internal")
         self.assertEqual(report.source_for(False, False, self.cfg), "Community")
 
-    def test_internal_when_author_can_commit(self):
-        pr = make_pr(author="dev", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Internal")
+    def test_is_internal_login_case_insensitive(self):
+        self.assertTrue(report.is_internal_login("Alice", {"alice"}))
+        self.assertTrue(report.is_internal_login("alice", {"Alice"}))
+        self.assertFalse(report.is_internal_login("carol", {"alice"}))
+        self.assertFalse(report.is_internal_login("", {"alice"}))
+        self.assertFalse(report.is_internal_login("alice", None))
+        self.assertFalse(report.is_internal_login("alice", set()))
 
-    def test_community_when_author_cannot_commit(self):
+    def test_parse_team_scope_and_family_slug(self):
+        self.assertEqual(
+            report.parse_team_scope_repos(
+                "Internal. Scope: [slangpy, slangpy-samples]"),
+            ["slangpy", "slangpy-samples"])
+        self.assertEqual(
+            report.parse_team_scope_repos("Scope: [shader-slang/slang-rhi]"),
+            ["slang-rhi"])
+        self.assertEqual(
+            report.parse_team_scope_repos(
+                "Internal. Scope: [slangpy] Contact: alice, bob"),
+            ["slangpy"])
+        self.assertEqual(
+            report.parse_team_scope_repos("Scope: slangpy, slangpy-samples"),
+            [])
+        self.assertEqual(report.parse_team_scope_repos("no scope"), [])
+        self.assertTrue(report.is_source_internal_family_slug(
+            "source-internal", "source-internal-slangpy"))
+        self.assertFalse(report.is_source_internal_family_slug(
+            "source-internal", "source-internally"))
+
+    def test_parse_team_scope_edges(self):
+        # Authoritative form is `Scope: [repo, ...]` (no space before colon).
+        self.assertEqual(report.parse_team_scope_repos("scope: [slangpy]"),
+                         ["slangpy"])
+        self.assertEqual(report.parse_team_scope_repos("SCOPE: [slangpy]"),
+                         ["slangpy"])
+        self.assertEqual(report.parse_team_scope_repos("Scope: []"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope: [  ]"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope : [slangpy]"), [])
+        self.assertEqual(report.parse_team_scope_repos("Scope :[slangpy]"), [])
+        self.assertEqual(
+            report.parse_team_scope_repos(
+                "Scope: [slangpy] Scope: [slang-rhi]"),
+            ["slangpy"])
+        self.assertEqual(
+            report.parse_team_scope_repos("Scope: [ slangpy , slang-rhi ]"),
+            ["slangpy", "slang-rhi"])
+
+    def test_internal_when_author_on_base_team(self):
+        pr = make_pr(author="dev", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
+
+    def test_internal_when_author_on_scoped_team_for_repo(self):
+        pr = make_pr(author="bob", is_bot=False, repo="shader-slang/slangpy")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
+
+    def test_community_when_scoped_member_on_other_repo(self):
+        pr = make_pr(author="bob", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Community")
+
+    def test_community_when_author_not_on_team(self):
         pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}), "Community")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Community")
 
-    def test_empty_collaborators_is_community_not_unknown(self):
-        # A successful-but-empty set (repo genuinely has no write+ collaborators)
-        # is NOT unknown -> non-bot author is Community.
+    def test_empty_index_is_community_not_unknown(self):
         pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, set()), "Community")
+        self.assertEqual(report.classify_source(pr, self.cfg, []), "Community")
 
-    def test_none_collaborators_is_unknown_for_non_bot(self):
-        # None == collaborator set couldn't be read -> Unknown, not Community.
+    def test_none_index_is_unknown_for_non_bot(self):
         pr = make_pr(author="ext", is_bot=False)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Unknown")
 
-    def test_none_collaborators_still_bot_for_bot(self):
-        # Bot detection doesn't need the collaborator set.
+    def test_none_index_still_bot_for_bot(self):
         pr = make_pr(author="nv-slang-bot", is_bot=True)
         self.assertEqual(report.classify_source(pr, self.cfg, None), "Bot")
 
-    # --- per-user permission fallback (author not in the collaborators list) ---
-    def _fallback(self, verdict):
-        return lambda repo, author: verdict
+    def test_unreadable_base_roster_is_unknown(self):
+        teams = [{"slug": "source-internal", "repos": None, "members": None}]
+        pr = make_pr(author="dev", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, teams), "Unknown")
 
-    def test_fallback_internal_when_list_omits_author(self):
-        # Author absent from a downscoped list, but the per-user endpoint says
-        # they can commit -> Internal.
-        pr = make_pr(author="member", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(True)), "Internal")
+    def test_unreadable_scoped_roster_is_unknown_only_for_its_repos(self):
+        teams = [
+            {"slug": "source-internal", "repos": None, "members": {"dev"}},
+            {"slug": "source-internal-slangpy", "repos": {"slangpy"},
+             "members": None},
+        ]
+        scoped = make_pr(author="ext", is_bot=False, repo="shader-slang/slangpy")
+        self.assertEqual(report.classify_source(scoped, self.cfg, teams), "Unknown")
+        other = make_pr(author="ext", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(other, self.cfg, teams), "Community")
 
-    def test_fallback_community_when_not_committer(self):
-        pr = make_pr(author="ext", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, {"dev"}, self._fallback(False)), "Community")
-
-    def test_fallback_resolves_even_when_list_unreadable(self):
-        pr = make_pr(author="member", is_bot=False)
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, None, self._fallback(True)), "Internal")
-
-    def test_fallback_undetermined_falls_back_to_list(self):
-        pr = make_pr(author="ext", is_bot=False)
-        # list readable, author absent, fallback can't tell -> Community
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, set(), self._fallback(None)), "Community")
-        # list unreadable, fallback can't tell -> Unknown
-        self.assertEqual(
-            report.classify_source(pr, self.cfg, None, self._fallback(None)), "Unknown")
-
-    def test_fallback_not_consulted_when_author_in_list(self):
-        def boom(repo, author):
-            raise AssertionError("fallback should not run when author is in the list")
-        pr = make_pr(author="dev", is_bot=False)
-        self.assertEqual(report.classify_source(pr, self.cfg, {"dev"}, boom), "Internal")
-
-    def test_permission_is_internal(self):
-        for p in ("admin", "maintain", "write", "push", "ADMIN", "Write"):
-            self.assertIs(report._permission_is_internal(p), True, p)
-        for p in ("read", "triage", "none"):
-            self.assertIs(report._permission_is_internal(p), False, p)
-        for p in (None, ""):
-            self.assertIsNone(report._permission_is_internal(p))
+    def test_internal_membership_is_case_insensitive(self):
+        pr = make_pr(author="Dev", is_bot=False, repo="shader-slang/slang")
+        self.assertEqual(report.classify_source(pr, self.cfg, self.base_index), "Internal")
 
 
 @final
@@ -663,28 +807,200 @@ class TestUnknownSource(unittest.TestCase):
 
 
 @final
-class TestCollectRepoCollaborators(unittest.TestCase):
+class TestCollectSourceInternalIndex(unittest.TestCase):
     @final
     class _Gh:
-        def __init__(self, lines):
-            self._lines = lines  # list[str] | None
+        def __init__(self, teams=()):
+            # teams: list[{slug, description, members}] | None
+            # members on each team is list[str] | None (None = unreadable roster)
+            self._teams = teams
+            self.calls = []
 
-        def api_lines(self, path, jq, paginate=True):
-            return self._lines
+        def list_org_teams(self, org):
+            self.calls.append(("teams", org))
+            return self._teams
 
-    def test_failure_returns_none(self):
-        # api_lines returns None on a failed call -> collect returns None.
+    def test_failure_listing_teams_returns_none(self):
+        gh = self._Gh(teams=None)
         self.assertIsNone(
-            report.collect_repo_collaborators(self._Gh(None), "o/r"))
+            report.collect_source_internal_index(gh, "shader-slang/source-internal"))
 
-    def test_success_returns_set(self):
+    def test_success_builds_base_and_scoped(self):
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-slangpy",
+             "description": "Scope: [slangpy, slangpy-samples]",
+             "members": ["bob"]},
+            {"slug": "source-internal-slang-rhi",
+             "description": "Scope: [slang-rhi]",
+             "members": ["carol"]},
+            {"slug": "pr-owners", "description": "ignored", "members": ["dan"]},
+        ])
+        family = report.collect_source_internal_index(
+            gh, "shader-slang/source-internal")
+        base = [t for t in family if t["repos"] is None]
+        self.assertEqual([t["members"] for t in base], [{"alice"}])
         self.assertEqual(
-            report.collect_repo_collaborators(self._Gh(["dev1", "dev2"]), "o/r"),
-            {"dev1", "dev2"})
+            {(t["slug"], frozenset(t["repos"]), frozenset(t["members"]))
+             for t in family if t["repos"] is not None},
+            {
+                ("source-internal-slangpy",
+                 frozenset({"slangpy", "slangpy-samples"}), frozenset({"bob"})),
+                ("source-internal-slang-rhi",
+                 frozenset({"slang-rhi"}), frozenset({"carol"})),
+            })
+        self.assertEqual(gh.calls, [("teams", "shader-slang")])
 
-    def test_success_empty_is_empty_set_not_none(self):
+    def test_unreadable_roster_keeps_members_none(self):
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-slangpy",
+             "description": "Scope: [slangpy]",
+             "members": None},
+        ])
+        family = report.collect_source_internal_index(
+            gh, "shader-slang/source-internal")
         self.assertEqual(
-            report.collect_repo_collaborators(self._Gh([]), "o/r"), set())
+            {t["slug"]: t["members"] for t in family},
+            {"source-internal": {"alice"}, "source-internal-slangpy": None})
+
+    def test_unscoped_sibling_is_ignored(self):
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-misc", "description": "no brackets",
+             "members": ["bob"]},
+        ])
+        family = report.collect_source_internal_index(
+            gh, "shader-slang/source-internal")
+        self.assertEqual([t["slug"] for t in family], ["source-internal"])
+
+    def test_missing_base_team_returns_none(self):
+        # The configured base team is absent from the listing (renamed, deleted,
+        # or invisible to this token): reporting everyone Community would be
+        # worse than reporting Unknown.
+        gh = self._Gh(teams=[{"slug": "pr-owners", "description": "ignored",
+                              "members": []}])
+        self.assertIsNone(
+            report.collect_source_internal_index(gh, "shader-slang/source-internal"))
+
+    def test_unset_or_bare_slug_is_empty_index(self):
+        gh = self._Gh()
+        self.assertEqual(report.collect_source_internal_index(gh, ""), [])
+        self.assertEqual(
+            report.collect_source_internal_index(gh, "bare-slug"), [])
+        self.assertEqual(gh.calls, [])
+
+
+@final
+class TestOrgTeamGraphQL(unittest.TestCase):
+    """Gh.list_org_teams / list_team_members against a stubbed graphql_data."""
+
+    def _gh(self, pages):
+        gh = report.Gh("gh")
+        remaining = list(pages)
+
+        def graphql_data(query, variables=None, *, allow_partial=False):
+            _ = (query, variables, allow_partial)
+            return remaining.pop(0) if remaining else None
+
+        gh.graphql_data = graphql_data  # type: ignore[method-assign]
+        return gh
+
+    def test_list_org_teams_nests_members_and_paginates_teams(self):
+        gh = self._gh([
+            {"organization": {"teams": {
+                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                "nodes": [{
+                    "slug": "a",
+                    "description": "d",
+                    "members": {"pageInfo": {"hasNextPage": False},
+                                "nodes": [{"login": "alice"}]},
+                }],
+            }}},
+            {"organization": {"teams": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": [{
+                    "slug": "b",
+                    "description": "",
+                    "members": {"pageInfo": {"hasNextPage": False},
+                                "nodes": []},
+                }],
+            }}},
+        ])
+        self.assertEqual(
+            gh.list_org_teams("shader-slang"),
+            [{"slug": "a", "description": "d", "members": ["alice"]},
+             {"slug": "b", "description": "", "members": []}])
+
+    def test_list_org_teams_null_members_is_unreadable_roster(self):
+        gh = self._gh([{
+            "organization": {"teams": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{
+                    "slug": "source-internal",
+                    "description": "",
+                    "members": None,
+                }],
+            }},
+        }])
+        self.assertEqual(
+            gh.list_org_teams("shader-slang"),
+            [{"slug": "source-internal", "description": "", "members": None}])
+
+    def test_list_org_teams_overflow_roster_uses_member_query(self):
+        gh = report.Gh("gh")
+        team_pages = [{
+            "organization": {"teams": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{
+                    "slug": "source-internal",
+                    "description": "",
+                    "members": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "m1"},
+                        "nodes": [{"login": "alice"}],
+                    },
+                }],
+            }},
+        }]
+        member_pages = [{
+            "organization": {"team": {"members": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"login": "alice"}, {"login": "bob"}],
+            }}},
+        }]
+
+        def graphql_data(query, variables=None, *, allow_partial=False):
+            _ = (variables, allow_partial)
+            if "teams(" in query:
+                return team_pages.pop(0)
+            return member_pages.pop(0)
+
+        gh.graphql_data = graphql_data  # type: ignore[method-assign]
+        self.assertEqual(
+            gh.list_org_teams("shader-slang"),
+            [{"slug": "source-internal", "description": "",
+              "members": ["alice", "bob"]}])
+
+    def test_list_org_teams_null_org_is_none(self):
+        gh = self._gh([{"organization": None}])
+        self.assertIsNone(gh.list_org_teams("shader-slang"))
+
+    def test_list_team_members_null_team_is_none(self):
+        gh = self._gh([{"organization": {"team": None}}])
+        self.assertIsNone(gh.list_team_members("shader-slang", "source-internal"))
+
+    def test_list_team_members_empty_roster_is_empty_list(self):
+        gh = self._gh([{
+            "organization": {"team": {"members": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [],
+            }}},
+        }])
+        self.assertEqual(
+            gh.list_team_members("shader-slang", "source-internal"), [])
 
 
 @final
@@ -895,8 +1211,7 @@ class TestScanResilience(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg(repos=["shader-slang/a", "shader-slang/b"])
         self._orig = report.collect_open_prs
-        # Stub gh: source classification's per-user fallback may be consulted.
-        self.gh = SimpleNamespace(repo_user_permission=lambda repo, user: None)
+        self.gh = SimpleNamespace()
 
     def tearDown(self):
         report.collect_open_prs = self._orig
@@ -911,7 +1226,7 @@ class TestScanResilience(unittest.TestCase):
             return [make_pr(number=1, source="Community")]
 
         report.collect_open_prs = fake
-        prs = report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
+        prs = report.collect_prs_for_report(self.gh, self.cfg, [])
         self.assertEqual(seen, ["shader-slang/a", "shader-slang/b"])  # scan continued
         self.assertEqual(len(prs), 1)                                 # only repo b's PR
 
@@ -921,7 +1236,7 @@ class TestScanResilience(unittest.TestCase):
 
         report.collect_open_prs = fake
         with self.assertRaises(report.RateLimitedError):
-            report.collect_prs_for_report(self.gh, self.cfg, lambda r: set())
+            report.collect_prs_for_report(self.gh, self.cfg, [])
 
 
 if __name__ == "__main__":

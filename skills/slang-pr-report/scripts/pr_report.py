@@ -3,9 +3,11 @@
 
 Generates an assignee-grouped report of open PRs that need human attention,
 computed entirely from live GitHub state via `gh`: it reads
-PRs/CI/reviews/collaborators, derives each PR's lifecycle stage from those
-signals, and emits the report (optionally with Discord/Slack mentions). The
-caller decides how often to run it — the script does not throttle.
+PRs/CI/reviews and the org `source-internal` team family (including scoped
+`source-internal-*` siblings), derives each PR's lifecycle stage from those
+signals, and emits the report (optionally with Discord/Slack
+mentions). The caller decides how often to run it — the script does not
+throttle.
 
 The report makes no changes on GitHub and keeps no local state — each PR's
 staleness is derived fresh from live event timestamps (see last_moved_at) on
@@ -29,6 +31,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -67,12 +70,27 @@ DEFAULT_COVERAGE_CHECK = ""
 DEFAULT_STATUS_REVISING = "Revising"
 DEFAULT_STATUS_TODO = "Todo"
 DEFAULT_STATUS_DONE = "Done"
-# PR source categories. "Unknown" is used when the repo's collaborator set
-# couldn't be read, so we can't tell Internal from Community (see classify_source).
+# PR source categories. "Unknown" is used when the source-internal team
+# membership couldn't be read, so we can't tell Internal from Community
+# (see classify_source).
 DEFAULT_SOURCE_INTERNAL = "Internal"
 DEFAULT_SOURCE_COMMUNITY = "Community"
 DEFAULT_SOURCE_BOT = "Bot"
 DEFAULT_SOURCE_UNKNOWN = "Unknown"
+# org/team-slug base for Source Internal. Sibling teams whose slug starts with
+# this slug plus '-' (e.g. source-internal-slangpy) are also consulted when their
+# description includes `Scope: [repo1, repo2]` (short names in the org).
+# Matches pr-board-sync.yml's source_internal_team input.
+DEFAULT_SOURCE_INTERNAL_TEAM = "shader-slang/source-internal"
+
+# Report scope and default thresholds, in weekday-hours since the PR last moved.
+# Community's special needs-CI-approval and changes-requested rungs retain their
+# fixed 0h/24h and 168h/336h thresholds respectively.
+DEFAULT_REPORT_SCOPE = "all"
+DEFAULT_COMMUNITY_SURFACE_HOURS = 24.0
+DEFAULT_COMMUNITY_ESCALATE_HOURS = 48.0
+DEFAULT_BOT_SURFACE_HOURS = 48.0
+DEFAULT_BOT_ESCALATE_HOURS = 168.0
 
 # Workday model for the stall clock (skips weekends).
 DEFAULT_WORKDAY_TZ = "America/Los_Angeles"
@@ -153,6 +171,12 @@ class Config:
     source_community: str = DEFAULT_SOURCE_COMMUNITY
     source_bot: str = DEFAULT_SOURCE_BOT
     source_unknown: str = DEFAULT_SOURCE_UNKNOWN
+    source_internal_team: str = DEFAULT_SOURCE_INTERNAL_TEAM
+    report_scope: str = DEFAULT_REPORT_SCOPE
+    community_surface_hours: float = DEFAULT_COMMUNITY_SURFACE_HOURS
+    community_escalate_hours: float = DEFAULT_COMMUNITY_ESCALATE_HOURS
+    bot_surface_hours: float = DEFAULT_BOT_SURFACE_HOURS
+    bot_escalate_hours: float = DEFAULT_BOT_ESCALATE_HOURS
     bot_authors: list[str] = field(
         default_factory=lambda: _split_csv(DEFAULT_BOT_AUTHORS))
     ignored_reviewers: list[str] = field(
@@ -275,54 +299,152 @@ def promotion_gate_passed(pr: PR, cfg: Config) -> bool:
     return pr.ci_state == CI_PASSED
 
 
-def source_for(is_bot: bool, can_commit: bool, cfg: Config) -> str:
+def repo_short_name(repo: str | None) -> str:
+    """Short repo name (lowercased), from `owner/name` or a bare name. Pure."""
+    if not repo:
+        return ""
+    slash = repo.rfind("/")
+    return (repo[slash + 1:] if slash >= 0 else repo).lower()
+
+
+def parse_team_scope_repos(description: str | None) -> list[str]:
+    """Parse `Scope: [repo1, repo2]` from a team description into short repo names.
+    Bare names and `owner/name` forms are both accepted; the owner is stripped,
+    so `Scope: [otherorg/slangpy]` matches `shader-slang/slangpy`. Pure.
+
+    The brackets delimit the list so other description text can follow.
+    Unbracketed `Scope: repo1, repo2` is ignored (returns []). The label is
+    case-insensitive; a space before the colon (e.g. `Scope :`) is not
+    accepted — write `Scope: [...]` exactly."""
+    if not description:
+        return []
+    match = re.search(r"\bScope:\s*\[([^\]]*)\]", description, flags=re.IGNORECASE)
+    if not match:
+        return []
+    out: list[str] = []
+    for part in match.group(1).split(","):
+        name = part.strip()
+        if not name:
+            continue
+        slash = name.rfind("/")
+        out.append((name[slash + 1:] if slash >= 0 else name).lower())
+    return out
+
+
+def is_source_internal_family_slug(base_slug: str, team_slug: str) -> bool:
+    """True when team_slug is the base team or a sibling `<base>-*` slug. Pure."""
+    if not base_slug or not team_slug:
+        return False
+    return team_slug == base_slug or team_slug.startswith(base_slug + "-")
+
+
+def is_internal_login(login: str | None, members: set[str] | None) -> bool:
+    """True when login is in the source-internal member set (case-insensitive).
+    Pure. False when login or members is missing/empty."""
+    if not login or not members:
+        return False
+    lower = login.lower()
+    return any((m or "").lower() == lower for m in members)
+
+
+def internal_members_for_repo(
+    repo: str,
+    teams: list[dict[str, Any]] | None,
+) -> set[str] | None:
+    """Effective Internal members for a repo, from the source-internal team
+    family: one entry per team, `{repos, members}`, where `repos` None marks the
+    base team (it covers every repo) and any other entry covers just the repos
+    its `Scope:` listed. Pure.
+
+    Returns None -- "membership is unknown for this repo" -- when `teams` is None
+    (the org team list was unreadable) or when a team covering this repo has
+    `members` None (its roster was unreadable), so a caller reports Unknown
+    instead of mislabelling an Internal author as Community."""
+    if teams is None:
+        return None
+    short = repo_short_name(repo)
+    out: set[str] = set()
+    for team in teams:
+        scope = team.get("repos")
+        if scope is not None and short not in {str(r).lower() for r in scope}:
+            continue
+        members = team.get("members")
+        if members is None:
+            return None
+        for m in members:
+            if m:
+                out.add(m)
+    return out
+
+
+def source_for(is_bot: bool, is_internal: bool, cfg: Config) -> str:
     """Source classification (pure): Bot if a bot authored it, else Internal if
-    the author can commit to the target repo, else Community."""
+    the author is Internal for the repo, else Community."""
     if is_bot:
         return cfg.source_bot
-    return cfg.source_internal if can_commit else cfg.source_community
+    return cfg.source_internal if is_internal else cfg.source_community
 
 
-# Effective repo permissions/roles that mean the author can commit -> Internal.
-INTERNAL_PERMISSIONS = frozenset({"admin", "maintain", "write"})
-
-
-def _permission_is_internal(permission: str | None) -> bool | None:
-    """Interpret a per-user repo permission/role (admin / maintain / write /
-    push / triage / read / none) as Internal (can commit) or not; None when
-    undetermined. Pure."""
-    if not permission:
-        return None
-    p = permission.lower()
-    return (p in INTERNAL_PERMISSIONS) or (p == "push")
-
-
-def classify_source(pr: PR, cfg: Config, collaborators: set[str] | None,
-                    author_permission: "Callable[[str, str], bool | None] | None" = None) -> str:
+def classify_source(pr: PR, cfg: Config,
+                    internal_teams: list[dict[str, Any]] | None) -> str:
     """Classify a PR's source. Pure given its inputs. A bot PR is always Bot.
 
-    `collaborators` is the repo's write+ set (Internal iff the author is in it),
-    or None when the list couldn't be read. A downscoped token's collaborators
-    *list* can omit members who hold push via org base permission or a team, so
-    for any non-bot author not found in the list an optional
-    `author_permission(repo, author)` fallback is consulted — the per-user
-    permission endpoint, which reflects that access. It returns True (can commit
-    -> Internal), False (cannot -> Community), or None (undetermined). Only when
-    the fallback is absent/undetermined do we defer to the list: author-not-in-set
-    -> Community, or Unknown when the list itself was unreadable."""
+    `internal_teams` is the org source-internal team family (see
+    internal_members_for_repo). Internal iff the author is in the base team or a
+    scoped sibling whose Scope: includes this PR's repo; otherwise Community.
+    Unknown only when membership for this repo could not be read -- an empty
+    family is a successful read, so every non-bot author is then Community."""
     if pr.is_bot:
-        return cfg.source_bot
-    if collaborators is not None and pr.author in collaborators:
-        return cfg.source_internal
-    if author_permission is not None:
-        verdict = author_permission(pr.repo, pr.author)
-        if verdict is True:
-            return cfg.source_internal
-        if verdict is False:
-            return cfg.source_community
-    if collaborators is None:
+        return source_for(True, False, cfg)
+    members = internal_members_for_repo(pr.repo, internal_teams)
+    if members is None:
         return cfg.source_unknown
-    return cfg.source_community
+    return source_for(False, is_internal_login(pr.author, members), cfg)
+
+
+# GraphQL org-team reads. Scheduled runs go through OneCLI, which does not
+# route REST `/orgs/*`. Nested `members` keeps the family to one teams query;
+# `_TEAM_MEMBERS_QUERY` is only for a roster that exceeds the nested page.
+_ORG_TEAMS_QUERY = """
+query($login: String!, $cursor: String) {
+  organization(login: $login) {
+    teams(first: 100, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        slug
+        description
+        members(first: 100, membership: ALL) {
+          pageInfo { hasNextPage endCursor }
+          nodes { login }
+        }
+      }
+    }
+  }
+}
+"""
+
+_TEAM_MEMBERS_QUERY = """
+query($org: String!, $slug: String!, $cursor: String) {
+  organization(login: $org) {
+    team(slug: $slug) {
+      members(first: 100, after: $cursor, membership: ALL) {
+        pageInfo { hasNextPage endCursor }
+        nodes { login }
+      }
+    }
+  }
+}
+"""
+
+
+def _logins_from_member_nodes(nodes: Any) -> list[str]:
+    """Collect non-empty logins from a GraphQL `members.nodes` list."""
+    out: list[str] = []
+    for node in nodes or []:
+        login = (node or {}).get("login")
+        if login:
+            out.append(login)
+    return out
 
 
 # --- gh I/O layer (the only place that shells out) ---------------------------
@@ -420,21 +542,116 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
-    def repo_user_permission(self, repo: str, user: str) -> str | None:
-        """Effective permission of `user` on `repo` (admin / maintain / write /
-        triage / read / none) via the per-user endpoint
-        `repos/{repo}/collaborators/{user}/permission`, which reflects access
-        granted through org base permission or a team even when the collaborators
-        *list* omits it. Returns the role/permission string, or None if the call
-        failed (non-fatal — the caller degrades gracefully)."""
-        out = self.api(f"repos/{repo}/collaborators/{user}/permission")
-        if not (out or "").strip():
-            return None
+    def graphql_data(self, query: str, variables: dict[str, Any] | None = None,
+                     *, allow_partial: bool = False) -> Any:
+        """Return the GraphQL `data` object, or None when the call failed.
+
+        Distinguishes no-access (None) from a successful empty payload, matching
+        `api_lines`. Rate limits are waited out by `_exec`. Top-level GraphQL
+        `errors` count as failure unless `allow_partial` is set and `data` is
+        present — nested `teams.members` can 403 one roster without voiding the
+        org team list."""
+        args = ["api", "graphql", "-f", f"query={query}"]
+        for k, v in (variables or {}).items():
+            args += ["-F", f"{k}={v}"]
+        proc = self._exec(args)
         try:
-            data = json.loads(out)
+            body = json.loads(proc.stdout or "{}")
         except ValueError:
             return None
-        return (data.get("role_name") or data.get("permission") or "").lower() or None
+        data = body.get("data")
+        if proc.returncode != 0:
+            if not (allow_partial and data):
+                return None
+        elif body.get("errors") and not allow_partial:
+            return None
+        return data
+
+    def graphql_ok(self, query: str, variables: dict[str, Any] | None = None) -> Any:
+        """Return GraphQL `data`, or None on HTTP or GraphQL errors."""
+        return self.graphql_data(query, variables, allow_partial=False)
+
+    def list_org_teams(self, org: str) -> list[dict[str, Any]] | None:
+        """Return `{slug, description, members}` for every team in `org` via one
+        GraphQL `organization.teams` query (members nested, `membership: ALL`).
+        `members` is a login list, or None when that roster could not be read.
+        None for the whole result when the org or its teams cannot be read.
+        Do not replace this with REST `/orgs/{org}/teams`: this script's
+        scheduled environment (OneCLI) does not route `/orgs/*`."""
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            variables: dict[str, Any] = {"login": org}
+            if cursor:
+                variables["cursor"] = cursor
+            data = self.graphql_data(_ORG_TEAMS_QUERY, variables, allow_partial=True)
+            if data is None:
+                return None
+            org_node = data.get("organization")
+            if not org_node:
+                return None
+            conn = org_node.get("teams") or {}
+            for node in conn.get("nodes") or []:
+                if not node:
+                    continue
+                slug = node.get("slug") or ""
+                if not slug:
+                    continue
+                out.append({
+                    "slug": slug,
+                    "description": node.get("description") or "",
+                    "members": self._roster_from_team_node(org, slug, node),
+                })
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+            if not cursor:
+                break
+        return out
+
+    def _roster_from_team_node(self, org: str, slug: str,
+                               node: dict[str, Any]) -> list[str] | None:
+        """Logins from a nested `members` connection, or None if unreadable.
+        A roster larger than the nested page is completed via list_team_members."""
+        conn = node.get("members")
+        if conn is None:
+            return None
+        logins = _logins_from_member_nodes(conn.get("nodes"))
+        if (conn.get("pageInfo") or {}).get("hasNextPage"):
+            return self.list_team_members(org, slug)
+        return logins
+
+    def list_team_members(self, org: str, slug: str) -> list[str] | None:
+        """Return logins of `org/slug` members via GraphQL, including nested
+        child-team members (`membership: ALL`). None when the team or roster
+        cannot be read; an empty list is a successful empty roster.
+        Do not replace this with REST `/orgs/{org}/teams/{slug}/members`:
+        OneCLI does not route `/orgs/*`."""
+        out: list[str] = []
+        cursor = None
+        while True:
+            variables: dict[str, Any] = {"org": org, "slug": slug}
+            if cursor:
+                variables["cursor"] = cursor
+            data = self.graphql_ok(_TEAM_MEMBERS_QUERY, variables)
+            if data is None:
+                return None
+            org_node = data.get("organization")
+            if not org_node:
+                return None
+            team = org_node.get("team")
+            if not team:
+                return None
+            conn = team.get("members") or {}
+            out.extend(_logins_from_member_nodes(conn.get("nodes")))
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            cursor = page.get("endCursor")
+            if not cursor:
+                break
+        return out
 
     def rate_limit_wait_seconds(self) -> float | None:
         """Seconds until the exhausted rate-limit window resets, via the
@@ -518,17 +735,59 @@ def list_org_repos(gh: Gh, org: str) -> list[str]:
     return [r["nameWithOwner"] for r in data if r.get("nameWithOwner")]
 
 
-def collect_repo_collaborators(gh: Gh, repo: str) -> set[str] | None:
-    """Logins with write+ access (push/maintain/admin) to `repo`, used to
-    classify a PR's source (Internal iff the author can commit). Returns `None`
-    when the call fails (the endpoint needs push access on the repo) so the
-    caller can mark the source `Unknown` rather than assume Community; an empty
-    set means the repo genuinely has no write+ collaborators."""
-    lines = gh.api_lines(
-        f"repos/{repo}/collaborators",
-        ".[] | select(.permissions.push == true) | .login",
-    )
-    return set(lines) if lines is not None else None
+def collect_source_internal_index(
+        gh: Gh, team_spec: str) -> list[dict[str, Any]] | None:
+    """Load the org source-internal team family used for Source classification.
+
+    Returns the `{slug, repos, members}` entries internal_members_for_repo
+    consumes: the base team (`repos` None, covering every repo) plus each sibling
+    `source-internal-*` team with a parseable `Scope:` description. A team whose
+    roster could not be read keeps `members` None, so only the repos it covers go
+    Unknown. Returns None when the org team list itself cannot be read, or when
+    the configured base team is absent from it (renamed, deleted, or invisible to
+    this token) -- reporting every author Community would be worse than saying we
+    do not know. Matches pr-board-sync's source_internal_team family
+    resolution. Loaded via one GraphQL `organization.teams` query with nested
+    `team.members` so the same OneCLI transport as preflight works."""
+    if not team_spec or "/" not in team_spec:
+        return []
+    slash = team_spec.index("/")
+    org = team_spec[:slash]
+    base_slug = team_spec[slash + 1:]
+    if not org or not base_slug:
+        return []
+
+    teams = gh.list_org_teams(org)
+    if teams is None:
+        return None
+
+    family: list[dict[str, Any]] = []
+    for team in teams:
+        slug = (team.get("slug") or "").strip()
+        description = team.get("description") or ""
+        if not is_source_internal_family_slug(base_slug, slug):
+            continue
+        members = team.get("members")
+        member_set = None if members is None else set(members)
+        if slug == base_slug:
+            family.append({"slug": slug, "repos": None, "members": member_set})
+            continue
+        repos = parse_team_scope_repos(description)
+        # A sibling with no parseable `Scope: [...]` contributes nobody, so its
+        # members would silently look Community. Say so rather than letting the
+        # misconfiguration pass as a plausible Source.
+        if not repos:
+            _progress(
+                f"⚠️  team {org}/{slug} has no 'Scope: [repo, ...]'; ignoring it")
+            continue
+        family.append({
+            "slug": slug,
+            "repos": set(repos),
+            "members": member_set,
+        })
+    if not any(t["repos"] is None for t in family):
+        return None
+    return family
 
 
 # One batched query returns, per open PR, everything the report needs: core
@@ -989,7 +1248,7 @@ BOT_LADDER: list[Predicate] = [
 
 def ladder_for(pr: PR, cfg: Config) -> list[Predicate]:
     """The predicate ladder for a PR's source (empty -> not surfaced).
-    `Unknown` PRs (collaborator set unreadable, can't tell Internal from
+    `Unknown` PRs (source-internal team unreadable, can't tell Internal from
     Community) are surfaced via the community ladder and flagged with the
     unknown icon, rather than being silently dropped or assumed Community."""
     if pr.source == cfg.source_bot:
@@ -997,6 +1256,35 @@ def ladder_for(pr: PR, cfg: Config) -> list[Predicate]:
     if pr.source in (cfg.source_community, cfg.source_unknown):
         return COMMUNITY_LADDER
     return []  # Internal: not surfaced (author self-manages)
+
+
+def report_scope_includes(pr: PR, cfg: Config) -> bool:
+    """Whether the selected report scope includes this PR's source.
+    `community` includes Unknown because Unknown uses the Community ladder."""
+    if cfg.report_scope == "bot":
+        return pr.source == cfg.source_bot
+    if cfg.report_scope == "community":
+        return pr.source in (cfg.source_community, cfg.source_unknown)
+    return True
+
+
+def predicate_rungs(pr: PR, pred: Predicate, cfg: Config) -> dict[str, float]:
+    """Effective thresholds for a predicate after command-line overrides.
+    Community's CI-approval and changes-requested predicates intentionally keep
+    their specialized fixed timings; the common Community predicates and every
+    Bot predicate use the source-level configurable thresholds."""
+    if pr.source == cfg.source_bot:
+        return {
+            "assignee": cfg.bot_surface_hours,
+            "escalate": cfg.bot_escalate_hours,
+        }
+    if (pr.source in (cfg.source_community, cfg.source_unknown)
+            and pred.key not in ("needs_ci_approval", "changes_requested")):
+        return {
+            "assignee": cfg.community_surface_hours,
+            "escalate": cfg.community_escalate_hours,
+        }
+    return dict(pred.ladder)
 
 
 def source_icon(pr: PR, cfg: Config) -> str:
@@ -1052,6 +1340,8 @@ def build_report(prs: list[PR], cfg: Config,
     given the stall map."""
     recipients: dict[str, list[ReportItem]] = {}
     for pr in prs:
+        if not report_scope_includes(pr, cfg):
+            continue
         if pr.is_draft and not pr.is_bot:
             continue  # human drafts exempt
         ladder = ladder_for(pr, cfg)
@@ -1061,7 +1351,7 @@ def build_report(prs: list[PR], cfg: Config,
         if pred is None:
             continue
         stall_wh, stall_days = stall_by_key.get(pr.key(), (0.0, 0))
-        rungs = dict(pred.ladder)
+        rungs = predicate_rungs(pr, pred, cfg)
         assignee_after = rungs.get("assignee")
         if assignee_after is None or stall_wh < assignee_after:
             continue  # not yet at the first (surface) rung -> not surfaced
@@ -1168,24 +1458,13 @@ def load_recipient_map(path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def collect_prs_for_report(gh: Gh, cfg: Config,
-                           repo_collaborators: Callable[[str], set[str] | None]) -> list[PR]:
+                           internal_teams: list[dict[str, Any]] | None) -> list[PR]:
     """All open PRs across cfg.repos, fully populated by the batched query, with
-    Source classified live. The report does not predict owners, so no
-    committer-signal ranking is run here."""
+    Source classified live from the org source-internal team family. The report
+    does not predict owners, so no committer-signal ranking is run here."""
     _progress(f"scanning {len(cfg.repos)} repo(s) for the report — this typically takes a few minutes…")
     prs: list[PR] = []
     skipped: list[str] = []
-
-    # Per-user permission fallback for authors the collaborators *list* omits
-    # (a downscoped token doesn't list members who hold push via org base
-    # permission or a team). Memoized per (repo, author) to bound the extra calls.
-    perm_cache: dict[tuple[str, str], bool | None] = {}
-
-    def author_permission(repo: str, author: str) -> bool | None:
-        key = (repo, author.lower())
-        if key not in perm_cache:
-            perm_cache[key] = _permission_is_internal(gh.repo_user_permission(repo, author))
-        return perm_cache[key]
 
     for repo in cfg.repos:
         try:
@@ -1196,9 +1475,9 @@ def collect_prs_for_report(gh: Gh, cfg: Config,
             _progress(f"  ⚠️  skipping {repo} — {e}")
             continue
         for pr in repo_prs:
-            # Classify Source live: the repo's write+ collaborator set (fetched
-            # lazily), with the per-user permission fallback for authors not in it.
-            pr.source = classify_source(pr, cfg, repo_collaborators(repo), author_permission)
+            # Classify Source live from the org-wide source-internal family
+            # (fetched once per run by the caller).
+            pr.source = classify_source(pr, cfg, internal_teams)
             pr.is_bot = (pr.source == cfg.source_bot)
             prs.append(pr)
     if skipped:
@@ -1213,17 +1492,27 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
     """Build the assignee-grouped report from live GitHub state. Stateless: no
     GitHub writes and no local state file — every PR's stall is derived fresh
     from event timestamps (see last_moved_at) on each run."""
-    # The write+ collaborator set is per-repo, memoized; used for live Source
-    # classification (Internal iff the author can commit to the repo). None means
-    # the set couldn't be read -> non-bot PRs there are classified Unknown.
-    collaborators_cache: dict[str, set[str] | None] = {}
+    # Org source-internal family, fetched once per run. None means the org team
+    # list couldn't be read -> non-bot PRs are classified Unknown.
+    internal_teams = collect_source_internal_index(gh, cfg.source_internal_team)
+    if internal_teams is None:
+        _progress(
+            f"⚠️  could not list teams for {cfg.source_internal_team}; "
+            f"non-bot PRs will be classified Unknown")
+    else:
+        base = next((t for t in internal_teams if t["repos"] is None), None)
+        scoped = [t for t in internal_teams if t["repos"] is not None]
+        unreadable = [t["slug"] for t in internal_teams if t["members"] is None]
+        _progress(
+            f"source-internal family {cfg.source_internal_team}: "
+            f"{len((base or {}).get('members') or [])} base member(s), "
+            f"{len(scoped)} scoped team(s)")
+        if unreadable:
+            _progress(
+                f"⚠️  could not read roster(s) for {', '.join(unreadable)}; "
+                f"affected repos' non-bot PRs will be classified Unknown")
 
-    def repo_collaborators(repo: str) -> set[str] | None:
-        if repo not in collaborators_cache:
-            collaborators_cache[repo] = collect_repo_collaborators(gh, repo)
-        return collaborators_cache[repo]
-
-    prs = collect_prs_for_report(gh, cfg, repo_collaborators)
+    prs = collect_prs_for_report(gh, cfg, internal_teams)
 
     repo_stats: dict[str, dict[str, int]] = {}
     stall_by_key: dict[str, tuple[float, int]] = {}  # pr key -> (stall_wh, stall_days)
@@ -1254,20 +1543,60 @@ def run_report(gh: Gh, cfg: Config, now: datetime) -> dict[str, Any]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args(argv: list[str]) -> argparse.Namespace:
+def _nonnegative_hours(value: str) -> float:
+    try:
+        hours = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be a number of hours") from e
+    if hours < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return hours
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=(
             "Emit the assignee-grouped escalation report for open shader-slang "
-            "PRs. Reads only live GitHub state and writes nothing to GitHub. All "
-            "configuration except the flag below lives in the constants at the "
-            "top of this file."
+            "PRs. Reads only live GitHub state and writes nothing to GitHub. "
+            "Thresholds are weekday-hours since the PR last moved. Community "
+            "needs-CI-approval (0h/24h) and changes-requested (168h/336h) keep "
+            "their specialized fixed surface/escalate thresholds."
         )
     )
+    p.add_argument("scope", nargs="?", choices=("all", "bot", "community"),
+                   default=DEFAULT_REPORT_SCOPE,
+                   help="Source scope: all reportable PRs, Bot only, or "
+                        "Community plus Unknown")
     p.add_argument("--recipient-map", default="", metavar="PATH",
                    help="Path to a flat JSON object mapping GitHub login -> destination "
                         "user ID (e.g. Discord). Mapped logins render as <@id> mentions in "
                         "the report; unmapped logins (or no file) render as inert `backticks`.")
-    return p.parse_args(argv)
+    p.add_argument("--community-surface-hours", type=_nonnegative_hours,
+                   default=DEFAULT_COMMUNITY_SURFACE_HOURS, metavar="HOURS",
+                   help="Surface common Community/Unknown conditions after this many "
+                        "weekday-hours")
+    p.add_argument("--community-escalate-hours", type=_nonnegative_hours,
+                   default=DEFAULT_COMMUNITY_ESCALATE_HOURS, metavar="HOURS",
+                   help="Mark common Community/Unknown conditions overdue after this "
+                        "many weekday-hours")
+    p.add_argument("--bot-surface-hours", type=_nonnegative_hours,
+                   default=DEFAULT_BOT_SURFACE_HOURS, metavar="HOURS",
+                   help="Surface Bot conditions after this many weekday-hours")
+    p.add_argument("--bot-escalate-hours", type=_nonnegative_hours,
+                   default=DEFAULT_BOT_ESCALATE_HOURS, metavar="HOURS",
+                   help="Mark Bot conditions overdue after this many weekday-hours")
+    return p
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = build_argument_parser()
+    args = p.parse_args(argv)
+    if args.community_escalate_hours < args.community_surface_hours:
+        p.error("--community-escalate-hours must be >= --community-surface-hours")
+    if args.bot_escalate_hours < args.bot_surface_hours:
+        p.error("--bot-escalate-hours must be >= --bot-surface-hours")
+    return args
 
 
 def _print_summary(summary: dict[str, Any]) -> None:
@@ -1287,7 +1616,13 @@ def main(argv: list[str]) -> int:
 
     gh = Gh(find_gh())
 
-    cfg = Config()
+    cfg = Config(
+        report_scope=args.scope,
+        community_surface_hours=args.community_surface_hours,
+        community_escalate_hours=args.community_escalate_hours,
+        bot_surface_hours=args.bot_surface_hours,
+        bot_escalate_hours=args.bot_escalate_hours,
+    )
     if args.recipient_map:
         cfg.recipient_map = load_recipient_map(args.recipient_map)
 
