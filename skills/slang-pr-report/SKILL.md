@@ -54,7 +54,7 @@ and stops if `gh` is missing rather than falling back to a different toolchain.
    one shot — core fields, author type, assignees, requested reviewers, CI
    rollup (with per-check timestamps), head-commit date, reviews, comments, the
    ready-for-review event, and `mergeQueueEntry`. Org team membership for Source
-   is a second GraphQL pass (`organization.teams` / `team.members`; see
+   is a second GraphQL pass (`organization.teams` with nested `members`; see
    [GitHub transport](#github-transport)).
 2. **Synthesize** (pure, in-memory): classify each PR's source, derive its
    lifecycle stage, compute its stall from the event timestamps (see below), and
@@ -89,7 +89,7 @@ from live state: `Bot` if the author is a bot (`DEFAULT_BOT_AUTHORS`), else
 or nested membership) **or** a sibling `source-internal-*` team whose
 description includes `Scope: [repo1, repo2]` covering this PR's repository, else
 `Community`. The team family is listed once per run via GraphQL
-`organization.teams` / `team.members` (see
+`organization.teams` with nested `members` (see
 [GitHub transport](#github-transport)). A non-bot PR is classified **`Unknown`**
 rather than silently assumed `Community` whenever membership for its repo is
 **unreadable** — the org team list failed, the configured base team is missing
@@ -243,8 +243,9 @@ The defaults are constants near the top of `pr_report.py`:
 Scheduled runs of this skill go through **OneCLI**, which injects a token on the
 wire and **does not route REST `/orgs/*`**. Org data that GitHub also exposes
 under that prefix — listing teams and members for Source, and the whole-org
-preflight — must use GraphQL `organization(login)` (`teams`, `team.members`).
-Do not add REST `/orgs/{org}/teams` or `/orgs/{org}/teams/{slug}/members`.
+preflight — must use GraphQL `organization(login)` (`teams` with nested
+`members`). Do not add REST `/orgs/{org}/teams` or
+`/orgs/{org}/teams/{slug}/members`.
 Slang's board-sync workflow may still use those REST endpoints in GitHub
 Actions; that environment is not this one. A REST `/orgs/*` failure here
 classifies every non-bot PR **Unknown**. Repo REST (`repos/...`) is fine.

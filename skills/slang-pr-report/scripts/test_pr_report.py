@@ -810,22 +810,15 @@ class TestUnknownSource(unittest.TestCase):
 class TestCollectSourceInternalIndex(unittest.TestCase):
     @final
     class _Gh:
-        def __init__(self, teams=(), members=None):
-            # teams: list[{slug, description}] | None
-            # members: slug -> list[str] | None  (missing slug -> [])
+        def __init__(self, teams=()):
+            # teams: list[{slug, description, members}] | None
+            # members on each team is list[str] | None (None = unreadable roster)
             self._teams = teams
-            self._members = members if members is not None else {}
             self.calls = []
 
         def list_org_teams(self, org):
             self.calls.append(("teams", org))
             return self._teams
-
-        def list_team_members(self, org, slug):
-            self.calls.append(("members", org, slug))
-            if slug not in self._members:
-                return []
-            return self._members[slug]
 
     def test_failure_listing_teams_returns_none(self):
         gh = self._Gh(teams=None)
@@ -833,21 +826,17 @@ class TestCollectSourceInternalIndex(unittest.TestCase):
             report.collect_source_internal_index(gh, "shader-slang/source-internal"))
 
     def test_success_builds_base_and_scoped(self):
-        gh = self._Gh(
-            teams=[
-                {"slug": "source-internal", "description": "org-wide"},
-                {"slug": "source-internal-slangpy",
-                 "description": "Scope: [slangpy, slangpy-samples]"},
-                {"slug": "source-internal-slang-rhi",
-                 "description": "Scope: [slang-rhi]"},
-                {"slug": "pr-owners", "description": "ignored"},
-            ],
-            members={
-                "source-internal": ["alice"],
-                "source-internal-slangpy": ["bob"],
-                "source-internal-slang-rhi": ["carol"],
-            },
-        )
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-slangpy",
+             "description": "Scope: [slangpy, slangpy-samples]",
+             "members": ["bob"]},
+            {"slug": "source-internal-slang-rhi",
+             "description": "Scope: [slang-rhi]",
+             "members": ["carol"]},
+            {"slug": "pr-owners", "description": "ignored", "members": ["dan"]},
+        ])
         family = report.collect_source_internal_index(
             gh, "shader-slang/source-internal")
         base = [t for t in family if t["repos"] is None]
@@ -861,46 +850,39 @@ class TestCollectSourceInternalIndex(unittest.TestCase):
                 ("source-internal-slang-rhi",
                  frozenset({"slang-rhi"}), frozenset({"carol"})),
             })
-        self.assertNotIn(
-            ("members", "shader-slang", "pr-owners"), gh.calls)
+        self.assertEqual(gh.calls, [("teams", "shader-slang")])
 
     def test_unreadable_roster_keeps_members_none(self):
-        gh = self._Gh(
-            teams=[
-                {"slug": "source-internal", "description": "org-wide"},
-                {"slug": "source-internal-slangpy",
-                 "description": "Scope: [slangpy]"},
-            ],
-            members={
-                "source-internal": ["alice"],
-                "source-internal-slangpy": None,
-            },
-        )
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-slangpy",
+             "description": "Scope: [slangpy]",
+             "members": None},
+        ])
         family = report.collect_source_internal_index(
             gh, "shader-slang/source-internal")
         self.assertEqual(
             {t["slug"]: t["members"] for t in family},
             {"source-internal": {"alice"}, "source-internal-slangpy": None})
 
-    def test_unscoped_sibling_is_ignored_without_member_fetch(self):
-        gh = self._Gh(
-            teams=[
-                {"slug": "source-internal", "description": "org-wide"},
-                {"slug": "source-internal-misc", "description": "no brackets"},
-            ],
-            members={"source-internal": ["alice"]},
-        )
+    def test_unscoped_sibling_is_ignored(self):
+        gh = self._Gh(teams=[
+            {"slug": "source-internal", "description": "org-wide",
+             "members": ["alice"]},
+            {"slug": "source-internal-misc", "description": "no brackets",
+             "members": ["bob"]},
+        ])
         family = report.collect_source_internal_index(
             gh, "shader-slang/source-internal")
         self.assertEqual([t["slug"] for t in family], ["source-internal"])
-        self.assertNotIn(
-            ("members", "shader-slang", "source-internal-misc"), gh.calls)
 
     def test_missing_base_team_returns_none(self):
         # The configured base team is absent from the listing (renamed, deleted,
         # or invisible to this token): reporting everyone Community would be
         # worse than reporting Unknown.
-        gh = self._Gh(teams=[{"slug": "pr-owners", "description": "ignored"}])
+        gh = self._Gh(teams=[{"slug": "pr-owners", "description": "ignored",
+                              "members": []}])
         self.assertIsNone(
             report.collect_source_internal_index(gh, "shader-slang/source-internal"))
 
@@ -914,34 +896,93 @@ class TestCollectSourceInternalIndex(unittest.TestCase):
 
 @final
 class TestOrgTeamGraphQL(unittest.TestCase):
-    """Gh.list_org_teams / list_team_members against a stubbed graphql_ok."""
+    """Gh.list_org_teams / list_team_members against a stubbed graphql_data."""
 
     def _gh(self, pages):
         gh = report.Gh("gh")
         remaining = list(pages)
 
-        def graphql_ok(query, variables=None):
-            _ = (query, variables)
+        def graphql_data(query, variables=None, *, allow_partial=False):
+            _ = (query, variables, allow_partial)
             return remaining.pop(0) if remaining else None
 
-        gh.graphql_ok = graphql_ok  # type: ignore[method-assign]
+        gh.graphql_data = graphql_data  # type: ignore[method-assign]
         return gh
 
-    def test_list_org_teams_paginates(self):
+    def test_list_org_teams_nests_members_and_paginates_teams(self):
         gh = self._gh([
             {"organization": {"teams": {
                 "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
-                "nodes": [{"slug": "a", "description": "d"}],
+                "nodes": [{
+                    "slug": "a",
+                    "description": "d",
+                    "members": {"pageInfo": {"hasNextPage": False},
+                                "nodes": [{"login": "alice"}]},
+                }],
             }}},
             {"organization": {"teams": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
-                "nodes": [{"slug": "b", "description": ""}],
+                "nodes": [{
+                    "slug": "b",
+                    "description": "",
+                    "members": {"pageInfo": {"hasNextPage": False},
+                                "nodes": []},
+                }],
             }}},
         ])
         self.assertEqual(
             gh.list_org_teams("shader-slang"),
-            [{"slug": "a", "description": "d"},
-             {"slug": "b", "description": ""}])
+            [{"slug": "a", "description": "d", "members": ["alice"]},
+             {"slug": "b", "description": "", "members": []}])
+
+    def test_list_org_teams_null_members_is_unreadable_roster(self):
+        gh = self._gh([{
+            "organization": {"teams": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{
+                    "slug": "source-internal",
+                    "description": "",
+                    "members": None,
+                }],
+            }},
+        }])
+        self.assertEqual(
+            gh.list_org_teams("shader-slang"),
+            [{"slug": "source-internal", "description": "", "members": None}])
+
+    def test_list_org_teams_overflow_roster_uses_member_query(self):
+        gh = report.Gh("gh")
+        team_pages = [{
+            "organization": {"teams": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{
+                    "slug": "source-internal",
+                    "description": "",
+                    "members": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "m1"},
+                        "nodes": [{"login": "alice"}],
+                    },
+                }],
+            }},
+        }]
+        member_pages = [{
+            "organization": {"team": {"members": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"login": "alice"}, {"login": "bob"}],
+            }}},
+        }]
+
+        def graphql_data(query, variables=None, *, allow_partial=False):
+            _ = (variables, allow_partial)
+            if "teams(" in query:
+                return team_pages.pop(0)
+            return member_pages.pop(0)
+
+        gh.graphql_data = graphql_data  # type: ignore[method-assign]
+        self.assertEqual(
+            gh.list_org_teams("shader-slang"),
+            [{"slug": "source-internal", "description": "",
+              "members": ["alice", "bob"]}])
 
     def test_list_org_teams_null_org_is_none(self):
         gh = self._gh([{"organization": None}])

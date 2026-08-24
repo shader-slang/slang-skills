@@ -403,13 +403,21 @@ def classify_source(pr: PR, cfg: Config,
 
 
 # GraphQL org-team reads. Scheduled runs go through OneCLI, which does not
-# route REST `/orgs/*`; keep these on `organization.teams` / `team.members`.
+# route REST `/orgs/*`. Nested `members` keeps the family to one teams query;
+# `_TEAM_MEMBERS_QUERY` is only for a roster that exceeds the nested page.
 _ORG_TEAMS_QUERY = """
 query($login: String!, $cursor: String) {
   organization(login: $login) {
     teams(first: 100, after: $cursor) {
       pageInfo { hasNextPage endCursor }
-      nodes { slug description }
+      nodes {
+        slug
+        description
+        members(first: 100, membership: ALL) {
+          pageInfo { hasNextPage endCursor }
+          nodes { login }
+        }
+      }
     }
   }
 }
@@ -427,6 +435,16 @@ query($org: String!, $slug: String!, $cursor: String) {
   }
 }
 """
+
+
+def _logins_from_member_nodes(nodes: Any) -> list[str]:
+    """Collect non-empty logins from a GraphQL `members.nodes` list."""
+    out: list[str] = []
+    for node in nodes or []:
+        login = (node or {}).get("login")
+        if login:
+            out.append(login)
+    return out
 
 
 # --- gh I/O layer (the only place that shells out) ---------------------------
@@ -524,39 +542,49 @@ class Gh:
         out = self.run(args)
         return json.loads(out) if out.strip() else None
 
-    def graphql_ok(self, query: str, variables: dict[str, Any] | None = None) -> Any:
+    def graphql_data(self, query: str, variables: dict[str, Any] | None = None,
+                     *, allow_partial: bool = False) -> Any:
         """Return the GraphQL `data` object, or None when the call failed.
 
         Distinguishes no-access (None) from a successful empty payload, matching
         `api_lines`. Rate limits are waited out by `_exec`. Top-level GraphQL
-        `errors` count as failure so a forbidden `teams` field is not treated as
-        an empty org."""
+        `errors` count as failure unless `allow_partial` is set and `data` is
+        present — nested `teams.members` can 403 one roster without voiding the
+        org team list."""
         args = ["api", "graphql", "-f", f"query={query}"]
         for k, v in (variables or {}).items():
             args += ["-F", f"{k}={v}"]
         proc = self._exec(args)
-        if proc.returncode != 0:
-            return None
         try:
             body = json.loads(proc.stdout or "{}")
         except ValueError:
             return None
-        if body.get("errors"):
+        data = body.get("data")
+        if proc.returncode != 0:
+            if not (allow_partial and data):
+                return None
+        elif body.get("errors") and not allow_partial:
             return None
-        return body.get("data")
+        return data
 
-    def list_org_teams(self, org: str) -> list[dict[str, str]] | None:
-        """Return `{slug, description}` for every team in `org` via GraphQL
-        `organization.teams`. None when the org or its teams cannot be read.
+    def graphql_ok(self, query: str, variables: dict[str, Any] | None = None) -> Any:
+        """Return GraphQL `data`, or None on HTTP or GraphQL errors."""
+        return self.graphql_data(query, variables, allow_partial=False)
+
+    def list_org_teams(self, org: str) -> list[dict[str, Any]] | None:
+        """Return `{slug, description, members}` for every team in `org` via one
+        GraphQL `organization.teams` query (members nested, `membership: ALL`).
+        `members` is a login list, or None when that roster could not be read.
+        None for the whole result when the org or its teams cannot be read.
         Do not replace this with REST `/orgs/{org}/teams`: this script's
         scheduled environment (OneCLI) does not route `/orgs/*`."""
-        out: list[dict[str, str]] = []
+        out: list[dict[str, Any]] = []
         cursor = None
         while True:
             variables: dict[str, Any] = {"login": org}
             if cursor:
                 variables["cursor"] = cursor
-            data = self.graphql_ok(_ORG_TEAMS_QUERY, variables)
+            data = self.graphql_data(_ORG_TEAMS_QUERY, variables, allow_partial=True)
             if data is None:
                 return None
             org_node = data.get("organization")
@@ -572,6 +600,7 @@ class Gh:
                 out.append({
                     "slug": slug,
                     "description": node.get("description") or "",
+                    "members": self._roster_from_team_node(org, slug, node),
                 })
             page = conn.get("pageInfo") or {}
             if not page.get("hasNextPage"):
@@ -580,6 +609,18 @@ class Gh:
             if not cursor:
                 break
         return out
+
+    def _roster_from_team_node(self, org: str, slug: str,
+                               node: dict[str, Any]) -> list[str] | None:
+        """Logins from a nested `members` connection, or None if unreadable.
+        A roster larger than the nested page is completed via list_team_members."""
+        conn = node.get("members")
+        if conn is None:
+            return None
+        logins = _logins_from_member_nodes(conn.get("nodes"))
+        if (conn.get("pageInfo") or {}).get("hasNextPage"):
+            return self.list_team_members(org, slug)
+        return logins
 
     def list_team_members(self, org: str, slug: str) -> list[str] | None:
         """Return logins of `org/slug` members via GraphQL, including nested
@@ -603,10 +644,7 @@ class Gh:
             if not team:
                 return None
             conn = team.get("members") or {}
-            for node in conn.get("nodes") or []:
-                login = (node or {}).get("login")
-                if login:
-                    out.append(login)
+            out.extend(_logins_from_member_nodes(conn.get("nodes")))
             page = conn.get("pageInfo") or {}
             if not page.get("hasNextPage"):
                 break
@@ -709,8 +747,8 @@ def collect_source_internal_index(
     the configured base team is absent from it (renamed, deleted, or invisible to
     this token) -- reporting every author Community would be worse than saying we
     do not know. Matches pr-board-sync's source_internal_team family
-    resolution. Loaded via GraphQL `organization.teams` / `team.members` so the
-    same OneCLI transport as preflight works."""
+    resolution. Loaded via one GraphQL `organization.teams` query with nested
+    `team.members` so the same OneCLI transport as preflight works."""
     if not team_spec or "/" not in team_spec:
         return []
     slash = team_spec.index("/")
@@ -729,25 +767,23 @@ def collect_source_internal_index(
         description = team.get("description") or ""
         if not is_source_internal_family_slug(base_slug, slug):
             continue
+        members = team.get("members")
+        member_set = None if members is None else set(members)
         if slug == base_slug:
-            members = gh.list_team_members(org, slug)
-            member_set = None if members is None else set(members)
             family.append({"slug": slug, "repos": None, "members": member_set})
             continue
         repos = parse_team_scope_repos(description)
         # A sibling with no parseable `Scope: [...]` contributes nobody, so its
         # members would silently look Community. Say so rather than letting the
-        # misconfiguration pass as a plausible Source. Skip the roster fetch —
-        # the team is not in the family either way.
+        # misconfiguration pass as a plausible Source.
         if not repos:
             _progress(
                 f"⚠️  team {org}/{slug} has no 'Scope: [repo, ...]'; ignoring it")
             continue
-        members = gh.list_team_members(org, slug)
         family.append({
             "slug": slug,
             "repos": set(repos),
-            "members": None if members is None else set(members),
+            "members": member_set,
         })
     if not any(t["repos"] is None for t in family):
         return None
