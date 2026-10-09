@@ -103,9 +103,15 @@ DONE_EXPR='(() => {
   // premature exit-0 incidents where a half-rendered page was folded in as
   // "clean".
   if (/Generating\s*(\.{2,}|…)/i.test(t)) return false;
-  // Positive done-signals: the AI-analysis heading AND a bugs/flags/checks
-  // summary both present.
-  const heading = /Devin.s AI analysis/i.test(t);
+  // Positive done-signals: the analysis heading AND a bugs/flags/checks summary
+  // both present. Devin renamed the panel heading from the AI-analysis
+  // spelling to a plain analysis spelling on 2026-09-17; the old spelling alone
+  // made every run time out for three weeks (0 successes / 64 timeouts in Oct
+  // 2026), so both spellings are accepted and the commit walkthrough "Read
+  // explanation" buttons count as a heading too, a third independent signal in
+  // case the panel is renamed again. (No apostrophes here: this block is a
+  // single-quoted bash string.)
+  const heading = /Devin.s (AI )?analysis/i.test(t) || /Read explanation/.test(t);
   const summary = /\b\d+\s+Bugs?\b/.test(t) || /\b\d+\s+Flags?\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
   const done = heading && summary;
   // "PR analysis in progress" can LINGER transiently on a page that is otherwise
@@ -134,9 +140,17 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep "$POLL"
 done
 
-# Confirm a stable done state (else timeout)
+# Confirm a stable done state (else timeout). A timeout used to leave only this
+# one-line error, which is why a renamed heading went undiagnosed for weeks;
+# now the page text and the three done-signals are written beside it.
 if [ "$stable" -lt 2 ]; then
-  echo "timeout: Devin did not reach a stable done state within ${MAX_MIN}m" > "$OUT/devin-error.txt"
+  agent-browser eval 'document.body.innerText' > "$OUT/devin-page.txt" 2>/dev/null || true
+  SIGNALS=$(agent-browser eval '(() => { const t = document.body.innerText; return JSON.stringify({heading: /Devin.s (AI )?analysis/i.test(t) || /Read explanation/.test(t), summary: /\b\d+\s+(Bugs?|Flags?)\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t), in_progress: /PR analysis in progress|Generating/i.test(t), chars: t.length}); })()' 2>/dev/null || echo '{"signals":"unavailable"}')
+  {
+    echo "timeout: Devin did not reach a stable done state within ${MAX_MIN}m"
+    echo "signals: ${SIGNALS}"
+    echo "page: devin-page.txt"
+  } > "$OUT/devin-error.txt"
   exit 3
 fi
 
@@ -224,7 +238,7 @@ agent-browser eval 'document.body.innerText' 2>/dev/null \
   > "$OUT/devin-page.txt"
 agent-browser screenshot "$OUT/devin-screenshot.png" 2>/dev/null || true
 
-# Build a clean markdown extract: commit-status freshness + AI analysis + bugs + flags.
+# Build a clean markdown extract: commit-status freshness + analysis narrative + bugs + flags.
 # Splits the page text on the section headers Devin renders. The legacy
 # split was on "\n\s*\d+\s*Flags?\s*\n" which only matched the old combined
 # Flags toggle — the 2026 UI has separate "N Bugs" and "N Flags" lines, so
@@ -251,13 +265,13 @@ if len(sys.argv) > 3:
         informational = pi.read_text().strip().strip('"')
 
 # Section split. Headers we care about (in order they appear on the page):
-#   "Devin's AI analysis"   - prose narrative
+#   "Devin's analysis" / "Devin's AI analysis" - prose narrative (both spellings)
 #   "<N> Bugs" / "No bugs"  - bug list (2026 UI)
 #   "<N> Flags" / "No flags"- flag list (2026 UI; also legacy combined name)
 # Build a regex that captures section starts; walk matches to slice the body.
 HEADER_RE = re.compile(
     r"\n\s*("
-    r"Devin.s AI analysis"
+    r"Devin.s (?:AI )?analysis"
     r"|\d+\s+Bugs?"
     r"|No bugs"
     r"|\d+\s+Flags?"
