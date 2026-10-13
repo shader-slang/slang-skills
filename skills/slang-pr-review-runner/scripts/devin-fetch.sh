@@ -112,7 +112,19 @@ DONE_EXPR='(() => {
   // case the panel is renamed again. (No apostrophes here: this block is a
   // single-quoted bash string.)
   const heading = /Devin.s (AI )?analysis/i.test(t) || /Read explanation/.test(t);
-  const summary = /\b\d+\s+Bugs?\b/.test(t) || /\b\d+\s+Flags?\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t) || /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
+  // Transition card (2026-10 UI). The first anonymous visit to a PR starts the
+  // analysis on demand; when it finishes while this page is open, the sidebar
+  // shows "Analysis complete" plus a "View results" button instead of the
+  // per-category counts, and the counts never render on their own (observed
+  // 2026-10-13 on shader-slang/slang#13401: 30 minutes in that state, while a
+  // fresh load of the same page showed "0 Vulnerabilities / 0 Bugs / 1 Flag").
+  // Click the button once -- the marker lives on window, so it persists across
+  // polls of the same page -- and read the page again on the next poll.
+  const viewBtn = Array.from(document.querySelectorAll("button, a")).find((b) => /^\s*View results\s*$/i.test(b.textContent || ""));
+  if (viewBtn && !window.__devinFetchViewClicked) { window.__devinFetchViewClicked = true; viewBtn.click(); return false; }
+  const counts = /\b\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))\b/i.test(t) || /\bNo (bugs|flags|vulnerabilities)\b/i.test(t);
+  const checks = /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
+  const summary = counts || checks || /Analysis complete/i.test(t);
   const done = heading && summary;
   // "PR analysis in progress" can LINGER transiently on a page that is otherwise
   // fully rendered (observed live: it flickers back after content is complete).
@@ -145,13 +157,24 @@ done
 # now the page text and the three done-signals are written beside it.
 if [ "$stable" -lt 2 ]; then
   agent-browser eval 'document.body.innerText' > "$OUT/devin-page.txt" 2>/dev/null || true
-  SIGNALS=$(agent-browser eval '(() => { const t = document.body.innerText; return JSON.stringify({heading: /Devin.s (AI )?analysis/i.test(t) || /Read explanation/.test(t), summary: /\b\d+\s+(Bugs?|Flags?)\b/.test(t) || /\bNo (bugs|flags)\b/i.test(t), in_progress: /PR analysis in progress|Generating/i.test(t), chars: t.length}); })()' 2>/dev/null || echo '{"signals":"unavailable"}')
+  SIGNALS=$(agent-browser eval '(() => { const t = document.body.innerText; return JSON.stringify({heading: /Devin.s (AI )?analysis/i.test(t) || /Read explanation/.test(t), summary: /\b\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))\b/i.test(t) || /\bNo (bugs|flags|vulnerabilities)\b/i.test(t), analysis_complete: /Analysis complete/i.test(t), view_results: /View results/i.test(t), in_progress: /PR analysis in progress|Generating/i.test(t), chars: t.length}); })()' 2>/dev/null || echo '{"signals":"unavailable"}')
   {
     echo "timeout: Devin did not reach a stable done state within ${MAX_MIN}m"
     echo "signals: ${SIGNALS}"
     echo "page: devin-page.txt"
   } > "$OUT/devin-error.txt"
   exit 3
+fi
+
+# The transition card can leave the per-category counts unrendered even once
+# the done-check has passed on "Analysis complete". The expansion step below
+# clicks the "N Bugs" / "N Flags" / "N Vulnerabilities" toggles, so the page has
+# to be in the finished layout first; a single reload of the same URL gets there
+# (a fresh load of a finished analysis renders the counts straight away).
+if agent-browser eval '(() => { const t = document.body.innerText; return /Analysis complete|View results/i.test(t) && !/\b\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))\b/i.test(t); })()' 2>/dev/null | grep -qi true; then
+  echo ">>> devin-fetch: analysis finished while the page was open; reloading so the counts render" >&2
+  agent-browser reload >/dev/null 2>&1 || open_page "$URL"
+  sleep 8
 fi
 
 # Capture commit-status freshness BEFORE expanding panels (clicking other
@@ -192,8 +215,14 @@ sleep 1
 agent-browser eval '(() => {
   const btns = Array.from(document.querySelectorAll("button"));
   let n = 0;
-  // Bugs/Flags summary toggles (2026 split + legacy combined form).
-  btns.filter((b) => /^(\d+\s+(Bugs?|Flags?)|No (bugs|flags))$/i.test((b.textContent || "").trim()))
+  // Bugs/Flags summary toggles (2026 split + legacy combined form), plus the
+  // "N Vulnerabilities" toggle the 2026-10 UI added as a fourth category.
+  btns.filter((b) => /^(\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))|No (bugs|flags|vulnerabilities))$/i.test((b.textContent || "").trim()))
+      .forEach((b) => { b.click(); n++; });
+  // The narrative under the analysis heading is truncated behind a "Read more"
+  // toggle (the PR description has one too); expand them so the extractor sees
+  // the whole narrative rather than its first four bullets.
+  btns.filter((b) => /^Read more$/i.test((b.textContent || "").trim()))
       .forEach((b) => { b.click(); n++; });
   // Informational finding rows — expand to pull their detail into innerText.
   btns.filter((b) => {
@@ -266,35 +295,53 @@ if len(sys.argv) > 3:
 
 # Section split. Headers we care about (in order they appear on the page):
 #   "Devin's analysis" / "Devin's AI analysis" - prose narrative (both spellings)
+#   "<N> Vulnerabilities" / "No vulnerabilities" - security list (2026-10 UI)
 #   "<N> Bugs" / "No bugs"  - bug list (2026 UI)
 #   "<N> Flags" / "No flags"- flag list (2026 UI; also legacy combined name)
 # Build a regex that captures section starts; walk matches to slice the body.
 HEADER_RE = re.compile(
     r"\n\s*("
     r"Devin.s (?:AI )?analysis"
+    r"|\d+\s+Vulnerabilit(?:y|ies)"
+    r"|No vulnerabilities"
     r"|\d+\s+Bugs?"
     r"|No bugs"
     r"|\d+\s+Flags?"
     r"|No flags"
-    r")\s*\n",
+    # Leave the header's newline unconsumed (lookahead): the sidebar renders the
+    # category headers on consecutive lines ("0 Vulnerabilities" / "1 Bug" /
+    # "2 Flags"), and a trailing "\s*\n" ate the newline the next header needs,
+    # so every second header was skipped and its findings merged into the
+    # previous section (slang#13583's one Bug vanished that way).
+    r")[ \t]*(?=\n)",
     re.IGNORECASE,
 )
+
+# The last finding section runs into the sidebar's remaining labels ("Checks",
+# "Reviewers", "Assignees", "Labels", and the "Commit status" button the
+# freshness step clicked); strip that trailing run so a one-line flag does not
+# come out with five navigation words appended.
+TRAIL_RE = re.compile(r"(?:\n\s*(?:Checks|Reviewers|Assignees|Labels|Commit status)\s*)+\s*$", re.IGNORECASE)
 
 # Find all header positions in the page text.
 heads = [(m.start(), m.end(), m.group(1)) for m in HEADER_RE.finditer(text)]
 sections = {}
-ZERO_RE = re.compile(r"^(0\s+(Bugs?|Flags?)|No (bugs|flags))$", re.IGNORECASE)
+ZERO_RE = re.compile(r"^(0\s+(Bugs?|Flags?|Vulnerabilit(?:y|ies))|No (bugs|flags|vulnerabilities))$", re.IGNORECASE)
 for i, (s, e, name) in enumerate(heads):
     end = heads[i + 1][0] if i + 1 < len(heads) else len(text)
-    body = text[e:end].strip()
+    body = TRAIL_RE.sub("", text[e:end]).strip()
     key = name.lower()
     # When the header itself indicates zero entries (e.g. "0 Bugs", "No flags"),
     # the content after it is sidebar/nav junk — explicitly emit a sentinel
     # so callers don't think the trailing labels are bug/flag bodies.
     if ZERO_RE.match(name.strip()):
         body = "(none reported)"
-    if "ai analysis" in key:
+    # Both heading spellings route here (the pre-2026-09-17 check for the
+    # literal "ai analysis" sent the renamed heading to the fallback below).
+    if "analysis" in key:
         sections.setdefault("analysis", body)
+    elif "vulnerab" in key:
+        sections.setdefault("vulnerabilities", body)
     elif "bug" in key:
         sections.setdefault("bugs", body)
     elif "flag" in key:
@@ -313,6 +360,8 @@ if status and status.lower() != "unknown":
     print(f"_Commit status: **{status}**_\n")
 print("## AI Analysis\n")
 print(sections.get("analysis", "")[:5000])
+print("\n## Vulnerabilities\n")
+print(sections.get("vulnerabilities", "(none reported)")[:5000])
 print("\n## Bugs\n")
 print(sections.get("bugs", "(none reported)")[:5000])
 print("\n## Flags\n")
