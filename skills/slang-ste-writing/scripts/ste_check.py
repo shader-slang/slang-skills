@@ -64,7 +64,14 @@ def check_text(text: str) -> list[tuple[int, str]]:
     in_code = False
     para_sentences = 0
     para_start = 0
-    for n, raw in enumerate(text.split("\n"), 1):
+    all_lines = text.split("\n")
+    # Skip YAML frontmatter (a leading `---` block).
+    skip_until = 0
+    if all_lines and all_lines[0].strip() == "---":
+        skip_until = next((i for i in range(1, len(all_lines)) if all_lines[i].strip() == "---"), 0)
+    for n, raw in enumerate(all_lines, 1):
+        if n <= skip_until + 1 and skip_until:
+            continue
         if raw.strip().startswith("```"):
             in_code = not in_code
             continue
@@ -117,6 +124,7 @@ def main(argv: list[str]) -> int:
         assert any("imperative" in m for _, m in f) and any("ensures" in m for _, m in f) and any("prior to" in m for _, m in f), f
         assert check_text("Compile the module before you call the reflection API. An uncompiled module fails validation.\n") == []
         assert check_text("```\nIt is imperative that x.\n```\n`ensure` is a word.\n") == []
+        assert check_text("---\ndescription: It is imperative. A. B. C. D. E. F. G.\n---\nFine.\n") == []
         print("ok")
         return 0
     text = sys.stdin.read() if args.stdin or not args.path else open(args.path, encoding="utf-8").read()

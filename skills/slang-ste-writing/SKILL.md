@@ -8,11 +8,17 @@ allowed-tools: Read Bash
 
 # Simple Technical English for Slang
 
-Text that other people read is written for the reader. The rules below are the part of ASD-STE100 that fits a compiler project. Short sentences. One topic per paragraph. The same word for the same thing. Active voice for instructions. A short list of words we do not use.
+Text that other people read is written for the reader. The rules below are the part of ASD-STE100 that fits a compiler project:
+
+- short sentences;
+- one topic per paragraph;
+- the same word for the same thing;
+- active voice for instructions;
+- a short list of words we do not use.
 
 Identifiers, code spans and technical names are exempt from every rule.
 
-Load this skill before you write a PR description, an issue, a comment, a Discord or Slack post, or a documentation page. On a finished draft, run `scripts/ste_check.py <file>`. It reports; it does not block.
+Load this skill before you write a PR description, an issue, a comment, a chat post, or a documentation page. On a finished draft, run `scripts/ste_check.py <file>`. It reports; it does not block.
 
 ## Limits
 
