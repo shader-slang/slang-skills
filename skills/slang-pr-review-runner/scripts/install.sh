@@ -5,16 +5,23 @@ set -euo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local}"
 mkdir -p "$PREFIX/bin"
-export PATH="$PREFIX/bin:$PATH"
+# $PREFIX/bin goes AFTER the existing PATH: the claude the NanoClaw image ships
+# (/pnpm/claude) must win over anything a previous install.sh run put here.
+export PATH="$PATH:$PREFIX/bin"
 
 echo ">>> install.sh — checking dependencies"
 
-# claude CLI
-if ! "$PREFIX/bin/claude" --version >/dev/null 2>&1; then
-  echo ">>> installing @anthropic-ai/claude-code"
+# claude CLI — the inner reviewer runs the version the NanoClaw image pins and
+# tests, so we only install one when the environment has none (dev machines).
+# A floating `npm install` here previously made the inner CLI track npm's
+# latest release independently of the platform image.
+if command -v claude >/dev/null 2>&1; then
+  echo "    claude:              $(claude --version 2>&1 | head -1) ($(command -v claude))"
+else
+  echo ">>> no claude CLI on PATH — installing @anthropic-ai/claude-code into $PREFIX"
   npm install -g --prefix "$PREFIX" @anthropic-ai/claude-code >/dev/null 2>&1
+  echo "    claude:              $("$PREFIX/bin/claude" --version 2>&1 | head -1) ($PREFIX/bin/claude)"
 fi
-echo "    claude:              $($PREFIX/bin/claude --version 2>&1 | head -1)"
 
 # mcp-server-github was previously installed for --live-on-fork (PR-review
 # posting via GitHub MCP). That mode has been removed — output now flows

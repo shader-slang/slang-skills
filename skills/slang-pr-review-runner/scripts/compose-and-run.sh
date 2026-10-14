@@ -9,7 +9,9 @@
 #   compose-and-run.sh --mode patch  --patch <path> [--base <ref>]
 
 set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+# ~/.local/bin is the fallback install.sh uses when the environment ships no
+# claude CLI; it goes last so the NanoClaw image's /pnpm/claude is the one run.
+export PATH="$PATH:$HOME/.local/bin"
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE="$SKILL_DIR/scripts"
