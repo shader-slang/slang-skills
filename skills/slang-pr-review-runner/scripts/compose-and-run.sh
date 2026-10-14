@@ -9,7 +9,9 @@
 #   compose-and-run.sh --mode patch  --patch <path> [--base <ref>]
 
 set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+# ~/.local/bin is the fallback install.sh uses when the environment ships no
+# claude CLI; it goes last so the NanoClaw image's /pnpm/claude is the one run.
+export PATH="$PATH:$HOME/.local/bin"
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERE="$SKILL_DIR/scripts"
@@ -75,18 +77,16 @@ command -v gh     >/dev/null || { echo "error: gh CLI missing." >&2; exit 1; }
 
 cd "$REPO_ROOT"
 
-# Diff-integrity guard: drop any stale cross-run diff artifacts before the run.
-# A leftover tmp/pr-diff.patch from a prior PR previously caused a wrong-PR
-# review (PR #11455 reviewed as #11443): the model's sandboxed write to the
-# file was denied, so it silently read the stale copy. Clearing them means the
-# worst case is an empty read that falls back to a live `gh pr diff`, never a
-# wrong diff. See docs/slang-skills-pr-diff-integrity-fix.
+# Diff-integrity: never let an artifact from a previous run survive into this
+# one (a stale patch would be reviewed as this PR's). In pr mode prestage.sh
+# rewrites all three artifacts below, like production's trusted pre-stage step;
+# the other modes run with none.
 rm -f "$REPO_ROOT/tmp/pr-diff.patch" "$REPO_ROOT/tmp/pr-files.txt" "$REPO_ROOT/tmp/context.json"
 
 case "$MODE" in
   pr)
-    # Production behavior: BASE branch (master) is checked out locally.
-    # The model uses gh pr diff to see the PR's actual changes.
+    # Production behavior: BASE branch (master) is checked out locally and the
+    # PR diff is pre-staged under tmp/ before any model runs.
     git fetch --depth 50 origin master >/dev/null 2>&1 || true
     git checkout -q origin/master 2>/dev/null || true
     ;;
@@ -123,31 +123,16 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="$SKILL_DIR/transcripts/${MODE}-${TS}"
 mkdir -p "$RUN_DIR"
 
-# --- Diff-integrity marker (pr mode) --------------------------------------
-# Record what the reviewers are about to review so a stale/wrong diff fails
-# loud instead of silent. Field names (repo, pr, base_sha, head_sha,
-# diff_sha256) match the context contract standardized across the GitHub
-# Actions review frontend (see shader-slang/slang PR #11993's pre-stage step)
-# — keep them identical. Then verify the marker matches the requested PR
-# before any reviewer is dispatched.
+# --- Pre-stage (pr mode) ---------------------------------------------------
+# Write tmp/pr-diff.patch, tmp/pr-files.txt and tmp/context.json exactly as
+# production's trusted "Pre-stage PR diff and context" step does, so the
+# reviewers read the diff instead of fetching it themselves (the prompt tells
+# them so). Field names in context.json (repo, pr, base_sha, head_sha,
+# diff_sha256) match the contract REVIEW.md Step 1 verifies — keep them
+# identical. Then verify the marker matches the requested PR before any
+# reviewer is dispatched.
 if [ "$MODE" = "pr" ]; then
-  case "$PR_NUMBER" in
-    ''|*[!0-9]*) echo "error: --pr must be a positive integer (got: $PR_NUMBER)" >&2; exit 1 ;;
-  esac
-  mkdir -p "$REPO_ROOT/tmp"
-  HEAD_SHA="$(gh pr view "$PR_NUMBER" -R "$REPO" --json headRefOid -q .headRefOid 2>/dev/null || true)"
-  BASE_SHA="$(gh pr view "$PR_NUMBER" -R "$REPO" --json baseRefOid -q .baseRefOid 2>/dev/null || true)"
-  [ -n "$HEAD_SHA" ] \
-    || { echo "error: could not resolve head SHA for PR $PR_NUMBER in $REPO — refusing to review a phantom PR" >&2; exit 1; }
-  gh pr diff "$PR_NUMBER" -R "$REPO" > "$RUN_DIR/pr-diff.reference" 2>/dev/null || true
-  DIFF_SHA256="$( { sha256sum "$RUN_DIR/pr-diff.reference" 2>/dev/null \
-                    || shasum -a 256 "$RUN_DIR/pr-diff.reference" 2>/dev/null; } | cut -d' ' -f1 || true)"
-  python3 - "$REPO" "$PR_NUMBER" "$BASE_SHA" "$HEAD_SHA" "$DIFF_SHA256" > "$REPO_ROOT/tmp/context.json" <<'PY'
-import json, sys
-repo, pr, base, head, diff = sys.argv[1:6]
-json.dump({"repo": repo, "pr": int(pr), "base_sha": base, "head_sha": head, "diff_sha256": diff}, sys.stdout)
-sys.stdout.write("\n")
-PY
+  bash "$HERE/prestage.sh" "$REPO" "$PR_NUMBER" "$REPO_ROOT" "$RUN_DIR"
 
   # Verify the freshly written marker matches the requested PR before dispatch.
   read_marker() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2" 2>/dev/null || true; }
@@ -182,15 +167,19 @@ fi
 # GUARD_RC and, if any tripped, override the inner exit code.
 GUARD_RC=0
 
-# Diff-integrity net: if the model materialized tmp/pr-diff.patch, assert it
-# actually describes PR $PR_NUMBER. A stale/wrong diff fails LOUD. If the file
-# is absent the model reviewed via a live `gh pr diff` (the safe path) — skip.
-if [ "$MODE" = "pr" ] && [ -f "$REPO_ROOT/tmp/pr-diff.patch" ]; then
-  used="$(grep -oE '^\+\+\+ b/.+' "$REPO_ROOT/tmp/pr-diff.patch" 2>/dev/null | sed 's#^+++ b/##' | sort -u || true)"
-  real="$(gh pr view "$PR_NUMBER" -R "$REPO" --json files -q '.files[].path' 2>/dev/null | sort -u || true)"
-  if [ -n "$real" ] && [ "$used" != "$real" ]; then
-    echo "!!! INTEGRITY-FAIL: reviewed diff != PR $PR_NUMBER files — review targeted the WRONG diff" >&2
-    printf 'reviewed:\n%s\n\nactual PR files:\n%s\n' "$used" "$real" > "$RUN_DIR/INTEGRITY-FAIL.txt"
+# Diff-integrity net: the diff the reviewers read must be the one prestage.sh
+# wrote for PR $PR_NUMBER. Compare the file's hash with the one recorded in
+# tmp/context.json at pre-stage time (and kept as pr-diff.reference in the run
+# dir); a rewritten, truncated or swapped diff fails LOUD. The hash is the
+# right key — file lists would misreport deletions and renames.
+if [ "$MODE" = "pr" ]; then
+  staged="$(read_marker "$REPO_ROOT/tmp/context.json" diff_sha256)"
+  now="$( { sha256sum "$REPO_ROOT/tmp/pr-diff.patch" 2>/dev/null \
+            || shasum -a 256 "$REPO_ROOT/tmp/pr-diff.patch" 2>/dev/null; } | cut -d' ' -f1 || true)"
+  if [ -z "$staged" ] || [ -z "$now" ] || [ "$staged" != "$now" ]; then
+    echo "!!! INTEGRITY-FAIL: tmp/pr-diff.patch no longer matches the diff pre-staged for PR $PR_NUMBER — review targeted the WRONG diff" >&2
+    printf 'pre-staged sha256: %s\nsha256 after the run: %s\nreference copy: %s/pr-diff.reference\n' \
+      "${staged:-<none>}" "${now:-<missing file>}" "$RUN_DIR" > "$RUN_DIR/INTEGRITY-FAIL.txt"
     GUARD_RC=1
   fi
 fi
