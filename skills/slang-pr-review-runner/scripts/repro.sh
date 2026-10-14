@@ -106,11 +106,22 @@ EOF
 MCP_CONFIG="$SKILL_DIR/prompt-templates/mcp.dryrun.json"
 ALLOWED="$(echo "$ALLOWED" | tr -d '\n' | tr -s ' ' | sed 's/, /,/g')"
 
+# --- Instruction-file parity ----------------------------------------------
+# Production runs the reviewer in a bare checkout, so the only instructions it
+# sees are the checkout's own CLAUDE.md (plus its imports) and .claude/agents/*.
+# Here the checkout lives under the coworker's group directory, and Claude Code
+# also loads CLAUDE.md from every parent directory of the cwd — which would hand
+# the inner reviewer and each of its subagents the coworker document. The
+# settings object below excludes everything above $REPO_ROOT and nothing inside
+# it. See scripts/claude-md-excludes.sh for the measured effect.
+INNER_SETTINGS="${INNER_CLAUDE_SETTINGS:-$(bash "$HERE/claude-md-excludes.sh" "$REPO_ROOT")}"
+
 # --- Run claude ------------------------------------------------------------
 
 echo ">>> repro.sh: pr=${PROMPT_PR} repo=${PROMPT_REPO} mode=${MODE}"
 echo ">>> REPO_ROOT=$REPO_ROOT"
 echo ">>> mcp-config=$MCP_CONFIG"
+echo ">>> settings=$INNER_SETTINGS"
 echo ">>> output → $RUN_DIR"
 
 cd "$REPO_ROOT"
@@ -121,6 +132,7 @@ claude \
   --max-turns "${MAX_TURNS:-500}" \
   --max-budget-usd "${MAX_BUDGET_USD:-30}" \
   --setting-sources project \
+  --settings "$INNER_SETTINGS" \
   --mcp-config "$MCP_CONFIG" \
   --append-system-prompt "$SYSTEM_APPEND" \
   --allowed-tools "$ALLOWED" \
