@@ -1,25 +1,9 @@
-# Pinned commit of anthropics/claude-code-action that this skill mirrors.
-# Bump only after re-running validate.sh against a fresh production run log.
-#
-# Format: <full sha> <git ref> <observed in production run id>
-#
-# Initial pin: the action version observed in shader-slang/slang production run
-# 25338177724 on 2026-05-04, byte-validated by review_artifacts/instructions/validate.sh.
-#
-# When upstream ships a new release that affects the prompt, system-prompt
-# append, model id, allowed-tools list, or auto-injected MCP servers,
-# validate.sh fails. To update:
-#   1. Fetch a fresh successful production run log from shader-slang/slang
-#   2. Save under reference/runs/run-<id>.log
-#   3. Update reference/instructions.md, reference/instructions-overlay.md,
-#      and any prompt-templates/* that drifted
-#   4. Bump this file to the new (sha, ref, run id) triple
-#   5. Re-run validate.sh — must pass 5/5 byte-match
-#
-# v1.0.168 — mirrors shader-slang/slang PR #11993 (head 178b204d, folded
-# #11994 protocol changes) plus claude-code-action v1.0.168 (v1.0.166->168: Claude Code CLI bumps only).
-# VALIDATION PENDING: validate.sh 5/5 requires a fresh production run log
-# captured AFTER slang#11993 merges. Until then this pin records intent.
-sha=ba0aafd4308cbba7165f9f2cdb0cfbed5a3c99ce
-ref=v1.0.168
-run=pending-first-post-11993-production-run
+# Pinned anthropics/claude-code-action release this skill mirrors, the production
+# run log it was validated against (reference/runs/run-<run>.log), the Claude Code
+# CLI that release installs, and the production model (read by validate.sh when
+# ANTHROPIC_DEFAULT_OPUS_MODEL is unset). Bump only with validate.sh at 5/5.
+sha=34968b5981d5d170904281aa3df6f3c0d4a28855
+ref=v1.0.249
+run=38546357585
+claude_code_version=2.1.299
+model=aws/anthropic/bedrock-claude-opus-5-5[1m]
