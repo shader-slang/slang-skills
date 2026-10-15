@@ -144,7 +144,10 @@ case "$MODE" in
       git branch -D "$TEMP_BRANCH" >/dev/null 2>&1
       exit 1
     }
-    git -c user.email=skill@nanoclaw -c user.name=skill commit -q -am "patch under review (temporary)"
+    # `commit -a` stages only tracked files; a patch that adds a file leaves it
+    # untracked and the commit would miss it, so stage everything explicitly.
+    git add -A
+    git -c user.email=skill@nanoclaw -c user.name=skill commit -q -m "patch under review (temporary)"
     REPO="(local)"
     BRANCH_REF="$TEMP_BRANCH"
     BRANCH_BASE="origin/master"
