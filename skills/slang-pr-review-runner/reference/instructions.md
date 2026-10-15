@@ -46,8 +46,11 @@ Consequences for a mirror:
   parents carrying instructions must exclude them (this skill does, with
   `claudeMdExcludes`).
 - **Sub-agents** come from the checkout's `.claude/agents/*` (project scope). The action
-  sets no `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`; print mode waits for backgrounded
-  sub-agents with the CLI's default idle ceiling.
+  sets no `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, so print mode waits for a backgrounded
+  sub-agent only up to the CLI's idle ceiling (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`) and
+  then ends the session with whatever text exists. This skill sets the variable to `1`
+  (`scripts/repro.sh`) so the sub-agents run in the foreground; the overlay's divergence
+  table lists it.
 - The action passes no `--settings`, `--permission-mode` or `--dangerously-skip-permissions`;
   permissions come from `allowedTools` alone.
 

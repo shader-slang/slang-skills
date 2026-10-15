@@ -72,3 +72,4 @@ Deliberate differences, all on the posting side or forced by the container:
 | `settingSources: user, project, local` | `--setting-sources project` | the container's user and local scopes belong to the coworker, not the reviewer |
 | Checkout has no parent directories with instructions | `claudeMdExcludes` for every ancestor of the checkout | the checkout lives under the coworker's group directory |
 | CLI pinned by the action release (2.1.299 at v1.0.249) | the NanoClaw image's `claude` | the platform pins and tests one CLI for every coworker |
+| Sub-agents may run in the background; print mode stops waiting for a quiet one after `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` | `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, every sub-agent in the foreground | a run that ends before its reviewers return produces a truncated review; the findings themselves do not depend on the scheduling |

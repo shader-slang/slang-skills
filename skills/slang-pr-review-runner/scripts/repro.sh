@@ -116,6 +116,17 @@ ALLOWED="$(echo "$ALLOWED" | tr -d '\n' | tr -s ' ' | sed 's/, /,/g')"
 # it. See scripts/claude-md-excludes.sh for the measured effect.
 INNER_SETTINGS="${INNER_CLAUDE_SETTINGS:-$(bash "$HERE/claude-md-excludes.sh" "$REPO_ROOT")}"
 
+# --- Subagent scheduling ---------------------------------------------------
+# REVIEW.md dispatches the six reviewers as subagents. In print mode the CLI
+# waits for a backgrounded subagent only up to an idle ceiling
+# (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, ten minutes by default) and then ends
+# the session with whatever text exists — one production run finished with a
+# 113-byte review while a quiet subagent was still working. Foreground
+# subagents block the main agent until each returns, so the session cannot end
+# before the reviewers do. Production's action leaves this unset
+# (reference/instructions.md); the findings are unaffected, only the scheduling.
+export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+
 # --- Run claude ------------------------------------------------------------
 
 echo ">>> repro.sh: pr=${PROMPT_PR} repo=${PROMPT_REPO} mode=${MODE}"
