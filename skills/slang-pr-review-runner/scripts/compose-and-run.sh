@@ -7,6 +7,12 @@
 #   compose-and-run.sh --mode pr     --pr <N>  --repo <owner/repo> [--max-budget-usd $]
 #   compose-and-run.sh --mode branch --branch <ref> --repo <owner/repo>
 #   compose-and-run.sh --mode patch  --patch <path> [--base <ref>]
+#   compose-and-run.sh ... --detach
+#
+# With --detach the run starts in its own session (scripts/detach.sh) and this
+# script prints the run directory and returns at once; scripts/wait-run.sh
+# <run-dir> then blocks until <run-dir>/exit-status appears and exits with the
+# run's code. Without --detach the run is in the foreground, as before.
 
 set -euo pipefail
 # ~/.local/bin is the fallback install.sh uses when the environment ships no
@@ -26,8 +32,19 @@ REPO=""
 MAX_BUDGET_USD="${REPRO_PR_MAX_BUDGET_USD:-30}"
 MAX_TURNS="${REPRO_PR_MAX_TURNS:-500}"
 MODEL="${REPRO_PR_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus}}"
+DETACH=0
+# Every flag except --detach is kept so the detached re-exec sees the same
+# request this invocation validated.
+RUN_ARGS=()
 
 while (($#)); do
+  case "$1" in
+    --detach) DETACH=1; shift; continue ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --mode|--pr|--branch|--base|--patch|--repo|--max-budget-usd|--max-turns|--model)
+      [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 1; }
+      RUN_ARGS+=("$1" "$2") ;;
+  esac
   case "$1" in
     --mode) MODE="$2"; shift 2 ;;
     --pr) PR_NUMBER="$2"; shift 2 ;;
@@ -38,7 +55,6 @@ while (($#)); do
     --max-budget-usd) MAX_BUDGET_USD="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "error: unknown flag $1" >&2; exit 1 ;;
   esac
 done
@@ -72,6 +88,24 @@ command -v gh     >/dev/null || { echo "error: gh CLI missing." >&2; exit 1; }
 
 [ -f "$REPO_ROOT/REVIEW.md" ] \
   || { echo "error: $REPO_ROOT/REVIEW.md not found. Run install.sh." >&2; exit 1; }
+
+# --- Run directory ---------------------------------------------------------
+# The directory is fixed before any repo work so that a detached run and the
+# caller that started it agree on it. REVIEW_RUN_DIR is how the detached
+# re-exec below hands its directory to the child; callers do not set it.
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_DIR="${REVIEW_RUN_DIR:-$SKILL_DIR/transcripts/${MODE}-${TS}}"
+mkdir -p "$RUN_DIR"
+
+# --- Detach ----------------------------------------------------------------
+# The inputs are validated, so the detached child re-runs this script in the
+# foreground mode with the same flags and the run directory pinned. All repo
+# prep, pre-staging and the inner CLI happen in the child; this process only
+# prints the run directory for wait-run.sh.
+if [ "$DETACH" -eq 1 ]; then
+  REVIEW_RUN_DIR="$RUN_DIR" exec bash "$HERE/detach.sh" "$RUN_DIR" -- bash "$0" "${RUN_ARGS[@]}"
+fi
 
 # --- Mode-specific repo prep ----------------------------------------------
 
@@ -116,12 +150,6 @@ case "$MODE" in
     BRANCH_BASE="origin/master"
     ;;
 esac
-
-# --- Run -----------------------------------------------------------------
-
-TS="$(date -u +%Y%m%dT%H%M%SZ)"
-RUN_DIR="$SKILL_DIR/transcripts/${MODE}-${TS}"
-mkdir -p "$RUN_DIR"
 
 # --- Pre-stage (pr mode) ---------------------------------------------------
 # Write tmp/pr-diff.patch, tmp/pr-files.txt and tmp/context.json exactly as
