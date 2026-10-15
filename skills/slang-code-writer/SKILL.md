@@ -135,6 +135,23 @@ maintained.
   have names in nearby code, generated modules, diagnostics, IR ops, or design docs.
 - Keep comments synchronized with nearby control flow. If a new block runs before the old fallback,
   update surrounding comments so they describe the order the reader sees in the code.
+- Comment only when it adds value: non-obvious intent, an invariant, a subtle edge case, the
+  issue or spec it satisfies. A comment that paraphrases the next line is noise; prefer clearer
+  code over a comment. One or two lines at the point that needs it, no banners, no changelog
+  narration, no "added by" markers.
+- Commit message and code comment serve different readers. The commit message records what changed
+  and why; a comment documents the code as it stands now. Never move commit-message prose
+  (before/after, "fixes X") into source, and never leave a comment that only makes sense while
+  reviewing this diff. Fresh-reader test: would someone seeing this code with no PR be confused
+  without it? If not, delete it.
+- Design rationale goes in the PR's explanation comment (`/explain-diff-html`), not in source and
+  not in the PR description.
+- Declarative voice, authorial "we": "We cache the declared mode because…", not "Cache the mode…".
+- Contracts live on the declaration: state preconditions where a function is declared and assert
+  them; do not narrate where a routine is called from inside its body. Rationale for a mechanism
+  goes on the type or attribute that embodies it, not inside one function that happens to use it.
+- Flat control flow: handle the early-out cases first and return. Name a repeated predicate the
+  second time it appears, as a helper next to the type it tests.
 
 ## Review conventions
 

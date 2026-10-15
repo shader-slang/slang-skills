@@ -88,3 +88,7 @@ gh issue create --repo shader-slang/slang --title "..." --body "..."
 ## GitHub API rate limits
 
 CMake configure fetches from GitHub REST API. If rate-limited, pass `-DSLANG_GITHUB_TOKEN=<token>` to cmake.
+
+## More Slang skills
+
+Specialized skills live in [shader-slang/slang-skills](https://github.com/shader-slang/slang-skills) (needs `gh` CLI ≥ 2.90). Browse with `gh skill search slang --owner shader-slang`, preview with `gh skill preview shader-slang/slang-skills <skill-name>`, install with `gh skill install shader-slang/slang-skills <skill-name>`; an installed skill is available immediately as `/skill-name` and persists across sessions.
