@@ -114,18 +114,16 @@ Follow Slang coding conventions (`docs/design/coding-conventions.md`):
 - Prefer trailing commas in array initializer lists.
 - Function names should reflect the nature of the behavior they implement, including important
   return-type or reference semantics, rather than the narrow use case that motivated the function.
-- Boolean names read as propositions or predicates (`shouldForwardAddresses`, `isEntryPointParam`,
-  `hasLayout`), never as imperative verb phrases that look like procedures (`forwardAddress`).
-  Every `bool` member gets a default initializer at its declaration, so a new or edited constructor
-  cannot leave it unset.
-- A predicate whose criteria belong to one pass (which types count as aggregates for it, which
-  parameters it rewrites) lives next to that pass, not in a shared header such as `slang-ir-util.h`.
-  A helper in a shared header does exactly what its name says.
-- Use the codebase's current terminology and do not spread deprecated spellings. `ConstRef` and
-  "const ref" are deprecated: the concept is an immutable borrow (`borrow in`, `IRBorrowInParamType`).
+- Boolean names read as propositions or predicates (`isEnabled`, `shouldEmit`, `hasLayout`), never
+  as imperative verb phrases that look like procedures (`enable`, `emitValue`). Every `bool` member
+  gets a default initializer at its declaration, so a new or edited constructor cannot leave it unset.
+- A helper whose criteria are one pass's policy lives in that pass, not in a shared utility header.
+  A helper in a shared header does exactly what its name says, for every caller.
+- Use the codebase's current terminology. When a term is marked deprecated in the design docs or by
+  a maintainer, do not introduce or spread it; use the replacement.
 - When a change already touches a misnamed declaration and all of its call sites, rename it.
-- How a parameter is declared or emitted is modeled by a distinct IR pointer type, as the `borrow in`,
-  `borrow out` and `ref` parameter types are, never by an `AddressSpace` value the emitter inspects.
+- Model a behavior that downstream code must honor as its own representation (a distinct type or
+  opcode), not as a value tucked into an existing field that every consumer has to inspect.
 
 ## Comments and explanations
 

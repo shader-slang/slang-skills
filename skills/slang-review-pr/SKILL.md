@@ -106,8 +106,8 @@ Ask these questions for every non-trivial helper, fallback, or special case in t
    finding with its line: a boolean named as an imperative verb phrase, or a `bool` member without a
    default initializer; an early-out that returns a default for a shape the function must never
    see; an assertion with no stated reason; a shared helper that is really one pass's policy;
-   deprecated terminology (`ConstRef` for a `borrow in`); and any issue or PR number, date, or
-   history inside a source comment.
+   terminology the codebase has marked deprecated; and any issue or PR number, date, or history
+   inside a source comment.
 
 Flag predicate-ladder fixes like `if (A && B && C && D) then do this special thing` unless the PR
 proves that the input shape is valid and this layer owns the behavior. Prefer comments and PR
