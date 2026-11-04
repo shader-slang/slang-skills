@@ -102,6 +102,12 @@ Ask these questions for every non-trivial helper, fallback, or special case in t
    to the motivating case rather than the actual semantics. For example, if a helper named
    `isDifferentiableFunc...` checks a property that is not specific to differentiability, ask for a
    more general name.
+9. Does the code carry the craft maintainers ask for on every agent PR? Raise each of these as a
+   finding with its line: a boolean named as an imperative verb phrase, or a `bool` member without a
+   default initializer; an early-out that returns a default for a shape the function must never
+   see; an assertion with no stated reason; a shared helper that is really one pass's policy;
+   deprecated terminology (`ConstRef` for a `borrow in`); and any issue or PR number, date, or
+   history inside a source comment.
 
 Flag predicate-ladder fixes like `if (A && B && C && D) then do this special thing` unless the PR
 proves that the input shape is valid and this layer owns the behavior. Prefer comments and PR
@@ -304,6 +310,9 @@ Also flag:
 - Comments that talk in abstract or hand-wavy terms instead of grounding the explanation in user
   code and named compiler concepts.
 - Invented terminology that is not defined locally and is not used elsewhere in the codebase.
+- Process in comments: issue or PR numbers, dates, "before this change", what the code is not or
+  used to be. A documentation comment states the contract, an implementation comment states the
+  approach, and history belongs to source control.
 
 ---
 

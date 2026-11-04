@@ -114,6 +114,18 @@ Follow Slang coding conventions (`docs/design/coding-conventions.md`):
 - Prefer trailing commas in array initializer lists.
 - Function names should reflect the nature of the behavior they implement, including important
   return-type or reference semantics, rather than the narrow use case that motivated the function.
+- Boolean names read as propositions or predicates (`shouldForwardAddresses`, `isEntryPointParam`,
+  `hasLayout`), never as imperative verb phrases that look like procedures (`forwardAddress`).
+  Every `bool` member gets a default initializer at its declaration, so a new or edited constructor
+  cannot leave it unset.
+- A predicate whose criteria belong to one pass (which types count as aggregates for it, which
+  parameters it rewrites) lives next to that pass, not in a shared header such as `slang-ir-util.h`.
+  A helper in a shared header does exactly what its name says.
+- Use the codebase's current terminology and do not spread deprecated spellings. `ConstRef` and
+  "const ref" are deprecated: the concept is an immutable borrow (`borrow in`, `IRBorrowInParamType`).
+- When a change already touches a misnamed declaration and all of its call sites, rename it.
+- How a parameter is declared or emitted is modeled by a distinct IR pointer type, as the `borrow in`,
+  `borrow out` and `ref` parameter types are, never by an `AddressSpace` value the emitter inspects.
 
 ## Comments and explanations
 
@@ -136,9 +148,13 @@ maintained.
 - Keep comments synchronized with nearby control flow. If a new block runs before the old fallback,
   update surrounding comments so they describe the order the reader sees in the code.
 - Comment only when it adds value: non-obvious intent, an invariant, a subtle edge case, the
-  issue or spec it satisfies. A comment that paraphrases the next line is noise; prefer clearer
-  code over a comment. One or two lines at the point that needs it, no banners, no changelog
-  narration, no "added by" markers.
+  spec it satisfies. Never an issue or PR number, a date, or the history of the code: a comment
+  documents the code as it stands, and references belong in the commit message and the PR. A
+  comment that paraphrases the next line is noise; prefer clearer code over a comment. One or two
+  lines at the point that needs it, no banners, no changelog narration, no "added by" markers.
+- A documentation comment on a declaration states what the thing is and its contract. An
+  implementation comment states the approach. Neither records what the code is not, what it used to
+  be, or which other design was rejected.
 - Commit message and code comment serve different readers. The commit message records what changed
   and why; a comment documents the code as it stands now. Never move commit-message prose
   (before/after, "fixes X") into source, and never leave a comment that only makes sense while
@@ -167,6 +183,9 @@ Recurring review feedback distilled into rules:
   spellings break `equals`, identity checks, and deduplication. Assert invariants at construction
   sites.
 - Use `SLANG_RELEASE_ASSERT` on out-of-contract input instead of silently returning a default.
+- An assertion of a non-obvious invariant carries a one-line reason. An early-out that returns a
+  default for a shape the function must never see is a defect, not caution: assert the shape, or
+  explain in the comment why it arises and why the chosen handling is right.
 
 ## Shell script compatibility
 
