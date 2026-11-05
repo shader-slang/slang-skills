@@ -13,6 +13,7 @@ Usage counts behind every `_Avoid_` entry, the commands that produced them, and 
 | `Y` (SlangPy) | `ext/slangpy/docs/**`, `ext/slangpy/README.md`, `ext/slangpy/slangpy/**/*.py` |
 | `R` (slang-rhi) | `ext/slang-rhi/include/*.h ext/slang-rhi/docs/*.md ext/slang-rhi/README.md ext/slang-rhi/src/*.h` |
 | `O` (coworker ops) | `repos/nc-r6/README.md`, `repos/nc-r6/container/skills/*/SKILL.md`, `repos/nc-r6/container/skills/*/README.md`, `repos/nc-r6/container/overlays/*/OVERLAY.md`, `repos/nc-r6/src/issue-opt-out.ts`, `repos/nc-r6/src/issue-stand-down.ts`, `repos/nc-r6/docs/*.md`; some early counts also included `repos/skills-craft/skills/*/SKILL.md` and are marked `O+` |
+| `B` (bank review threads) | `tasks/review/*/task.toml`, key `[metadata].threads_json`, in `repos/slang-eval-tasks`: 882 root inline review comments by human maintainers over 315 tasks, extracted to `glossary-draft/experts/threads.json`. A `B` count is the number of threads whose body matches the pattern (case-insensitive regex, `experts/bcounts.py`), not a word count; the Note column lists the task ids. |
 
 All `ext/` and `repos/` paths are under `/tmp/claude-1558743079/-home-haaggarwal-slang/1e68114b-25df-4d6b-8c9f-55a4af62c0b3/scratchpad/`.
 
@@ -66,6 +67,20 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 | join point | merge block, merge point | `merge block\|merge point` | D 0, S 69 | canonical `join point` D 9, S 7; entry marked needs review |
 | session | linkage (in API prose) | `linkage` | D 6 | canonical `\bsession` D 105 |
 | layout unit | parameter category (in prose) | `parameter category\|ParameterCategory` | D 58, S 18 | canonical `layout unit` D 16, S 6; the API enum keeps its name |
+| parameter-passing mode | parameter direction | `parameter direction` | B 0, D 0, S 19 | round 3 (experts); S hits are comments using the specification's word; canonical `param(eter)?[- ]passing mode` B 10 (Tess), S 37; slang-pr-13213-84be79e, slang-pr-13401-c99f962, slang-pr-13406-66523f1 |
+| parameter-passing mode | passing convention | `passing convention` | B 0, D 0, S 0 | maintainer-supplied |
+| bytes | uniform (meaning bytes) | `uniform` | B 11 | not sense-split (the keyword and `LayoutResourceKind::Uniform` share the word); Tess's corrections in slang-pr-11135-d240653, slang-pr-12306-75e037d; canonical `bytes\|byte-granularity` B 22 |
+| bytes | uniform usage | `uniform (field )?usage` | B 1, D 0, S 2 | slang-pr-11135-d240653 |
+| effective `this` parameter | declared mode (when the computed one is meant) | `declared .* mode` | B 3 | slang-pr-13213-84be79e, slang-pr-13401-c99f962; canonical `effective.*this\|effectively static` B 6 |
+| disposition | check (as a noun for the result) | `as a "check"` | B 1, D 0, S 0 | slang-pr-12596-1dbdab4; canonical `disposition\|verdict` B 6 (slang-pr-12596-1dbdab4, slang-pr-12596-5553973) |
+| internal error | fallback | `fallback` | B 8, D 26, S 127 | not sense-split; Tess slang-pr-11135-d240653; canonical `internal error\|assert-fail\|loud error` B 6 (slang-pr-11798-5f4a206, slang-pr-12252-5915b22 by Yong; slang-pr-11135-d240653, slang-pr-12544-479e4da by Tess) |
+| internal error | defensive handling | `defensive` | B 3, D 1, S 19 | slang-pr-11135-d240653, slang-pr-12421-8cd02a1, slang-pr-13539-7228ad1 |
+| cumulative offset | absolute offset | `absolute` (B), `absolute offset` (D, S) | B 3, D 1, S 0 | Tess slang-pr-12715-6f2f414; other reviewers in slang-pr-12116-3a7b41a, slang-pr-12717-5dbb25c; canonical `cumulative offset` B 2, D 13 |
+| cumulative offset | reflection offset | `reflection offset` | B 1, D 0, S 0 | slang-pr-12715-6f2f414 |
+| index into | select from an array, array selection | `array selection\|select(ion)? from .*array` | B 1, D 0, S 0 | slang-pr-13539-7228ad1; canonical `index into` D 3, S 12 |
+| subject (of a modifier) | target (for the modified construct) | `target.*modif\|modif.*target` | B 1 | slang-pr-12596-5553973; `target` D 631 is the compilation-target sense |
+| early-out | bail-out | `bail[- ]?out` | B 3, D 1, S 43 | slang-pr-13539-7228ad1, slang-pr-13283-a3dd7e7; canonical `early[- ]out` B 12, S 17 |
+| early-out | guard (for the statement itself) | `guard` (B), `guard clause` (D, S) | B 13, D 0, S 0 | B not sense-split (most hits are "guard against"); slang-pr-12596-5553973 and nine other tasks |
 
 ### Slang Language
 
@@ -92,6 +107,12 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 | generic | template | `template` | D 16, S 841 | S hits are C++ templates |
 | interface variant | interface-typed value | `interface-typed\|interface type` | D 24, P 21 | spec `interface(-conforming)? variant` P 18 |
 | interface variant | existential value | `existential` | D 38, P 2 | |
+| parameter-passing mode | parameter direction, passing convention | see the compiler table | | round 3: entry renamed from "Parameter direction"; the specification's `declarations.md` still says "parameter directions" |
+| error | exception | `exception` | B 14, D 14, S 64 | Tess asks for "error" in slang-pr-12209-695f596; most other B, D, and S hits are C++ exceptions |
+| error | throw an exception (in prose) | `throw` | B 9 | the `throw` keyword itself stays; slang-pr-12209-695f596 prefers "raising" in prose |
+| readonly ref access | const (as the ref access qualifier) | `` `const` `` | B 2 | slang-pr-13406-66523f1 (Tess), slang-pr-13406-a1286c3; canonical `readonly` B 7, D 4, S 21 |
+| language version | module version | `module version` | B 2, D 11, S 3 | Yong "user module version" in slang-pr-12151-f0371d1; slang-pr-12963-90a6877; D hits are the `.slang-module` format version, a different sense; canonical `language version` B 7, D 17, S 28 |
+| language version | dialect (for the version) | `dialect` | B 1, D 0, S 7 | slang-pr-12596-5553973 |
 
 ### SlangPy
 
@@ -137,11 +158,14 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 | trait | capability (bare) | `capabilit(y\|ies)` | O 48 | most hits are "capability skill", a kind of skill, not a trait |
 | composer | template system | `template system` | O 2 | `docs/USAGE.md` "Lego coworker template system"; canonical `composer` O 22 |
 | composer | spine renderer (for the whole module) | `spine renderer` | O 1 | one of the composer's three parts in `docs/lego-coworker-workflows.md` (registry, resolver, spine renderer) |
-| buddy | companion monitor | `companion( monitor)?` | O 3 | `buddy/SKILL.md` description; canonical `buddy` O 30 |
 | learning | atom | `atoms?` | O 102 | `learnings-wiki/SKILL.md` layer word for a raw L1 learning file, kept generic so other knowledge bases reuse the skill; canonical `learnings?` O 157 |
 | credential gateway | OneCLI (for the concept) | `onecli` | O 91 | the current provider; `docs/gateway-seam.md` makes the gateway pluggable; canonical `credential gateway` O 16 |
 | credential gateway | vault, Agent Vault | `vault` | O 15 | `agent vault` O 3 within; `README.md` "OneCLI's Agent Vault" |
 | credential gateway | credential proxy | `credential proxy` | O 3 | `docs/REQUIREMENTS.md` heading "OneCLI Credential Proxy" |
+
+## Removed entries
+
+- **buddy** (coworker ops), removed 2026-11-05. The maintainer challenged it: "we don't use this, it is disabled". The `buddy-monitor` overlay and `buddy/SKILL.md` still exist in `repos/nc-r6` (`buddy` O 30, `companion( monitor)?` O 3), so the counts stay recorded here; the entry and its Avoid "companion monitor" are gone from `coworker-ops/GLOSSARY.md`.
 
 ## Terms taken from a proposal that is not yet in the specification
 
@@ -178,3 +202,7 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 - `repos/nc-r6/README.md`; `container/overlays/{buddy-monitor,critique-gate,eval-sandbox,plan-gate,review-length}/OVERLAY.md`; `container/skills/eval-runner/{SKILL,README}.md`; `container/skills/compliance-check/{SKILL,README}.md`; `container/skills/{base-nanoclaw,buddy,codex-critique,supervise-issues,onecli-gateway,learnings-wiki,okf-synthesis,welcome,self-customize,review-cycle-mining,explain-diff-html}/SKILL.md` (full or head); `src/issue-opt-out.ts` and `src/issue-stand-down.ts` header comments
 - `repos/nc-r6/docs/`: `USAGE.md` (lego model, coworker types, session modes), `lego-coworker-workflows.md`, `cost-cap-model.md`, `thread-vs-session.md`, `isolation-model.md`, `architecture.md` (groups vs sessions), `critique-gate-boundaries.md`, `skills-model.md`, `issue-funnel-design.md`, `BRANCH-FORK-MAINTENANCE.md`, `REQUIREMENTS.md` (deployment), `gateway-seam.md`, `memory.md`, `mcp-allowlist.md` (grep for `append_learning`)
 - `repos/skills-craft/skills/*/SKILL.md`: names and descriptions of all 31 skills; heads of `slang-evaluate-session`, `slang-maintainer-tools`, `human-names`
+
+### Bank review threads (set B, round 3)
+- All 231 threads by Theresa Foley (`tangent-vector`) and 13 by Yong He (`csyonghe`), read in full; the other 638 human threads were only pattern-counted. The reading, term counts, corrections, and rules are in `experts/EXPERTS.md`; the candidate list is `experts/experts-terms.json`; the terms added from it are listed in `experts/experts-added.json`.
+- Round-3 additions: 12 compiler terms (parameter-passing mode, effective `this` parameter, disposition, subject, internal error, index into, bytes, cumulative offset, documentation comment, implementation comment, early-out, workaround) and 5 language terms (readonly ref access, language version, operator, tuple construction, error); "Parameter direction" renamed to "Parameter-passing mode". Convention items from the candidate list (`calc`/`compute` prefix, "collect" as the verb) and the standard-module-library naming went to guidelines, not the glossary. The binding-semantic soft conflict (Tess uses bare "semantics" in compiler prose) got no Avoid: the compiler glossary has no binding-semantic entry to attach it to.

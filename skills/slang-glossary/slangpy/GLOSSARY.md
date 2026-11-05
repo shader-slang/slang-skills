@@ -8,7 +8,7 @@ The Python library that calls Slang functions on the GPU by generating and dispa
 `spy.Module`: a loaded Slang module whose global functions and structs are reached as attributes, such as `module.add`.
 
 **Function**:
-`spy.Function`: a callable wrapper around a Slang function. It generates, caches, and dispatches a kernel the first time it is called with a given argument signature; `map`, `bwds`, and `set` return modified function objects.
+`spy.Function`: a callable wrapper around a Slang function that generates, caches, and dispatches a kernel per argument signature. `map`, `bwds`, and `set` return modified function objects.
 
 **Struct**:
 `spy.Struct`: a Slang struct reached through a module, whose constructor and methods can be called on tensors of instances.

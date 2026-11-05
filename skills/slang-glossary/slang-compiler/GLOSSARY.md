@@ -68,6 +68,10 @@ A disjunction of conjunctions of capability atoms. The runtime representation st
 A message the compiler reports to a `DiagnosticSink` with a numeric code and a severity of note, warning, error, or fatal. Definitions live in `slang-diagnostics.lua`.
 _Avoid_: error message (when a warning or note may be meant)
 
+**Internal error**:
+The failure raised when a shape an earlier phase should have removed or guaranteed reaches a later phase, such as an unlowered type at emit. It is asserted, not handled: the producing phase is fixed and the consumer never patches the shape.
+_Avoid_: fallback, defensive handling (for an out-of-contract shape)
+
 ## Front-end representation
 
 **Decl-ref**:
@@ -85,9 +89,25 @@ _Avoid_: vtable, conformance table
 The compiler's representation of a value whose static type is an interface contract: a box holding a concrete type, a value, and a witness table. The type is `ExistentialBoxType`; the packing expression is `MakeExistentialBoxExpr`, and older code says `makeExistential`.
 _Avoid_: existential (bare, when the box type is meant), interface-typed value (in compiler prose)
 
+**Parameter-passing mode**:
+The `ParamPassingMode` a parameter is passed with: `in`, `out`, `inout`, borrow-in, or ref. The effective mode is computed once in the front end and read as-is by lowering.
+_Avoid_: parameter direction, passing convention
+
 **Borrow-in parameter**:
 A parameter passed as a reference to an immutable borrowed value, `ParamPassingMode::BorrowIn`. It is spelled `__constref` in source and printed as `borrow T`.
 _Avoid_: ConstRef, const ref, constref
+
+**Effective `this` parameter**:
+The implicit `this` parameter a declaration has after its ancestors and context are applied, with its type and parameter-passing mode. A static or effectively static declaration has none; `[mutating]`, `set` accessors, `class` types, and `extension`s change the mode or type.
+_Avoid_: declared mode (when the computed mode is meant)
+
+**Disposition**:
+The result of a validity check, such as whether a modifier is allowed on a declaration: allowed, error, warning-or-error by language version, or no verdict. Diagnosing is a separate step that reads the disposition.
+_Avoid_: check (as a noun for the result)
+
+**Subject (of a modifier)**:
+The declaration or syntax node a modifier applies to. "Target" is reserved for a compilation target.
+_Avoid_: target (for the modified construct)
 
 ## IR
 
@@ -108,6 +128,10 @@ _Avoid_: phi, phi node
 The block where control flow reconverges after a structured branch, stored as an operand of the branch so emitters can rebuild `if` and loop statements.
 _Avoid_: join point, merge point
 
+**Index into**:
+Reading one element of an array by position: code indexes into, subscripts, or gets an element from an array. `select` is the IR instruction that chooses between two values by a condition, never array access.
+_Avoid_: select from an array, array selection
+
 ## API objects and layout
 
 **Session**:
@@ -124,5 +148,28 @@ The target-dependent description of how much of each layout unit a type consumes
 One kind of resource a parameter can consume, such as bytes, `t` registers, or descriptor-table slots. The API enum is `ParameterCategory`.
 _Avoid_: parameter category (in prose)
 
+**Bytes**:
+The layout unit, `LayoutResourceKind::Uniform`, in which buffer contents, payloads, and other memory-backed data are measured. New code says bytes or byte-granularity; "uniform" is the legacy enum name only.
+_Avoid_: uniform (meaning bytes), uniform usage
+
 **Parameter binding**:
 The per-target step that assigns registers, bindings, and byte offsets to every shader parameter of a composed program, honoring explicit `register` and `[[vk::binding]]` markup first.
+
+**Cumulative offset**:
+The offset of a nested field or element relative to the start of its enclosing container, summed along the access path through reflection. Every offset is relative to something; an offset inside a constant buffer is cumulative, not absolute.
+_Avoid_: absolute offset, reflection offset
+
+## Codebase and review vocabulary
+
+**Documentation comment**:
+The comment attached to a declaration, written with `///` or `//`, that states what the abstraction does and its behavioral contract for a client. It never describes implementation strategy, history, or open issues.
+
+**Implementation comment**:
+A comment inside a body, for a future maintainer, explaining the problem solved, the solution strategy, the invariants relied on, and rejected alternatives. It is written in declarative voice with authorial "we" and never cites issues or PRs.
+
+**Early-out**:
+A `return`, `continue`, or `break` taken before a routine's primary path. Each one is either an assertion of a precondition or carries a comment proving the case arises and is handled correctly.
+_Avoid_: bail-out, guard (for the statement itself)
+
+**Workaround (WAR)**:
+Code that handles a symptom at a consumer instead of fixing its producer, such as a null check for a shape that should never arise. Reviewers call it a WAR or band-aid; it needs a filed bug and a justifying comment to be accepted.

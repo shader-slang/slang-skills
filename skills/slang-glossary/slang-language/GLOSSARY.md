@@ -19,6 +19,10 @@ _Avoid_: specialization constant (that term names the Vulkan feature)
 A value the toolchain fixes before the program runs: a compile-time constant, a link-time constant, or a codegen constant. The specification prefers this term over the looser "compile-time constant".
 _Avoid_: compile-time constant (for the whole class)
 
+**Language version**:
+The Slang language revision a module is compiled under, such as 2025 or 202c, selected by a `#language slang <year>` declaration or a compiler option. Tests about version-dependent behavior pin it explicitly; warnings may become errors in a later version.
+_Avoid_: module version, dialect (for the version)
+
 ## Entry points and execution
 
 **Entry point**:
@@ -39,8 +43,13 @@ _Avoid_: kernel parameter, launch parameter
 The `: NAME` suffix on a varying entry-point parameter or result that connects it to the system or an adjacent stage, such as `SV_DispatchThreadID`.
 _Avoid_: semantic (bare)
 
-**Parameter direction**:
+**Parameter-passing mode**:
 The `in`, `out`, or `inout` qualifier on a function parameter. The specification defines copy-in, copy-out, and copy-in-copy-out semantics; `__ref` and `__constref` are compiler spellings without a specification entry.
+_Avoid_: parameter direction, passing convention
+
+**Readonly ref access**:
+The `readonly` qualifier on a `ref` parameter, giving the callee read-only access to the caller's storage; `writeonly` is its counterpart. `const` in that position is a legacy alias and wrongly suggests the data itself is constant.
+_Avoid_: const (as the ref access qualifier)
 
 **Thread**:
 A sequential stream of executed instructions that starts at an entry-point invocation. The specification distinguishes the invocation, one unit of work, from the thread that executes it.
@@ -101,8 +110,20 @@ _Avoid_: template
 A declaration that adds members or conformances to an existing type without changing its layout.
 
 **Existential box**:
-A value of an interface used as a proper type, written `dyn IFoo` in language version 202c. It packs a concrete value with its conformance, so calls through it dispatch dynamically. The interface itself is the contract, not a type of values.
+A value of an interface used as a proper type, written `dyn IFoo` in language version 202c; the interface itself is only the contract. It packs a concrete value with its conformance, so calls through it dispatch dynamically.
 _Avoid_: interface-typed value, interface variant (the specification's experimental term), existential value
+
+## Expressions, statements, and errors
+
+**Operator**:
+A prefix, postfix, or infix operator that can appear in an operator expression, such as `+`, `!`, or `++`. Names written with `operator` syntax that cannot appear there, such as `operator=`, are not operators.
+
+**Tuple construction**:
+The expression `(a, b)` that builds a tuple from comma-separated values, the meaning a parenthesized comma list has in Slang 2026 and later. The language reference notes this beside the earlier reading of the same spelling.
+
+**Error**:
+A value of an error type that a function declared `throws` raises with `throw`, and a caller handles with `try` and `catch`. Prose says error and raise; "exception" names a different mechanism Slang does not have.
+_Avoid_: exception, throw an exception (in prose)
 
 ## Automatic differentiation
 

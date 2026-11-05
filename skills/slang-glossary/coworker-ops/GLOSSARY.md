@@ -40,14 +40,10 @@ A PreToolUse or Stop hook that refuses an action until a condition holds and nam
 **Critique gate**:
 The gate that refuses delivery markers such as `[Fix Report]` and `gh pr create` until every required `/codex-critique` stage is recorded with verdict approve.
 
-**Buddy**:
-The independent codex reviewer the `buddy-monitor` overlay enables: a PostToolUse hook watches the session and prepends concerns as `<buddy-note>` on the next turn. It runs entirely in the hook chain; the agent never invokes it and must answer every note.
-_Avoid_: companion monitor
-
 ## Sessions and chains
 
 **Agent group**:
-The NanoClaw entity behind a coworker: a folder, `CLAUDE.md`, skills, container config, and database rows. "Group" alone means an agent group unless a messaging group is named.
+The NanoClaw entity behind a coworker: a folder with `CLAUDE.md`, skills, container config, and database rows. "Group" alone means an agent group unless a messaging group is named.
 
 **Thread**:
 The shared topic key, `gh-issue-<owner>/<repo>-<num>` for GitHub work, carried by every coworker's session on that topic. A session is one coworker's private memory for a thread, not the conversation.
@@ -66,7 +62,7 @@ The note a coworker or the host posts on an issue to announce that it will not t
 An open, human-filed issue older than the stand-down window on which the bot has neither acted nor posted a stand-down note. It is a compliance failure.
 
 **Opt-out label**:
-One of `GoodFirstBug`, `HelpWanted`, or `no-bot` on an issue. It stops every bot session on that issue and blocks the bot's GitHub writes to it. The host adds `no-bot` when the author or a collaborator tells the bot to stop.
+One of `GoodFirstBug`, `HelpWanted`, or `no-bot` on an issue; it stops every bot session there and blocks the bot's GitHub writes to it. The host adds `no-bot` when the author or a collaborator tells the bot to stop.
 _Avoid_: newcomer label, bot-ok
 
 ## Evaluation
@@ -115,7 +111,7 @@ _Avoid_: budget (for the cap mechanism; a budget is an eval job's `--budget-usd`
 Two meanings: a customized NanoClaw install defined by its skills recipe, and the `slang-coworkers/slang-eval` repository that eval copies push to. Say "eval fork" for the second.
 
 **Deploy**:
-Running `deploy/prod-deploy.sh` on a coworker box: merge the pending `nv-*` commits, retag the agent image, and restart the host so new containers run the new build. A deploy waits for idle groups and is logged under `deploy/logs/`.
+Running `deploy/prod-deploy.sh` on a coworker box: merge the pending `nv-*` commits, retag the agent image, and restart the host for the new build. A deploy waits for idle groups and is logged under `deploy/logs/`.
 _Avoid_: release (for a coworker box update), upgrade (bare)
 
 ## Shared knowledge and credentials
