@@ -433,3 +433,7 @@ tmp/<bug-id>/
 tests/                     # Regression test (committed)
 └── <appropriate-dir>/regression-test.slang
 ```
+
+## Terminology
+
+Use the shared glossary in `skills/slang-glossary/` (start at `GLOSSARY-MAP.md`). Write the canonical term in prose and put a code identifier in backticks only when the identifier itself is meant. Never write a spelling the glossary lists under _Avoid_; the STE checker reports the unconditional ones. When a concept has no entry yet, use the word the surrounding code and docs use and say so in the PR text.
