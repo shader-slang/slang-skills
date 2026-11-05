@@ -254,7 +254,8 @@ You are running in an isolated git worktree with your own branch.
 
 ## Instructions
 
-1. Implement the fix — minimal diff, follow existing patterns, comments only for non-obvious logic
+1. Implement the fix — minimal diff, follow existing patterns, comments only for non-obvious logic;
+   never an issue number, a date, or history in a source comment (those go in the commit message and the PR)
 2. Write a regression test in tests/bugs/ or tests/diagnostics/ or tests/language-feature/
 3. Build: use build reference above
 4. Validate: run regression test + original reproducer. Do NOT run full test suite — the orchestrator runs it on the winning strategy only
