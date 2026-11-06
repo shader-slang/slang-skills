@@ -67,7 +67,7 @@ version.
 | `slang-investigate` | Root cause investigation: classify, trace, design context | slang-build, slang-run-tests |
 | `slang-create-issue` | Issue/PR templates, commit rules | *(standalone)* |
 | `slang-ste-writing` | Simple Technical English rules (an ASD-STE100 subset) for PR text, issues, comments, posts and docs; `scripts/ste_check.py` reports findings | *(standalone)* |
-| `slang-pr-create` | PR creation workflow for Slang repositories: origin-default target resolution, dirty-worktree check, default branch detection, gh command | *(standalone)* |
+| `slang-pr-create` | PR creation workflow for Slang repositories: upstream-default target resolution (parent of the origin fork), dirty-worktree check, default branch detection, short PR description plus detailed PR comment, gh command | *(standalone)* |
 | `slang-fix-bug` | Bug fix workflow: intake, investigation, parallel fix exploration | slang-investigate, slang-build, slang-run-tests, slang-write-test |
 | `slang-review-pr` | PR review: evaluate approach, address feedback, manage threads | slang-build |
 | `slang-analyze-coverage` | Coverage analysis: gap identification, test value scoring | slang-write-test |
