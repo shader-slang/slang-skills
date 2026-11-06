@@ -48,13 +48,12 @@ GitHub can use the PR description as the commit message when the PR is merged,
 and a long description makes `git log` hard to read. So the description is split
 in two parts:
 
-1. **Short PR description** (the PR body). It is the text that can reach
-   `git log`. Keep it to at most **1,000 characters**. It has a summary, the
-   root cause, the issue references, and the LLM that made the PR.
-2. **Detailed description** (a PR comment). It has the full explanation:
-   motivation, solution, change summary, glossary, and process report. Post it
+1. **Short PR description** (the PR body). It can reach `git log`, so write it
+   as plain text, not Markdown. Keep it to at most **1,000 characters**.
+
+2. **Detailed description** (a PR comment). It has the full explanation. Post it
    directly after the PR is created. A comment is not part of the merge commit
-   message. A reader can still find it on the GitHub PR page.
+   message, but readers can still find it on the PR page.
 
 ### Writing style
 
@@ -545,39 +544,50 @@ fi
 
 ### Short PR description
 
-Prepare the short PR body in `$BODY_FILE`. The whole file must be at most
-**1,000 characters**.
+Prepare the short PR body in `$BODY_FILE`. It is **plain text, not Markdown**.
+GitHub can use it as the merge commit message, and people read it in `git log`
+in a terminal. The whole file must be at most **1,000 characters**.
 
 Use this structure. Replace placeholder guidance with real content. Do not leave
-empty headings or `[[...]]` placeholder text in the final text.
+empty labels or `[[...]]` placeholder text in the final text.
 
-```markdown
-[[One line per issue reference. `Fixes #123` for each fixed issue and
-`Related to #456` for each related issue (`owner/repo#123` for another
+```text
+[[One line per issue reference: "Fixes #123" for each fixed issue and
+"Related to #456" for each related issue ("owner/repo#123" for another
 repository). Omit these lines when no issue reference is known.]]
 
-## Summary
+Summary: [[One to three sentences: what the PR changes.]]
 
-[[One to three sentences: what the PR changes.]]
+Root cause: [[One to three sentences: why the problem happens. For a feature or
+refactor with no defect, use the label "Motivation:" and state the reason for
+the change.]]
 
-## Root cause
-
-[[One to three sentences: why the problem happens. For a feature or refactor with
-no defect, use the heading `## Motivation` and state the reason for the change.]]
-
----
 Generated with [[the LLM that created the PR, with the tool name, for example
-`Claude Sonnet 5.5 (Claude Code)`]].
+Claude Sonnet 5.5 (Claude Code)]]
 ```
 
-Rules for the short description:
+Plain-text rules:
 
-- Plain prose only. Do not put code traces, `file.cpp:line` references, a
-  glossary, test logs, or a `## Test Plan` section in it. Those belong in the
-  detailed comment.
+- Do not use Markdown. Do not write headings (`#`), bold or italic marks,
+  backticks, code fences, tables, links in `[text](url)` form, or HTML.
+- Start each part with a plain label and a colon: "Summary:" and "Root cause:".
+- Put one blank line between the parts: the issue lines, the Summary, the Root
+  cause, and the "Generated with" line.
+- Wrap lines at 72 characters or fewer.
+- Write names and identifiers as plain words, without backticks.
+- If you need a list, write one item per line with a number and a period
+  ("1. ..."). Do not use `-` or `*` bullets.
+- A closing keyword line such as "Fixes #123" is plain text that GitHub reads.
+  It is not Markdown.
+
+Content rules:
+
+- Do not put code traces, `file.cpp:line` references, a glossary, test logs, or
+  a test plan in it. Those belong in the detailed comment.
 - Name the LLM that you (the agent) actually used. If the agent environment
-  gives an attribution line for PR descriptions, use that line.
-- Use at most one `Fixes` or `Related to` line per issue. Do not duplicate or
+  gives an attribution line for PR descriptions, use that line, but write it as
+  plain text (for example, write the tool name and not a Markdown link).
+- Use at most one "Fixes" or "Related to" line per issue. Do not duplicate or
   invent issue references, and do not leave placeholder text. If no issue
   reference is known, omit these lines.
 - Use the target repository's local issue number form (`#123`) for issues in
@@ -585,17 +595,17 @@ Rules for the short description:
 - Keep the PR title short (about 72 characters or fewer, in the imperative
   mood). The title is the subject line of the merge commit.
 
-If the PR is intentionally backward-compatibility breaking, keep a short
-`## Breaking change` section in the short description (it is part of the
+If the PR is intentionally backward-compatibility breaking, add a short
+"Breaking change:" part after the Root cause part (it is part of the
 1,000-character limit):
 
-```markdown
-## Breaking change
+```text
+Breaking change:
 1. Existing systems and shaders may ...
 2. Work around or resolve this by ...
 ```
 
-The `## Breaking change` section is required when the PR is intentionally
+The "Breaking change:" part is required when the PR is intentionally
 backward-compatibility breaking or has the `pr: breaking` label. It must explain
 both the problems the PR may cause for existing systems and shaders, and how
 users can work around or properly resolve those problems.
@@ -703,9 +713,9 @@ NON_BREAKING_CHANGE=false
 COMPAT_LABEL=""
 if [ "$BREAKING_CHANGE" = true ]; then
   COMPAT_LABEL="pr: breaking"
-  BREAKING_HEADING_REGEX='^##[[:space:]]+Breaking change([[:space:]:]|$)'
+  BREAKING_HEADING_REGEX='^Breaking change:'
   if ! grep -Eq "$BREAKING_HEADING_REGEX" "$BODY_FILE"; then
-    echo "Breaking PRs must include a '## Breaking change' section in the short PR description."
+    echo "Breaking PRs must include a 'Breaking change:' part in the short PR description."
     exit 1
   fi
 elif [ "$NON_BREAKING_CHANGE" = true ]; then
@@ -819,9 +829,9 @@ if ($breakingChange) {
 } elseif ($nonBreakingChange) {
   $compatLabel = "pr: non-breaking"
 }
-$hasBreakingChangeSection = Select-String -LiteralPath $bodyFile -SimpleMatch "## Breaking change" -Quiet
+$hasBreakingChangeSection = Select-String -LiteralPath $bodyFile -Pattern '^Breaking change:' -Quiet
 if ($breakingChange -and -not $hasBreakingChangeSection) {
-  throw "Breaking PRs must include a '## Breaking change' section in the short PR description."
+  throw "Breaking PRs must include a 'Breaking change:' part in the short PR description."
 }
 $labelArgs = @()
 $labelNames = @(& $GH label list `
