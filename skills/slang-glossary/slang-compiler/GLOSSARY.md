@@ -27,9 +27,16 @@ _Avoid_: instantiation, monomorphization (as the pass name)
 **Type legalization**:
 The IR pass that splits an aggregate type mixing ordinary data and resources into separate declarations, so that targets with strict rules accept the program.
 
+**Front end**:
+The half of the compiler through lower-to-IR: parsing, semantic checking, and lowering. It owns validity and policy; a diagnostic or a mode decision is made here, once.
+
+**Back end**:
+The half of the compiler after lower-to-IR: the IR passes, linking, legalization, and the emitters. It reads only the IR and never consults front-end options or the AST.
+_Avoid_: backend (for the target or for the emitter alone), back-end
+
 **Emitter**:
 The per-target code in `slang-emit-*.cpp` that turns legalized IR into HLSL, GLSL, SPIR-V, Metal, WGSL, CUDA, or C++ output.
-_Avoid_: backend (when the emitter code is meant), back-end
+_Avoid_: backend (when the emitter alone is meant)
 
 **Target**:
 One desired output of a compile request: a code format plus a profile, capability set, and options. The API spells it `TargetDesc`; internally it is `TargetRequest`.
@@ -72,6 +79,13 @@ _Avoid_: error message (when a warning or note may be meant)
 The failure raised when a shape an earlier phase should have removed or guaranteed reaches a later phase, such as an unlowered type at emit. It is asserted, not handled: the producing phase is fixed and the consumer never patches the shape.
 _Avoid_: fallback, defensive handling (for an out-of-contract shape)
 
+**Effective source language**:
+The one language whose scope, parser mode, and semantic rules apply to a translation unit, chosen once before parsing. Its provenance, an option, file extension, or `#language` directive, supports diagnostics only.
+_Avoid_: allow GLSL (the dialect is selected, not allowed)
+
+**Experimental module**:
+A standard module under `experimental/`, imported explicitly as `import experimental.<name>`, whose contents may change or disappear without a deprecation period.
+
 ## Front-end representation
 
 **Decl-ref**:
@@ -90,7 +104,7 @@ The compiler's representation of a value whose static type is an interface contr
 _Avoid_: existential (bare, when the box type is meant), interface-typed value (in compiler prose)
 
 **Parameter-passing mode**:
-The `ParamPassingMode` a parameter is passed with: `in`, `out`, `inout`, borrow-in, or ref. The effective mode is computed once in the front end and read as-is by lowering.
+The `ParamPassingMode` a parameter is passed with: `in`, `out`, `inout`, borrow-in, or ref. The compiler treats `inout` as an exclusive mutable borrow and borrow-in as an immutable borrow; the front end computes the mode once.
 _Avoid_: parameter direction, passing convention
 
 **Borrow-in parameter**:
@@ -108,6 +122,45 @@ _Avoid_: check (as a noun for the result)
 **Subject (of a modifier)**:
 The declaration or syntax node a modifier applies to. "Target" is reserved for a compilation target.
 _Avoid_: target (for the modified construct)
+
+**Witness**:
+The value that proves a conformance, coercion, or type equality; the solver finds or infers it, and source code never spells one. A routine that finds a witness returns the witness, not a Boolean.
+_Avoid_: proved (for solving a witness)
+
+**Refinement**:
+The relation between two interfaces when one inherits the other's requirements, proved by a refinement witness. It is neither a proper type's conformance nor a subtype relation.
+_Avoid_: conformance (for interface-to-interface), subtype witness (for a refinement)
+
+**Facet**:
+One entry in a type's flattened inheritance information, used for member lookup. When the looked-up subject and the entry both have types, the facet carries the proof relating them.
+
+**Lookup breadcrumb**:
+An implicit step that expression construction inserts to reach a member found by lookup. Examples: `ThisExpr` for an implicit `this` or `ThisType` for the enclosing type.
+
+**Shadow variable**:
+The compiler-created declaration that lookup finds under a uniform parameter's original name when `-Gec` compatibility is on. It is an immutable alias or, when the parameter is written, mutable storage.
+_Avoid_: compatibility variable, source global
+
+**Abstract storage**:
+A property or user-defined subscript whose value comes from `get`, `set`, or `ref` accessors rather than an address. An abstract storage location is the general notion; a memory location is the addressable case.
+_Avoid_: location (bare)
+
+**Default-value expression**:
+The expression a generic or function parameter declares as its default argument value. It is evaluated or reduced once its dependencies resolve; it does not run.
+_Avoid_: default expression, real default
+
+**Candidate frontier**:
+The overload candidates still tied after ordinary ranking, `OverloadResolveContext::bestCandidates`. Compatibility policy applies to the frontier last, so it never pre-empts later ranking rules.
+
+**Sub and sup type**:
+The two sides of a type constraint `sub : sup`: the constrained type and the interface or type it must satisfy.
+_Avoid_: endpoint
+
+**Publication**:
+The point at which a synthesized declaration is committed as a witness or ordinary member; speculative candidates are never published. Its root is the outermost declaration that owns the synthesized graph.
+
+**Unit type**:
+Compiler prose for the canonical type with exactly one value, which Slang source spells `void`.
 
 ## IR
 
@@ -132,6 +185,20 @@ _Avoid_: join point, merge point
 Reading one element of an array by position: code indexes into, subscripts, or gets an element from an array. `select` is the IR instruction that chooses between two values by a condition, never array access.
 _Avoid_: select from an array, array selection
 
+**Dedicated opcode**:
+An IR instruction kind, `kIROp_...`, introduced for each concept a later pass must recognize, such as `CoopMatMulAdd` or `ImageLoad`. Passes never recover a concept from names, decorations, or emitted text.
+
+**Peephole pass**:
+The `PeepholeOptimize` pass: a pure local simplifier that emits no diagnostics. Round-trip casts fold to their inner operand there, and backward peepholes belong there rather than in bespoke passes.
+
+**Pointee type**:
+The type a pointer type points to.
+_Avoid_: target type (of a pointer)
+
+**Immutable location**:
+A memory location that is read-only and exclusive, so optimizations may reorder or merge its loads. Read-only alone grants a permission and promises nothing about other writers.
+_Avoid_: immutable (when only read-only is meant)
+
 ## API objects and layout
 
 **Session**:
@@ -143,6 +210,10 @@ A unit of composition, `IComponentType`: a module, an entry point, a type confor
 
 **Type layout**:
 The target-dependent description of how much of each layout unit a type consumes and where its fields and elements sit.
+
+**Natural layout**:
+Slang's platform-neutral default layout for a type. It gives each field its byte offset and the type its size and alignment, before any target layout applies.
+_Avoid_: C layout (for the default), compatible layout (for the default)
 
 **Layout unit**:
 One kind of resource a parameter can consume, such as bytes, `t` registers, or descriptor-table slots. The API enum is `ParameterCategory`.
@@ -159,6 +230,14 @@ The per-target step that assigns registers, bindings, and byte offsets to every 
 The offset of a nested field or element relative to the start of its enclosing container, summed along the access path through reflection. Every offset is relative to something; an offset inside a constant buffer is cumulative, not absolute.
 _Avoid_: absolute offset, reflection offset
 
+**Post-emit metadata**:
+The `IArtifactPostEmitMetadata` record of facts about emitted code, such as the bindings a kernel uses, that an application queries through a dedicated API. The compiler never reports such facts by writing files.
+_Avoid_: side-band file (for reporting)
+
+**Descriptor kind**:
+The kind of binding a parameter occupies on a target, named after the Vulkan descriptor type: `SampledImage`, `StorageBuffer`, `UniformTexelBuffer`, `ConstantBuffer`.
+_Avoid_: Texture_Read, Buffer_ReadWrite
+
 ## Codebase and review vocabulary
 
 **Documentation comment**:
@@ -173,3 +252,9 @@ _Avoid_: bail-out, guard (for the statement itself)
 
 **Workaround (WAR)**:
 Code that handles a symptom at a consumer instead of fixing its producer, such as a null check for a shape that should never arise. Reviewers call it a WAR or band-aid; it needs a filed bug and a justifying comment to be accepted.
+
+**Predicate**:
+A named Boolean helper that states exactly the condition it tests. Any condition with three or more `&&` or `||` operators becomes one, as a form of documentation.
+
+**Bottleneck**:
+The single routine through which every instance of a check or policy flows. A predicate written twice or a copy-pasted sequence is refactored into one bottleneck.
