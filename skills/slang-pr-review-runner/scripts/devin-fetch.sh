@@ -120,10 +120,21 @@ DONE_EXPR='(() => {
   // fresh load of the same page showed "0 Vulnerabilities / 0 Bugs / 1 Flag").
   // Click the button once -- the marker lives on window, so it persists across
   // polls of the same page -- and read the page again on the next poll.
+  // After a push, Devin keeps the earlier analysis on screen and adds a
+  // "New analysis N" header button that opens the newer one. Open it once per
+  // page load, like "View results" below, so the poll waits on the analysis of
+  // the newest commit and not on the earlier one.
+  const newBtn = Array.from(document.querySelectorAll("button, a")).find((b) => /^\s*New analysis\s*\d*\s*$/i.test(b.textContent || ""));
+  if (newBtn && !window.__devinFetchNewClicked) { window.__devinFetchNewClicked = true; newBtn.click(); return false; }
   const viewBtn = Array.from(document.querySelectorAll("button, a")).find((b) => /^\s*View results\s*$/i.test(b.textContent || ""));
   if (viewBtn && !window.__devinFetchViewClicked) { window.__devinFetchViewClicked = true; viewBtn.click(); return false; }
   const counts = /\b\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))\b/i.test(t) || /\bNo (bugs|flags|vulnerabilities)\b/i.test(t);
-  const checks = /All checks passed/i.test(t) || /checks? failed/i.test(t) || /Checks\s*\d+\s*\/\s*\d+/i.test(t);
+  // A checks rail counts only when it is settled (passed equals total). A
+  // partial rail such as "Checks 12/22" means CI is still running, which says
+  // nothing about the verdict: the findings can still sit behind "View
+  // results", and accepting the partial rail gave exit-0 false cleans.
+  const rail = t.match(/Checks\s*(\d+)\s*\/\s*(\d+)/i);
+  const checks = /All checks passed/i.test(t) || /checks? failed/i.test(t) || (!!rail && rail[1] === rail[2]);
   const summary = counts || checks || /Analysis complete/i.test(t);
   const done = heading && summary;
   // "PR analysis in progress" can LINGER transiently on a page that is otherwise
@@ -166,6 +177,9 @@ if [ "$stable" -lt 2 ]; then
   exit 3
 fi
 
+# Opens the newest analysis when Devin offers one (see DONE_EXPR); prints "clicked" or "none".
+NEWEST_EXPR='(() => { const b = Array.from(document.querySelectorAll("button, a")).find((e) => /^\s*New analysis\s*\d*\s*$/i.test(e.textContent || "")); if (!b) return "none"; b.click(); return "clicked"; })()'
+
 # The transition card can leave the per-category counts unrendered even once
 # the done-check has passed on "Analysis complete". The expansion step below
 # clicks the "N Bugs" / "N Flags" / "N Vulnerabilities" toggles, so the page has
@@ -175,33 +189,9 @@ if agent-browser eval '(() => { const t = document.body.innerText; return /Analy
   echo ">>> devin-fetch: analysis finished while the page was open; reloading so the counts render" >&2
   agent-browser reload >/dev/null 2>&1 || open_page "$URL"
   sleep 8
+  # A reload shows the earlier analysis again when a newer one exists.
+  if agent-browser eval "$NEWEST_EXPR" 2>/dev/null | grep -q clicked; then sleep 8; fi
 fi
-
-# Capture commit-status freshness BEFORE expanding panels (clicking other
-# buttons can dismiss this popover). The header has a button labeled
-# "Commit status"; clicking it opens a popover whose first line is one of
-# "Analysis is up to date", "Analysis is out of date", "Analysis is
-# behind" — followed by the commit list. We capture the first line into
-# devin-commit-status.txt so the reviewer can caveat against force-push.
-agent-browser eval '(() => {
-  const btn = document.querySelector("button[aria-label=\"Commit status\"]");
-  if (!btn) return "no-button";
-  btn.click();
-  return "clicked";
-})()' >/dev/null 2>&1 || true
-sleep 1
-agent-browser eval '(() => {
-  const popups = Array.from(document.querySelectorAll("[data-state=open], [role=tooltip], [role=dialog], [class*=popover]"));
-  for (const el of popups) {
-    const txt = (el.textContent || "").trim();
-    const m = txt.match(/^Analysis is (up to date|out of date|behind|stale|ahead)/i);
-    if (m) return m[0];
-  }
-  return "unknown";
-})()' 2>/dev/null > "$OUT/devin-commit-status.txt" || true
-# Close the popover by pressing Escape so the next click lands on Bugs/Flags.
-agent-browser press Escape >/dev/null 2>&1 || true
-sleep 1
 
 # Expand the Bugs, Flags, and Informational panels. The 2026 UI splits Bugs and
 # Flags into two adjacent summary buttons ("N Bugs", "N Flags") instead of a
@@ -212,12 +202,17 @@ sleep 1
 # also accept the legacy combined "<N> Flags / 1 Flag / No flags" form.
 # SAFETY: never click a "Post to GitHub" (it posts a finding to the PR!) or
 # "Copy" button — those are siblings of each finding row.
-agent-browser eval '(() => {
+EXPAND_EXPR='(() => {
   const btns = Array.from(document.querySelectorAll("button"));
   let n = 0;
   // Bugs/Flags summary toggles (2026 split + legacy combined form), plus the
   // "N Vulnerabilities" toggle the 2026-10 UI added as a fourth category.
+  // The count buttons are accordion headers that toggle, and Devin opens some
+  // of them by default (a one-bug Bugs list, for example), so a blind click
+  // closes a list that is already open and its findings drop out of the page
+  // text. Click only the headers that report themselves closed.
   btns.filter((b) => /^(\d+\s+(Bugs?|Flags?|Vulnerabilit(y|ies))|No (bugs|flags|vulnerabilities))$/i.test((b.textContent || "").trim()))
+      .filter((b) => b.getAttribute("aria-expanded") !== "true")
       .forEach((b) => { b.click(); n++; });
   // The narrative under the analysis heading is truncated behind a "Read more"
   // toggle (the PR description has one too); expand them so the extractor sees
@@ -231,7 +226,8 @@ agent-browser eval '(() => {
     return /Informational/i.test(t);
   }).forEach((b) => { b.click(); n++; });
   return n;
-})()' >/dev/null 2>&1 || true
+})()'
+agent-browser eval "$EXPAND_EXPR" >/dev/null 2>&1 || true
 sleep 2
 
 # Harvest the Informational findings straight from their button DOM nodes. Even
@@ -266,6 +262,34 @@ agent-browser eval 'document.body.innerText' 2>/dev/null \
   | python3 -c "import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw) if raw.startswith('\"') else raw)" \
   > "$OUT/devin-page.txt"
 agent-browser screenshot "$OUT/devin-screenshot.png" 2>/dev/null || true
+
+# Record which commit the analysis covers. The Commits tab lists the PR commits
+# newest first and marks the analysed commit "Current"; when that is not the
+# newest commit, the findings describe an earlier head and the review has to
+# say so. The tab replaces the main panel, so this step runs after the page
+# text above is saved. devin-commit-status.txt gets one line: "Analysis is up
+# to date (<sha>)", "Analysis is behind the head commit (analysed <sha>, head
+# <sha>)", or "unknown" when the tab or the marker is missing.
+COMMITS_TAB_EXPR='(() => { const tab = Array.from(document.querySelectorAll("button, [role=tab], a")).find((b) => /^\s*Commits\s*\d*\s*$/.test(b.textContent || "")); if (!tab) return "none"; tab.click(); return "clicked"; })()'
+FRESHNESS_EXPR='(() => {
+  const t = document.body.innerText;
+  const m = t.match(/\nCommits\s*\n\s*\d+\s*\n/);
+  if (!m) return "unknown";
+  const shas = [];
+  let current = "";
+  let seenCurrent = false;
+  for (const line of t.slice(m.index + m[0].length).split("\n").map((l) => l.trim())) {
+    if (/^Current$/i.test(line)) seenCurrent = true;
+    else if (/^[0-9a-f]{7,40}$/.test(line)) { shas.push(line); if (seenCurrent && !current) current = line; }
+  }
+  if (!current) return "unknown";
+  if (current === shas[0]) return "Analysis is up to date (" + current + ")";
+  return "Analysis is behind the head commit (analysed " + current + ", head " + shas[0] + ")";
+})()'
+if agent-browser eval "$COMMITS_TAB_EXPR" 2>/dev/null | grep -q clicked; then sleep 3; fi
+agent-browser eval "$FRESHNESS_EXPR" 2>/dev/null \
+  | python3 -c "import json,sys; raw=sys.stdin.read().strip(); print(json.loads(raw) if raw.startswith('\"') else (raw or 'unknown'))" \
+  > "$OUT/devin-commit-status.txt" || echo unknown > "$OUT/devin-commit-status.txt"
 
 # Build a clean markdown extract: commit-status freshness + analysis narrative + bugs + flags.
 # Splits the page text on the section headers Devin renders. The legacy
