@@ -66,6 +66,11 @@ git init -q "$T/slang"
 )
 printf -- '--- a/file.txt\n+++ b/file.txt\n@@ -1 +1,2 @@\n one\n+two\n' > "$T/change.patch"
 
+# The image installs OpenCode's plugin package in ~/.config/opencode.
+mkdir -p "$T/home/.config/opencode/node_modules/@opencode-ai/plugin"
+printf '{}\n' > "$T/home/.config/opencode/package.json"
+printf '{}\n' > "$T/home/.config/opencode/package-lock.json"
+
 cat > "$STUB/gh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -86,6 +91,7 @@ printf '%s\n' "$@" > "$STUB_LOG/opencode.args"
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$STUB_LOG/opencode.config.json"
 {
   echo "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
+  [ -d "$XDG_CONFIG_HOME/opencode/node_modules/@opencode-ai/plugin" ] && echo "SEEDED=yes"
   echo "XDG_DATA_HOME=$XDG_DATA_HOME"
   echo "OPENCODE_DISABLE_PROJECT_CONFIG=${OPENCODE_DISABLE_PROJECT_CONFIG:-}"
   echo "OPENCODE_DISABLE_EXTERNAL_SKILLS=${OPENCODE_DISABLE_EXTERNAL_SKILLS:-}"
@@ -172,7 +178,10 @@ check "reviewer keeps its tool list" cfg open "c['agent']['code-quality-reviewer
 check "instructions: CLAUDE.md and its imports" cfg open "[p.split('/')[-1] for p in c['instructions'][:3]] == ['CLAUDE.md', 'copilot-instructions.md', 'AGENTS.md']"
 check "instructions: system-prompt append and engine notes" cfg open "[p.split('/')[-1] for p in c['instructions'][3:]] == ['system-prompt-append.txt', 'opencode-engine-notes.md']"
 check "mcp: deepwiki as a remote server" cfg open "c['mcp']['deepwiki']['type'] == 'remote' and c['mcp']['deepwiki']['url'] == 'https://mcp.deepwiki.com/mcp'"
-check "private config directory" hasline "XDG_CONFIG_HOME=$O/run/opencode/config" "$O/opencode.env"
+OC_CONFIG_HOME="$(sed -n 's/^XDG_CONFIG_HOME=//p' "$O/opencode.env")"
+check "private config directory, not the user's" is "$(case "$OC_CONFIG_HOME" in "$T/home"*|"") echo bad ;; *) echo ok ;; esac)" ok
+check "config directory seeded with the plugin package" hasline SEEDED=yes "$O/opencode.env"
+check "config directory removed after the run" absent "$OC_CONFIG_HOME"
 check "private data directory" hasline "XDG_DATA_HOME=$O/run/opencode/data" "$O/opencode.env"
 check "project config off" hasline OPENCODE_DISABLE_PROJECT_CONFIG=true "$O/opencode.env"
 check "home-directory skills off" hasline OPENCODE_DISABLE_EXTERNAL_SKILLS=true "$O/opencode.env"
