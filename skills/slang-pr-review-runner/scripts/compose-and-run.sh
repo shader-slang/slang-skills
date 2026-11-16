@@ -4,7 +4,7 @@
 # accordingly, then delegates to repro.sh for the actual claude invocation.
 # In an open-weights group (NANOCLAW_MODEL_WEIGHTS=open, see review-engine.sh)
 # repro.sh runs the same prompt on OpenCode with the group's model instead, and
-# --model is refused because the group's model policy chooses the model.
+# --model may only name that model, because the group's model policy chooses it.
 #
 # Usage:
 #   compose-and-run.sh --mode pr     --pr <N>  --repo <owner/repo> [--max-budget-usd $]
@@ -91,8 +91,8 @@ esac
 # shellcheck source=scripts/review-engine.sh
 . "$HERE/review-engine.sh"
 require_review_engine install.sh
-if [ "$(review_engine)" = "opencode" ] && [ "$MODEL_GIVEN" -eq 1 ]; then
-  echo "error: --model is not accepted in an open-weights group; the review runs on the group's model (OPENCODE_MODEL=${OPENCODE_MODEL:-})." >&2
+if [ "$(review_engine)" = "opencode" ] && [ "$MODEL_GIVEN" -eq 1 ] && ! is_group_open_model "$MODEL"; then
+  echo "error: --model $MODEL is not the group's model; an open-weights review runs on OPENCODE_MODEL=${OPENCODE_MODEL:-}. Leave --model out." >&2
   exit 1
 fi
 command -v gh     >/dev/null || { echo "error: gh CLI missing." >&2; exit 1; }

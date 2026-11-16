@@ -194,10 +194,18 @@ check "detached run did not use claude" absent "$T/detached/claude.args"
 echo "open-weights group, refused inputs:"
 # shellcheck disable=SC2086
 run_case model-flag $OPEN_ENV -- --model opus
-check "--model is refused" rc_is model-flag 1
-check "--model: the error says why" has "not accepted in an open-weights group" "$T/model-flag/out.log"
-check "--model: claude did not run" absent "$T/model-flag/claude.args"
-check "--model: opencode did not run" absent "$T/model-flag/opencode.args"
+check "--model opus is refused" rc_is model-flag 1
+check "--model opus: the error says why" has "is not the group's model" "$T/model-flag/out.log"
+check "--model opus: claude did not run" absent "$T/model-flag/claude.args"
+check "--model opus: opencode did not run" absent "$T/model-flag/opencode.args"
+# shellcheck disable=SC2086
+run_case model-group $OPEN_ENV -- --model nvidia/zai-org/glm-5.3
+check "--model naming the group's model without its prefix is accepted" rc_is model-group 0
+check "--model group model: opencode runs on OPENCODE_MODEL" is "$(arg_after model-group --model)" openai/nvidia/zai-org/glm-5.3
+check "--model group model: claude did not run" absent "$T/model-group/claude.args"
+# shellcheck disable=SC2086
+run_case model-prefixed $OPEN_ENV -- --model openai/nvidia/zai-org/glm-5.3
+check "--model naming the group's model with its prefix is accepted" rc_is model-prefixed 0
 
 if [ -n "$(PATH=/usr/bin:/bin command -v opencode)" ]; then
   echo "  skip missing-opencode case: /usr/bin or /bin has an opencode"

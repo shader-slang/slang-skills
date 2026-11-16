@@ -25,6 +25,16 @@ review_engine() {
   fi
 }
 
+# Succeed when $1, a value given with --model, names the group's OpenCode model,
+# with or without OpenCode's provider prefix: for OPENCODE_MODEL=
+# openai/nvidia/zai-org/glm-5.3 both `openai/nvidia/zai-org/glm-5.3` and
+# `nvidia/zai-org/glm-5.3` match. An open-weights review always runs on the
+# group's model, so any other value is refused rather than silently replaced.
+is_group_open_model() {
+  [ -n "${OPENCODE_MODEL:-}" ] || return 1
+  [ "$1" = "$OPENCODE_MODEL" ] || [ "${OPENCODE_PROVIDER:-anthropic}/$1" = "$OPENCODE_MODEL" ]
+}
+
 # Exit with a message unless the CLI that `review_engine` chose is on PATH and,
 # for OpenCode, the group's model is known. $1 names the installer to suggest.
 require_review_engine() {
