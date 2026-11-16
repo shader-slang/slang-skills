@@ -11,11 +11,20 @@ export PATH="$PATH:$PREFIX/bin"
 
 echo ">>> install.sh — checking dependencies"
 
-# claude CLI — the inner reviewer runs the version the NanoClaw image pins and
-# tests, so we only install one when the environment has none (dev machines).
-# A floating `npm install` here previously made the inner CLI track npm's
-# latest release independently of the platform image.
-if command -v claude >/dev/null 2>&1; then
+# shellcheck source=scripts/review-engine.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/review-engine.sh"
+
+# The inner reviewer's CLI, as review-engine.sh chooses it. An open-weights
+# group runs on OpenCode, which the NanoClaw image ships, so nothing is
+# installed for it and the claude CLI is not needed. Otherwise the inner
+# reviewer runs the claude version the NanoClaw image pins and tests, so we only
+# install one when the environment has none (dev machines). A floating
+# `npm install` here previously made the inner CLI track npm's latest release
+# independently of the platform image.
+if [ "$(review_engine)" = "opencode" ]; then
+  require_review_engine install.sh
+  echo "    opencode:            $(opencode --version 2>&1 | head -1) ($(command -v opencode)), model ${OPENCODE_MODEL}"
+elif command -v claude >/dev/null 2>&1; then
   echo "    claude:              $(claude --version 2>&1 | head -1) ($(command -v claude))"
 else
   echo ">>> no claude CLI on PATH — installing @anthropic-ai/claude-code into $PREFIX"
