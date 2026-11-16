@@ -50,6 +50,9 @@ from pathlib import Path
 # reads or prints a real key.
 CREDENTIAL_PLACEHOLDER = "nc-opencode-token-v1"
 
+# OpenCode's own cap on one model response (OUTPUT_TOKEN_MAX in OpenCode 1.18).
+OUTPUT_TOKEN_MAX = 32_000
+
 # Per-request budget for MCP servers, the same value the NanoClaw OpenCode
 # runner uses: OpenCode 1.18 reads one `timeout` for connecting and for each
 # request, and deepwiki answers can take minutes.
@@ -300,6 +303,13 @@ def provider_config(env: dict) -> dict:
     OPENCODE_PROVIDER names the provider, OPENCODE_BASE_URL (else
     ANTHROPIC_BASE_URL, "native" for none) the endpoint, and the `openai`
     provider with a custom endpoint uses the Chat Completions transport.
+
+    On that transport each model also gets `max_completion_tokens` (the
+    OPENCODE_MODEL_OUTPUT_LIMIT setting, else OpenCode's own cap). OpenCode
+    sends only `max_tokens`, and the NVIDIA endpoint then ends every response
+    at 4096 tokens, reasoning included: a review's last step, which writes the
+    whole review, stopped with finish reason "length" and no text. With
+    `max_completion_tokens` set, the same request ran to 14,272 output tokens.
     """
     provider = env.get("OPENCODE_PROVIDER") or "anthropic"
     model = env.get("OPENCODE_MODEL") or ""
@@ -318,17 +328,20 @@ def provider_config(env: dict) -> dict:
 
     context = positive_int(env, "OPENCODE_MODEL_CONTEXT_LIMIT")
     output = positive_int(env, "OPENCODE_MODEL_OUTPUT_LIMIT")
+    chat_completions = provider == "openai" and bool(base_url)
     models: dict = {}
     for mid in (strip(model), strip(small)):
         entry: dict = {"id": mid, "name": mid, "tool_call": True}
         if mid == strip(model) and context:
             entry["limit"] = {"context": context, **({"output": output} if output else {})}
+        if chat_completions:
+            entry["options"] = {"max_completion_tokens": output or OUTPUT_TOKEN_MAX}
         models.setdefault(mid, entry)
     options: dict = {"apiKey": CREDENTIAL_PLACEHOLDER}
     if base_url:
         options["baseURL"] = base_url
     settings: dict = {"options": options, "models": models}
-    if provider == "openai" and base_url:
+    if chat_completions:
         settings["npm"] = "@ai-sdk/openai-compatible"
     return {"model": model, "small_model": small, "enabled_providers": [provider], "provider": {provider: settings}}
 
