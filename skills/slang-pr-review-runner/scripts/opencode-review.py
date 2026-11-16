@@ -25,10 +25,11 @@ edits only under tmp/), and runs the prompt on the group's model
 
 The inner run is isolated from the coworker's own OpenCode server, the way
 claude-md-excludes.sh isolates the Claude path from the coworker document: its
-own config, data and state directories under the run directory, no external
-plugins (the coworker's hook bridge), no skills or instructions from the home
-directory, and a config that replaces the OPENCODE_CONFIG_CONTENT the coworker's
-server passes to every command it runs.
+own config directory (temporary, removed when the run ends) and its own data
+and state directories under <run-dir>/opencode/, no external plugins (the
+coworker's hook bridge), no skills or instructions from the home directory, and
+a config that replaces the OPENCODE_CONFIG_CONTENT the coworker's server passes
+to every command it runs.
 
 Limits: --max-turns becomes the build agent's `steps`. --max-budget-usd has no
 OpenCode equivalent, so the caller only records it; the gateway's per-agent
@@ -40,8 +41,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # The non-secret API key the NanoClaw OpenCode runner configures
@@ -396,27 +399,50 @@ def build_config(args: argparse.Namespace, env: dict, extra_instructions: list[P
 # --- Running ----------------------------------------------------------------------
 
 
-def opencode_env(env: dict, run_dir: Path, config: dict) -> dict:
+def user_config_home(env: dict) -> Path:
+    """Return the XDG config directory of the user running the review."""
+    return Path(env.get("XDG_CONFIG_HOME") or Path(env.get("HOME") or Path.home()) / ".config")
+
+
+def seed_config_home(config_home: Path, env: dict) -> None:
+    """Copy the user's OpenCode plugin package into a new config directory.
+
+    OpenCode installs @opencode-ai/plugin into a config directory that lacks it
+    before it starts, about 40 requests to the npm registry and 64 MB on disk.
+    The NanoClaw image installs that package in ~/.config/opencode; with a copy
+    of package.json, package-lock.json and node_modules the install has nothing
+    to do (measured: no registry request). Without the package, OpenCode
+    installs it itself.
+    """
+    source = user_config_home(env) / "opencode"
+    target = config_home / "opencode"
+    target.mkdir(parents=True, exist_ok=True)
+    names = ("package.json", "package-lock.json", "node_modules")
+    if not all((source / name).exists() for name in names):
+        return
+    shutil.copy2(source / "package.json", target / "package.json")
+    shutil.copy2(source / "package-lock.json", target / "package-lock.json")
+    shutil.copytree(source / "node_modules", target / "node_modules", symlinks=True)
+
+
+def opencode_env(env: dict, run_dir: Path, config: dict, config_home: Path) -> dict:
     """Return the environment of the inner `opencode run`.
 
     The coworker's OpenCode server passes its own config (OPENCODE_CONFIG_CONTENT)
-    and data directory to every command it starts; the inner run replaces both
-    and keeps its config, sessions and logs under <run-dir>/opencode/. OpenCode
-    installs its plugin package into the new config directory on start (a few
-    seconds); with --pure it loads no plugin from it.
+    and data directory to every command it starts; the inner run replaces both.
+    Its config directory is `config_home`, a temporary directory, and its
+    sessions and logs go to <run-dir>/opencode/.
     """
     out = dict(env)
     for name in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"):
         out.pop(name, None)
-    home = Path(env.get("HOME") or Path.home())
-    old_config_home = Path(env.get("XDG_CONFIG_HOME") or home / ".config")
     # gh keeps reading its own settings when XDG_CONFIG_HOME moves.
-    if "GH_CONFIG_DIR" not in env and (old_config_home / "gh").is_dir():
-        out["GH_CONFIG_DIR"] = str(old_config_home / "gh")
+    if "GH_CONFIG_DIR" not in env and (user_config_home(env) / "gh").is_dir():
+        out["GH_CONFIG_DIR"] = str(user_config_home(env) / "gh")
     base = run_dir / "opencode"
     out.update(
         {
-            "XDG_CONFIG_HOME": str(base / "config"),
+            "XDG_CONFIG_HOME": str(config_home),
             "XDG_DATA_HOME": str(base / "data"),
             "XDG_STATE_HOME": str(base / "state"),
             "OPENCODE_CONFIG_CONTENT": json.dumps(config),
@@ -505,23 +531,28 @@ def main() -> int:
            "--model", config["model"], "--dir", args.repo_root, prompt]
     log(f"model={config['model']} steps={args.max_turns} config={run_dir / 'opencode-config.json'}")
     stream = run_dir / "stream.jsonl"
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        env=opencode_env(env, run_dir, config),
-        cwd=args.repo_root,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    with open(stream, "w", encoding="utf-8") as out:
-        for line in proc.stdout:
-            out.write(line)
-            out.flush()
-            sys.stdout.write(line)
-            sys.stdout.flush()
-    rc = proc.wait()
+    config_home = Path(tempfile.mkdtemp(prefix="slang-review-opencode-"))
+    try:
+        seed_config_home(config_home, env)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            env=opencode_env(env, run_dir, config, config_home),
+            cwd=args.repo_root,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        with open(stream, "w", encoding="utf-8") as out:
+            for line in proc.stdout:
+                out.write(line)
+                out.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        rc = proc.wait()
+    finally:
+        shutil.rmtree(config_home, ignore_errors=True)
     errors = extract(stream, run_dir, args.output)
     if rc == 0 and errors:
         rc = 1

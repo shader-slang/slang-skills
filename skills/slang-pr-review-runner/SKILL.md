@@ -87,7 +87,7 @@ How each Claude input maps:
 | `--append-system-prompt` | The same text as an instruction file, `<run-dir>/system-prompt-append.txt`. |
 | (none) | `<run-dir>/opencode-engine-notes.md`: one instruction file that names the OpenCode tool for each Claude tool the instructions mention (Agent → `task`). |
 | `--mcp-config` | `mcp`: http/sse servers become `remote`, stdio servers `local`. |
-| `--setting-sources project` | `--pure` (no plugins, so not the coworker's hook bridge), a private `XDG_CONFIG_HOME`/`XDG_DATA_HOME` under `<run-dir>/opencode/`, `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_EXTERNAL_SKILLS` with `skills.paths` set to the checkout's `.claude/skills`, and a config that replaces the coworker server's `OPENCODE_CONFIG_CONTENT`. |
+| `--setting-sources project` | `--pure` (no plugins, so not the coworker's hook bridge), a temporary `XDG_CONFIG_HOME` (seeded with a copy of the image's OpenCode plugin package, so OpenCode installs nothing, and removed after the run), a private `XDG_DATA_HOME` under `<run-dir>/opencode/`, `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_EXTERNAL_SKILLS` with `skills.paths` set to the checkout's `.claude/skills`, and a config that replaces the coworker server's `OPENCODE_CONFIG_CONTENT`. |
 | `--max-turns` | The build agent's `steps`. |
 | `--max-budget-usd` | No OpenCode equivalent. The value is logged; the gateway's per-agent budget bounds the spend. |
 | `stream.jsonl` (stream-json) | `stream.jsonl` holds OpenCode's JSON events (`text`, `tool_use`, `step_start`, `step_finish`, `error`); `summarize.py` reads both formats. OpenCode's own session store and logs are in `<run-dir>/opencode/data/`. |
