@@ -2,6 +2,10 @@
 # The actual `claude` CLI invocation. Mirrors production byte-for-byte for the chosen mode.
 # Called by compose-and-run.sh; not intended for direct use.
 #
+# In an open-weights group (scripts/review-engine.sh) the same prompt, system
+# append, tool allowlist and MCP config go to scripts/opencode-review.py, which
+# runs them on OpenCode with the group's model and writes the same outputs.
+#
 # Inputs (env vars set by compose-and-run.sh):
 #   MODE            pr | branch | patch
 #   REPO            <owner/repo>            (pr/branch only)
@@ -126,6 +130,28 @@ INNER_SETTINGS="${INNER_CLAUDE_SETTINGS:-$(bash "$HERE/claude-md-excludes.sh" "$
 # before the reviewers do. Production's action leaves this unset
 # (reference/instructions.md); the findings are unaffected, only the scheduling.
 export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+
+# --- Run OpenCode (open-weights groups) -------------------------------------
+# shellcheck source=scripts/review-engine.sh
+. "$HERE/review-engine.sh"
+if [ "$(review_engine)" = "opencode" ]; then
+  printf '%s\n' "$SYSTEM_APPEND" > "$RUN_DIR/system-prompt-append.txt"
+  echo ">>> repro.sh: engine=opencode pr=${PROMPT_PR} repo=${PROMPT_REPO} mode=${MODE}"
+  echo ">>> REPO_ROOT=$REPO_ROOT"
+  echo ">>> mcp-config=$MCP_CONFIG"
+  echo ">>> max-budget-usd=${MAX_BUDGET_USD:-30} has no OpenCode equivalent; the run is bounded by max-turns=${MAX_TURNS:-500}"
+  echo ">>> output → $RUN_DIR"
+  exec python3 "$HERE/opencode-review.py" \
+    --repo-root "$REPO_ROOT" \
+    --run-dir "$RUN_DIR" \
+    --prompt-file "$PROMPT_FILE" \
+    --allowed "$ALLOWED" \
+    --mcp-config "$MCP_CONFIG" \
+    --system-append-file "$RUN_DIR/system-prompt-append.txt" \
+    --max-turns "${MAX_TURNS:-500}" \
+    --output final-review.md \
+    --title "slang-pr-review ${MODE} ${PROMPT_PR}"
+fi
 
 # --- Run claude ------------------------------------------------------------
 

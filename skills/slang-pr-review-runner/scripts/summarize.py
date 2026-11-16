@@ -5,6 +5,9 @@ Reads stream.jsonl, final-review.md, and the preserved subagent outputs.
 Emits severity counts, per-subagent cost attribution, total cost, and a
 drift signal: any submitted review with state != COMMENT is drift.
 Reviews must always be event=COMMENT (mirrors production's policy).
+
+stream.jsonl holds Claude Code stream-json events, or OpenCode `run --format
+json` events when an open-weights group ran the review (review-engine.sh).
 """
 from __future__ import annotations
 
@@ -28,6 +31,23 @@ def load_stream(stream_path: Path) -> list[dict]:
         except Exception:
             continue
     return events
+
+
+def tool_uses(events: list[dict]):
+    """Yield (name, input) for every tool call in either stream format.
+
+    Claude Code: {"type": "assistant", "message": {"content": [{"type":
+    "tool_use", "name": "Bash", "input": {...}}]}}. OpenCode: {"type":
+    "tool_use", "part": {"tool": "bash", "state": {"input": {...}}}}.
+    """
+    for rec in events:
+        if rec.get("type") == "assistant":
+            for b in (rec.get("message") or {}).get("content", []):
+                if b.get("type") == "tool_use":
+                    yield b.get("name", "?"), b.get("input") or {}
+        elif rec.get("type") == "tool_use":
+            part = rec.get("part") or {}
+            yield part.get("tool", "?"), (part.get("state") or {}).get("input") or {}
 
 
 def severity_counts(text: str) -> dict[str, int]:
@@ -90,42 +110,35 @@ def main() -> int:
     # Tool-use breakdown
     name_counter: Counter[str] = Counter()
     write_attempts = 0
-    for rec in events:
-        if rec.get("type") != "assistant":
-            continue
-        for b in (rec.get("message") or {}).get("content", []):
-            if b.get("type") != "tool_use":
-                continue
-            name = b.get("name", "?")
-            name_counter[name] += 1
-            # Drift: any submitted review with state != COMMENT. Posts go
-            # via `gh api repos/.../pulls/N/reviews` (REST) or the MCP
-            # equivalent. The Bash tool_use carries the `command` arg
-            # which contains "-f event=APPROVE" / "REQUEST_CHANGES" /
-            # "CHANGES_REQUESTED" if the model picked the wrong state.
-            if name == "Bash":
-                cmd = (b.get("input") or {}).get("command", "")
-                if (
-                    "/reviews" in cmd
-                    and "-f event=" in cmd
-                    and "event=COMMENT" not in cmd
-                    and (
-                        "event=APPROVE" in cmd
-                        or "event=REQUEST_CHANGES" in cmd
-                        or "event=CHANGES_REQUESTED" in cmd
-                    )
-                ):
-                    write_attempts += 1
-            elif name in {
-                "mcp__github__submit_pending_pull_request_review",
-                "mcp__github__create_pull_request_review",
-            }:
-                # If the MCP variant ever resurfaces, treat any non-COMMENT
-                # event as drift. Conservative default: count the call;
-                # operators inspect stream.jsonl for the input.event field.
-                inp = b.get("input") or {}
-                if str(inp.get("event", "")).upper() not in {"COMMENT", ""}:
-                    write_attempts += 1
+    for name, inp in tool_uses(events):
+        name_counter[name] += 1
+        # Drift: any submitted review with state != COMMENT. Posts go
+        # via `gh api repos/.../pulls/N/reviews` (REST) or the MCP
+        # equivalent. The Bash tool_use carries the `command` arg
+        # which contains "-f event=APPROVE" / "REQUEST_CHANGES" /
+        # "CHANGES_REQUESTED" if the model picked the wrong state.
+        if name in ("Bash", "bash"):
+            cmd = inp.get("command", "")
+            if (
+                "/reviews" in cmd
+                and "-f event=" in cmd
+                and "event=COMMENT" not in cmd
+                and (
+                    "event=APPROVE" in cmd
+                    or "event=REQUEST_CHANGES" in cmd
+                    or "event=CHANGES_REQUESTED" in cmd
+                )
+            ):
+                write_attempts += 1
+        elif name in {
+            "mcp__github__submit_pending_pull_request_review",
+            "mcp__github__create_pull_request_review",
+        }:
+            # If the MCP variant ever resurfaces, treat any non-COMMENT
+            # event as drift. Conservative default: count the call;
+            # operators inspect stream.jsonl for the input.event field.
+            if str(inp.get("event", "")).upper() not in {"COMMENT", ""}:
+                write_attempts += 1
 
     print(f"Top tool calls:")
     for name, n in name_counter.most_common(12):
@@ -184,6 +197,15 @@ def main() -> int:
                 for model, u in mu.items():
                     print(f"  {model:<60s} ${u.get('costUSD', 0):.2f}")
             break
+
+    # OpenCode reports cost and tokens per step instead of in a final result.
+    steps = [(r.get("part") or {}) for r in events if r.get("type") == "step_finish"]
+    if steps:
+        tokens = [s.get("tokens") or {} for s in steps]
+        print(f"OpenCode steps: {len(steps)}")
+        print(f"Total cost:   ${sum(float(s.get('cost') or 0) for s in steps):.2f}")
+        print(f"Tokens:       input {sum(t.get('input') or 0 for t in tokens)}, "
+              f"output {sum(t.get('output') or 0 for t in tokens)}")
 
     return 0
 

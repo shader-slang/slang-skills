@@ -2,6 +2,9 @@
 # Top-level entry for the slang-pr-review skill.
 # Selects the input mode (pr/branch/patch), prepares the slang/ checkout
 # accordingly, then delegates to repro.sh for the actual claude invocation.
+# In an open-weights group (NANOCLAW_MODEL_WEIGHTS=open, see review-engine.sh)
+# repro.sh runs the same prompt on OpenCode with the group's model instead, and
+# --model is refused because the group's model policy chooses the model.
 #
 # Usage:
 #   compose-and-run.sh --mode pr     --pr <N>  --repo <owner/repo> [--max-budget-usd $]
@@ -32,6 +35,7 @@ REPO=""
 MAX_BUDGET_USD="${REPRO_PR_MAX_BUDGET_USD:-30}"
 MAX_TURNS="${REPRO_PR_MAX_TURNS:-500}"
 MODEL="${REPRO_PR_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus}}"
+MODEL_GIVEN=0
 DETACH=0
 # Every flag except --detach is kept so the detached re-exec sees the same
 # request this invocation validated.
@@ -40,7 +44,7 @@ RUN_ARGS=()
 while (($#)); do
   case "$1" in
     --detach) DETACH=1; shift; continue ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     --mode|--pr|--branch|--base|--patch|--repo|--max-budget-usd|--max-turns|--model)
       [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 1; }
       RUN_ARGS+=("$1" "$2") ;;
@@ -54,7 +58,7 @@ while (($#)); do
     --repo) REPO="$2"; shift 2 ;;
     --max-budget-usd) MAX_BUDGET_USD="$2"; shift 2 ;;
     --max-turns) MAX_TURNS="$2"; shift 2 ;;
-    --model) MODEL="$2"; shift 2 ;;
+    --model) MODEL="$2"; MODEL_GIVEN=1; shift 2 ;;
     *) echo "error: unknown flag $1" >&2; exit 1 ;;
   esac
 done
@@ -82,8 +86,15 @@ case "$MODE" in
     ;;
 esac
 
-# Tooling sanity
-command -v claude >/dev/null || { echo "error: claude CLI not in PATH. Run install.sh." >&2; exit 1; }
+# Tooling sanity. review-engine.sh chooses the inner CLI: OpenCode for an
+# open-weights group, claude otherwise.
+# shellcheck source=scripts/review-engine.sh
+. "$HERE/review-engine.sh"
+require_review_engine install.sh
+if [ "$(review_engine)" = "opencode" ] && [ "$MODEL_GIVEN" -eq 1 ]; then
+  echo "error: --model is not accepted in an open-weights group; the review runs on the group's model (OPENCODE_MODEL=${OPENCODE_MODEL:-})." >&2
+  exit 1
+fi
 command -v gh     >/dev/null || { echo "error: gh CLI missing." >&2; exit 1; }
 
 [ -f "$REPO_ROOT/REVIEW.md" ] \
@@ -218,10 +229,11 @@ fi
 # Zero-subagent guard: a review with no Task/Agent dispatch means no reviewers
 # ran — the fake-clean incident where a run with zero subagents produced a
 # 96-byte "review" and exited 0. Count dispatches in the script's own
-# tool-uses.jsonl (deterministic one-JSON-object-per-line artifact).
+# tool-uses.jsonl (deterministic one-JSON-object-per-line artifact). Claude
+# Code names the dispatch tool Task or Agent; OpenCode names it task.
 DISPATCHES=0
 [ -f "$RUN_DIR/tool-uses.jsonl" ] \
-  && DISPATCHES="$(grep -cE '"name": "(Task|Agent)"' "$RUN_DIR/tool-uses.jsonl" || true)"
+  && DISPATCHES="$(grep -cE '"name": "(Task|Agent|task)"' "$RUN_DIR/tool-uses.jsonl" || true)"
 if [ "${DISPATCHES:-0}" -eq 0 ]; then
   echo "!!! REVIEW-GUARD FAIL: zero Task/Agent subagent dispatches — no reviewers ran" >&2
   GUARD_RC=1
