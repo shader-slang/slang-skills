@@ -79,7 +79,7 @@ How each Claude input maps:
 
 | Claude path | OpenCode path |
 |---|---|
-| `--model` (`ANTHROPIC_DEFAULT_OPUS_MODEL`) | `OPENCODE_MODEL`, the group's model; `--model` is refused. Subagents run on the same model (their `model:` line is dropped). Small model: `OPENCODE_SMALL_MODEL`, else the main model. |
+| `--model` (`ANTHROPIC_DEFAULT_OPUS_MODEL`) | `OPENCODE_MODEL`, the group's model. `--model` may only name that model (with or without the provider prefix, e.g. `nvidia/zai-org/glm-5.3`); any other value is refused. Subagents run on the same model (their `model:` line is dropped). Small model: `OPENCODE_SMALL_MODEL`, else the main model. |
 | endpoint and credential | The coworker's own provider settings (`OPENCODE_PROVIDER`, `OPENCODE_BASE_URL`), with the runner's placeholder key; the gateway supplies the credential. |
 | `--allowed-tools` | Permission rules: `"*": "deny"`, then allow what Claude Code runs without a prompt (read, list, glob, grep, task, skill, todowrite) and each allowlist entry (`Bash(git diff*)` → `bash: {"git diff*": "allow"}`, `Write(tmp/**)` → `edit: {"tmp/**": "allow"}`, `mcp__deepwiki__ask_question` → `deepwiki_ask_question`). No rule is `ask`, because `opencode run` rejects an ask and would end the run; a denied call returns an error and the run goes on (`continue_loop_on_deny`). |
 | `.claude/agents/*.md` (read by Claude Code) | Registered as OpenCode subagents with the same name, description and prompt; each agent's `tools:` line becomes its permission rules. |
