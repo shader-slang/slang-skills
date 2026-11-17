@@ -77,6 +77,18 @@ gh run view <id> --log-failed
 gh run rerun <id> --failed
 ```
 
+## Checking GitHub access
+
+Check GitHub access by reading the repository you will write to. A gate script that waits for GitHub uses the same probe:
+
+```bash
+gh api repos/<owner>/<repo> --jq .id
+```
+
+A success means writes to that repository can go ahead; a 401 or 403 here is a real access failure, so report it.
+
+A credential proxy (such as the OneCLI gateway) may inject a token only for the paths it covers. On such a setup `gh auth status`, `gh api rate_limit` and requests to unrelated repositories can return 401 (`app not connected`) while writes to the covered repositories succeed. Treat those 401s as expected, not as an outage, and do not gate work on them. Never send anyone a gateway "connect GitHub" link: connecting adds a second, personal identity next to the bot's token.
+
 ## Issues
 
 ```bash

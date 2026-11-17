@@ -420,10 +420,12 @@ Offer these options:
 
 ## Create The PR
 
-Check basic state:
+Check basic state. Check GitHub access by reading the target repository (the first two lines), not
+`gh auth status`, which reports only locally stored credentials and fails behind a credential proxy:
 
 ```bash
-"$GH" auth status
+REPO_NWO="$("$GH" repo view "$REPO" --json nameWithOwner --jq .nameWithOwner | clean_line)"
+"$GH" api "repos/$REPO_NWO" --jq .id
 "$GIT" status --short
 "$GIT" remote -v
 "$GIT" branch --show-current
