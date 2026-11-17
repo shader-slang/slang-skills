@@ -54,11 +54,14 @@ echo "    slang/ checkout:     $SLANG_REPO ($(cd $SLANG_REPO && git rev-parse --
 echo "    REVIEW.md:           OK"
 echo "    .claude/agents/:     $(ls $SLANG_REPO/.claude/agents | wc -l) subagents"
 
-# gh auth (read-only — needed for `gh pr diff` etc. in pr/branch modes)
-if ! gh auth status >/dev/null 2>&1; then
-  echo ">>> warning: gh auth not configured — pr/branch modes need a token to read the diff" >&2
+# GitHub read access (needed for `gh pr diff` etc. in pr/branch modes). Read the
+# repository itself: `gh auth status` reports only locally stored credentials, so
+# it fails behind a credential proxy that injects the token on the wire.
+REVIEW_REPO="${REVIEW_REPO:-shader-slang/slang}"
+if gh api "repos/$REVIEW_REPO" --jq .id >/dev/null 2>&1; then
+  echo "    GitHub read:         OK ($REVIEW_REPO)"
 else
-  echo "    gh auth:             $(gh auth status 2>&1 | grep 'Logged in' | head -1 | sed 's/^[ ]*//')"
+  echo ">>> warning: cannot read $REVIEW_REPO on GitHub — pr/branch modes need read access to the diff" >&2
 fi
 
 echo ">>> install.sh — ready"

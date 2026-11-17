@@ -135,10 +135,12 @@ clean_line() { tr -d '\r'; }
 Use `$GIT` and `$GH` for all subsequent `git` and `gh` commands in this skill.
 Strip `\r` from command substitutions that capture selected-tool output.
 
-Check before making changes:
+Check before making changes that you can read the PR's repository. Read the repository itself, not
+`gh auth status`, which reports only locally stored credentials and fails behind a credential proxy:
 
 ```bash
-"$GH" auth status
+REPO="$("$GH" pr view "$PR" --json url --jq .url | clean_line | cut -d/ -f4-5)"
+"$GH" api "repos/$REPO" --jq .id
 ```
 
 **First, check whether the PR is already merged or closed — before inspecting the
