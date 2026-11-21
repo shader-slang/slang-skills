@@ -201,11 +201,12 @@ the `<>` wrapping.
 
 One post per report. On a chat channel the report is one anchor message that
 opens a thread, with the rest of the report inside that thread; never a run of
-top-level messages prefixed `(part k/N)`. With `discord_send_message`, pass
-`thread_name` (the report title) on the anchor; the result carries a `thread_id`,
-and every further chunk goes to that id. If a chunk is needed, split at an
-assignee boundary and never mid-line. The disclaimer line goes on the last
-message only.
+top-level messages prefixed `(part k/N)`. Post the anchor with
+`discord_send_message`, then call `discord_create_thread` with the channel id,
+the anchor's `message_id` and the report title as the name; the result carries a
+`thread_id`, and every further chunk goes to that id. If a chunk is needed,
+split at an assignee boundary and never mid-line. The disclaimer line goes on
+the last message only.
 
 ### Recipient map (`--recipient-map`)
 
