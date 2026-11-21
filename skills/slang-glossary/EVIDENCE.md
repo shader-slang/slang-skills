@@ -14,6 +14,7 @@ Usage counts behind every `_Avoid_` entry, the commands that produced them, and 
 | `R` (slang-rhi) | `ext/slang-rhi/include/*.h ext/slang-rhi/docs/*.md ext/slang-rhi/README.md ext/slang-rhi/src/*.h` |
 | `O` (coworker ops) | `repos/nc-r6/README.md`, `repos/nc-r6/container/skills/*/SKILL.md`, `repos/nc-r6/container/skills/*/README.md`, `repos/nc-r6/container/overlays/*/OVERLAY.md`, `repos/nc-r6/src/issue-opt-out.ts`, `repos/nc-r6/src/issue-stand-down.ts`, `repos/nc-r6/docs/*.md`; some early counts also included `repos/skills-craft/skills/*/SKILL.md` and are marked `O+` |
 | `B` (bank review threads) | `tasks/review/*/task.toml`, key `[metadata].threads_json`, in `repos/slang-eval-tasks`: 882 root inline review comments by human maintainers over 315 tasks, extracted to `glossary-draft/experts/threads.json`. A `B` count is the number of threads whose body matches the pattern (case-insensitive regex, `experts/bcounts.py`), not a word count; the Note column lists the task ids. |
+| `G` (GitHub review comments and PR descriptions, 2024-11-05 to 2026-11-05) | `glossary-draft/experts/github/github-comments.jsonl`: 3,401 in-window comments by Theresa Foley and Yong He on 762 PRs of `shader-slang/slang`, fetched read-only with `gh api`; plus Tess's 67 authored PR descriptions in `tess-authored-prs.jsonl`. A `G` count is the number of comments whose body matches the pattern (case-insensitive regex, `experts/github/add_terms.py`), not a word count; the Note column lists the PR numbers the entry rests on. |
 
 All `ext/` and `repos/` paths are under `/tmp/claude-1558743079/-home-haaggarwal-slang/1e68114b-25df-4d6b-8c9f-55a4af62c0b3/scratchpad/`.
 
@@ -81,6 +82,20 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 | subject (of a modifier) | target (for the modified construct) | `target.*modif\|modif.*target` | B 1 | slang-pr-12596-5553973; `target` D 631 is the compilation-target sense |
 | early-out | bail-out | `bail[- ]?out` | B 3, D 1, S 43 | slang-pr-13539-7228ad1, slang-pr-13283-a3dd7e7; canonical `early[- ]out` B 12, S 17 |
 | early-out | guard (for the statement itself) | `guard` (B), `guard clause` (D, S) | B 13, D 0, S 0 | B not sense-split (most hits are "guard against"); slang-pr-12596-5553973 and nine other tasks |
+| effective source language | allow GLSL | `allow(ed\|s)? GLSL\|AllowGLSL` | G 12 | PRs 12836; canonical `source language` G 9 |
+| witness | proved (for solving a witness) | `\bproved?\b` | G 20 | PRs 11210, 9628, 11368; canonical `\bwitness` G 123 |
+| refinement | conformance (for interface-to-interface) | `conformance witness` | G 5 | PRs 13885, 12555; canonical `refine` G 8 |
+| refinement | subtype witness (for a refinement) | `SubtypeWitness` | G 13 | PRs 13885, 12555 |
+| shadow variable | compatibility variable | `compatibilityVar\|compatibility variable` | G 3 | PRs 13445; canonical `\bshadow` G 38 |
+| shadow variable | source global | `source global` | G 3 | PRs 13445 |
+| abstract storage | location (bare) | `\blocation\b` | G 92 | PRs 13506, 13406; canonical `storage location\|memory location` G 16 |
+| default-value expression | default expression | `default expression` | G 2 | PRs 11210; canonical `default-value expression\|default( generic)? argument` G 15 |
+| default-value expression | real default | `real default` | G 2 | PRs 11210 |
+| sub and sup type | endpoint | `\bendpoints?\b` | G 10 | PRs 11368; canonical `\bsub/sup\|\bsup\b` G 12 |
+| pointee type | target type (of a pointer) | `target/\"pointee\"\|target type` | G 5 | PRs 7678; canonical `pointee` G 3 |
+| immutable location | immutable (when only read-only is meant) | `\bimmutable\b` | G 41 | PRs 8526, 9881, 8433; canonical `read-only\|readonly` G 40 |
+| post-emit metadata | side-band file (for reporting) | `side-band` | G 1 | PRs 10886, 10896, 10076; canonical `post[- ]?emit metadata\|PostEmitMetadata` G 6 |
+| descriptor kind | Texture_Read, Buffer_ReadWrite | `Texture_Read\|Buffer_ReadWrite` | G 2 | PRs 8252; canonical `SampledImage\|StorageBuffer` G 8 |
 
 ### Slang Language
 
@@ -113,6 +128,18 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 | readonly ref access | const (as the ref access qualifier) | `` `const` `` | B 2 | slang-pr-13406-66523f1 (Tess), slang-pr-13406-a1286c3; canonical `readonly` B 7, D 4, S 21 |
 | language version | module version | `module version` | B 2, D 11, S 3 | Yong "user module version" in slang-pr-12151-f0371d1; slang-pr-12963-90a6877; D hits are the `.slang-module` format version, a different sense; canonical `language version` B 7, D 17, S 28 |
 | language version | dialect (for the version) | `dialect` | B 1, D 0, S 7 | slang-pr-12596-5553973 |
+| dialect | HLSL mode, GLSL mode | `(HLSL\|GLSL) mode` | G 6 | PRs 13506, 12836, 13958, 13113; canonical `dialect` G 29 |
+| dialect | supports GLSL | `supports? GLSL` | G 1 | PRs 13506, 12836, 13958, 13113 |
+| dialect | allow GLSL | `allow(ed\|s)? GLSL\|AllowGLSL` | G 12 | PRs 13506, 12836, 13958, 13113 |
+| export | public (for linkage) | `public __extern_cpp\|PublicDecoration` | G 2 | PRs 12242, 12304, 7447; canonical `\bexport\b` G 10 |
+| static const | constexpr (in user documentation) | `constexpr` | G 7 | PRs 10455; canonical `static const` G 11 |
+| address space | storage class | `storage class` | G 1 | PRs 10657, 11709, 7678; canonical `address space` G 19 |
+| combined texture-sampler pair | combined texture sampler | `combined texture sampler\b` | G 1 | PRs 6028; canonical `texture-sampler pair` G 2 |
+| proper type | value type (for this notion) | `value type` | G 10 | PRs 12585, 12555, 13885, 10165, 11210; canonical `proper type` G 22 |
+| contract | single interface (when a conjunction is allowed) | `single interface` | G 1 | PRs 13885; canonical `\bcontract\b` G 112 |
+| enum declaration | enum class (in the core language) | `enum class` | G 4 | PRs 11044; canonical `\benum\b` G 49 |
+| take the address | take pointer | `take pointer` | G 2 | PRs 7848, 9881; canonical `take (the )?address\|getAddress` G 9 |
+| cast | cast (for an implicit conversion) | `\bcast(s\|ing)?\b` | G 45 | PRs 6028; canonical `\bconversion` G 59 |
 
 ### SlangPy
 
@@ -206,3 +233,7 @@ Where a brief-supplied Avoid term has count 0 in every set, the row says "brief"
 ### Bank review threads (set B, round 3)
 - All 231 threads by Theresa Foley (`tangent-vector`) and 13 by Yong He (`csyonghe`), read in full; the other 638 human threads were only pattern-counted. The reading, term counts, corrections, and rules are in `experts/EXPERTS.md`; the candidate list is `experts/experts-terms.json`; the terms added from it are listed in `experts/experts-added.json`.
 - Round-3 additions: 12 compiler terms (parameter-passing mode, effective `this` parameter, disposition, subject, internal error, index into, bytes, cumulative offset, documentation comment, implementation comment, early-out, workaround) and 5 language terms (readonly ref access, language version, operator, tuple construction, error); "Parameter direction" renamed to "Parameter-passing mode". Convention items from the candidate list (`calc`/`compute` prefix, "collect" as the verb) and the standard-module-library naming went to guidelines, not the glossary. The binding-semantic soft conflict (Tess uses bare "semantics" in compiler prose) got no Avoid: the compiler glossary has no binding-semantic entry to attach it to.
+
+### GitHub review comments (set G, round 4)
+- All in-window comments by Theresa Foley (1,427 recent-year, 366 older-year) and Yong He (895 recent-year, 713 older-year) on 762 PRs, read in full by chunked readers; terms, corrections, and rules are in `experts/github/GITHUB-EXPERTS.md`, the candidate list in `experts/github/github-terms.json`, and the terms added from it in `experts/github/github-added.json`.
+- Round-4 additions: 21 compiler terms (effective source language, experimental module, witness, refinement, facet, lookup breadcrumb, shadow variable, abstract storage, default-value expression, candidate frontier, sub and sup type, publication, unit type, dedicated opcode, peephole pass, pointee type, immutable location, post-emit metadata, descriptor kind, predicate, bottleneck) and 12 language terms (dialect, export, internal, `static const`, address space, combined texture-sampler pair, proper type, contract, enum declaration, logical scalar, take the address, cast). The six "conflicts" candidates (borrow versus copy-in/copy-out, front end versus back end, compile-time versus translation-time constant, capability interface, natural layout, unit type's older spelling) are left for the maintainer; unit type itself was added as a plain entry. Convention candidates (accessor verbs, acronym casing, `InBytes` suffix, size versus count, argument versus parameter value) and review vocabulary were not added, except predicate and bottleneck.

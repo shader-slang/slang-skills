@@ -16,12 +16,29 @@ An `extern static const` whose value another module supplies with `export` when 
 _Avoid_: specialization constant (that term names the Vulkan feature)
 
 **Translation-time constant**:
-A value the toolchain fixes before the program runs: a compile-time constant, a link-time constant, or a codegen constant. The specification prefers this term over the looser "compile-time constant".
-_Avoid_: compile-time constant (for the whole class)
+The specification's class of values the toolchain fixes before the program runs: compile-time constants, link-time constants, and codegen constants.
+
+**Compile-time constant**:
+A value fixed while one module is compiled, such as a literal or a `static const` initialized from literals, before linking.
 
 **Language version**:
 The Slang language revision a module is compiled under, such as 2025 or 202c, selected by a `#language slang <year>` declaration or a compiler option. Tests about version-dependent behavior pin it explicitly; warnings may become errors in a later version.
 _Avoid_: module version, dialect (for the version)
+
+**Dialect**:
+One of the three languages the toolset accepts for a translation unit: Slang, the HLSL-flavored dialect, or the GLSL-flavored dialect. Compatibility behavior belongs to a dialect, not to Slang.
+_Avoid_: HLSL mode, GLSL mode, supports GLSL, allow GLSL
+
+**Export**:
+The `export` modifier gives a declaration a mangled name that survives IR linking so another module or the host can reach it. `public` is a visibility modifier and says nothing about linkage.
+_Avoid_: public (for linkage)
+
+**Internal**:
+The `internal` visibility modifier marks core-module declarations that user code must not call. Names starting with `__` are likewise unsupported and stay out of user documentation.
+
+**`static const`**:
+The declaration form for a value the compiler evaluates at compile time. `constexpr` exists only in limited core-module code, is unfinished, and stays out of user documentation.
+_Avoid_: constexpr (in user documentation)
 
 ## Entry points and execution
 
@@ -44,7 +61,7 @@ The `: NAME` suffix on a varying entry-point parameter or result that connects i
 _Avoid_: semantic (bare)
 
 **Parameter-passing mode**:
-The `in`, `out`, or `inout` qualifier on a function parameter. The specification defines copy-in, copy-out, and copy-in-copy-out semantics; `__ref` and `__constref` are compiler spellings without a specification entry.
+The `in`, `out`, or `inout` qualifier on a function parameter; the specification defines their copy-in, copy-out, and copy-in-copy-out semantics. The compiler models `inout` as an exclusive mutable borrow and borrow-in (`__constref`) as an immutable borrow.
 _Avoid_: parameter direction, passing convention
 
 **Readonly ref access**:
@@ -87,6 +104,14 @@ A named feature level for a target, such as `sm_6_6` or `glsl_460`, passed with 
 The set of capability atoms a declaration needs, declared with `[require(...)]` or inferred from its body, and checked against each target.
 _Avoid_: capability (when the requirement on a declaration is meant)
 
+**Address space**:
+The memory region a pointer or by-reference parameter refers to, such as group-shared or user pointer memory. A `groupshared` parameter is a by-reference parameter in the group-shared address space.
+_Avoid_: storage class
+
+**Combined texture-sampler pair**:
+A texture bound together with its sampler as one resource, as GLSL `sampler2D` and Vulkan combined image samplers allow.
+_Avoid_: combined texture sampler
+
 ## Types, interfaces, and generics
 
 **Conformance**:
@@ -113,6 +138,21 @@ A declaration that adds members or conformances to an existing type without chan
 A value of an interface used as a proper type, written `dyn IFoo` in language version 202c; the interface itself is only the contract. It packs a concrete value with its conformance, so calls through it dispatch dynamically.
 _Avoid_: interface-typed value, interface variant (the specification's experimental term), existential value
 
+**Proper type**:
+A type that values can have and that can be a generic argument: `int`, a struct, or `dyn IFoo`. An interface or conjunction of interfaces is not a proper type.
+_Avoid_: value type (for this notion)
+
+**Contract**:
+An interface or conjunction of interfaces that a generic constraint or an existential box is over. `IFoo` describes requirements; `dyn IFoo` is the proper type of boxed values.
+_Avoid_: single interface (when a conjunction is allowed)
+
+**Enum declaration**:
+The `enum` keyword declares an enumeration. `enum class` is accepted as a C++ compatibility spelling and is not part of the core language.
+_Avoid_: enum class (in the core language)
+
+**Logical scalar**:
+The element-domain type `T.Scalar` of a numeric type: a scalar uses itself, a vector or matrix uses its element type. Its mask is the shape-preserving Boolean result of a comparison.
+
 ## Expressions, statements, and errors
 
 **Operator**:
@@ -124,6 +164,14 @@ The expression `(a, b)` that builds a tuple from comma-separated values, the mea
 **Error**:
 A value of an error type that a function declared `throws` raises with `throw`, and a caller handles with `try` and `catch`. Prose says error and raise; "exception" names a different mechanism Slang does not have.
 _Avoid_: exception, throw an exception (in prose)
+
+**Take the address**:
+The operation that yields a pointer to storage. Slang exposes it only through the `__getAddress()` intrinsic on CPU and CUDA targets, never through a general `&` operator.
+_Avoid_: take pointer
+
+**Cast**:
+An explicit request to change a value's type. A conversion is the implicit change the compiler applies on its own; the two words are not interchangeable.
+_Avoid_: cast (for an implicit conversion)
 
 ## Automatic differentiation
 
